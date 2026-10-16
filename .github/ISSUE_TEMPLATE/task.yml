@@ -1,0 +1,24 @@
+name: 开发或设计任务
+description: 记录问题、范围、设计依据和验收要求
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 用户场景与目标
+      description: 发生了什么，完成后用户能够做什么？错误报告请附复现步骤，使用合成资料。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与依据
+      description: 关联路线阶段、设计章节或 ADR，列出本任务范围及外部依赖。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收与验证方式
+      description: 描述可观察的结果，以及必要的失败、缺失数据或纠错场景。
+    validations:
+      required: true

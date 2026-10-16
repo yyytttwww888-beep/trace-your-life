@@ -1,0 +1,43 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+local.properties
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+
+# Personal runtime data and exports: use these directories or keep outside repo
+/.local/
+/runtime-data/
+/backups/
+/exports/
+/knowledge/
+/attachments/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Android / Gradle build outputs
+.gradle/
+.kotlin/
+**/build/
+captures/
+.cxx/
+*.apk
+*.aab
+*.hprof
+
+# Local editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.swo
