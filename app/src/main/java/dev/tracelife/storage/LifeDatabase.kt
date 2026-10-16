@@ -3,9 +3,10 @@ package dev.tracelife.storage
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.util.UUID
 
 /** Versioned source data. Derived search indexes and AI state are added by later migrations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 1) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 2) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -14,10 +15,32 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
 
     override fun onCreate(db: SQLiteDatabase) {
         statements.forEach(db::execSQL)
+        upgradeToVersionTwo(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("缺少数据库迁移：$oldVersion → $newVersion")
+        require(oldVersion == 1 && newVersion == 2) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        upgradeToVersionTwo(db)
+    }
+
+    private fun upgradeToVersionTwo(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE store_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), store_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 0))")
+        db.execSQL("INSERT INTO store_state(singleton, store_id, generation) VALUES(1, ?, 0)", arrayOf(UUID.randomUUID().toString()))
+        db.execSQL("CREATE TABLE deleted_templates (id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL, deleted_at TEXT NOT NULL)")
+        // V1 already retained ID-only delete events. Preserve those identities during migration.
+        db.execSQL("""INSERT INTO deleted_templates(id, last_revision, deleted_at)
+            SELECT entity_id, MAX(revision), MAX(created_at) FROM change_events
+            WHERE kind = 'TEMPLATE_DELETED' AND entity_id NOT IN (SELECT id FROM templates) GROUP BY entity_id""")
+        db.execSQL("DELETE FROM change_events WHERE kind = 'TEMPLATE_DELETED' AND entity_id IN (SELECT id FROM templates)")
+        val authoritativeTables = listOf("templates", "template_versions", "template_questions", "records",
+            "record_revisions", "record_topics", "record_answers", "attachments", "record_attachments",
+            "deleted_records", "deleted_templates", "change_events")
+        authoritativeTables.forEach { table ->
+            listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+                db.execSQL("""CREATE TRIGGER generation_${table}_${operation.lowercase()} AFTER $operation ON $table
+                    BEGIN UPDATE store_state SET generation = generation + 1 WHERE singleton = 1; END""")
+            }
+        }
     }
 
     private val statements = listOf(

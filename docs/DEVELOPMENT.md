@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码对应 [M1 实施计划](plans/2026-10-16-local-records.md)。使用原生 Kotlin 和系统控件提供功能入口，业务与 SQLite 存储可独立验证；后续视觉设计可替换界面，不改变记录身份与保存规则。
+当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)和 [M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -41,6 +41,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/model/` | 记录、发生时间、模板、附件与变更的公共类型 |
 | `app/src/main/java/dev/tracelife/storage/` | 数据库迁移、事务、修订、模板版本、附件与变更队列 |
 | `app/src/main/java/dev/tracelife/templates/` | 内置复盘模板、导入预览及输入限制 |
+| `app/src/main/java/dev/tracelife/transfer/` | 备份加密、预览恢复、阅读包与证据包；用法见[接口文档](DATA_TRANSFER.md) |
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
@@ -50,4 +51,4 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 
 Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于实体手机测试。安装、系统文件选择器、厂商备份／迁移行为，以及华为授权仍需在目标手机验证。
 
-M1 调试版本尚无完整备份恢复，卸载或清除应用数据会失去本地资料。当前用合成资料验证功能，M2 完成可恢复备份后再扩大正式积累；真实个人资料始终不进入 Git。
+M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。

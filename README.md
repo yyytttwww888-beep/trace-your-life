@@ -2,7 +2,7 @@
 
 面向个人的 Android AI 记录与知识管理应用。将日常随记、复盘、餐食照片和授权健康数据组织成可追溯、可分析、可迁移的个人知识库，帮助理解近期变化、长期模式和下一步行动。
 
-**当前阶段：M1 离线记录与复盘模板。** 已加入原生 Android 应用、SQLite 存储与自动化测试；完整备份、AI 分析、看板、画像和华为接入仍在后续阶段。本仓库管理项目设计和代码；个人生活记录存放在应用数据区。
+**当前阶段：M2 备份与知识导出后端。** 已有 M1 离线记录入口，继续按“先功能、后前端”实现数据转移接口；新接口尚未接入页面。AI 分析、看板、画像和华为接入仍在后续阶段。本仓库管理项目设计和代码；个人生活记录存放在应用数据区。
 
 ## 当前可用功能
 
@@ -12,7 +12,9 @@
 - 将图片作为受管附件保存；当前阶段尚不识别食物或生成 AI 分析。
 - 使用系统标准控件提供操作入口，暂不进行视觉设计。
 
-构建、安装及验证命令见[开发文档](docs/DEVELOPMENT.md)。当前使用合成资料验证；完整备份恢复需在 M2 完成。
+新增后端能力：可移植口令加密备份、带预览与版本检查的恢复、分层 Markdown／JSONL 阅读包，以及指定问题／范围的证据包。用法、格式与限制见[数据转移接口](docs/DATA_TRANSFER.md)。完整备份保留修订、旧模板绑定、附件与删除记录；阅读包明确不用于恢复。
+
+构建、安装及验证命令见[开发文档](docs/DEVELOPMENT.md)。当前仍用合成资料验证，文件选择和恢复确认等前端入口后续统一接入。
 
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
@@ -58,8 +60,9 @@ flowchart TD
 | 理解统一术语 | [CONTEXT.md](CONTEXT.md) |
 | 决定下一阶段做什么、如何验收 | [开发路线](docs/ROADMAP.md) |
 | 构建 APK、运行测试和定位代码 | [开发与验证](docs/DEVELOPMENT.md) |
+| 调用备份恢复、知识包与证据包接口 | [数据转移接口](docs/DATA_TRANSFER.md) |
 | 了解架构取舍 | [本地主存决策](docs/adr/0001-local-source-of-truth.md)、[受控取证决策](docs/adr/0002-controlled-evidence-retrieval.md) |
 | 由 AI Agent 继续工作 | [AGENTS.md](AGENTS.md) |
 | 提交问题、修改文档或代码 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-当前采用 Kotlin、Android 系统控件和 SQLiteOpenHelper，最低支持 Android 8.0（API 26），编译与目标 API 36。模型服务与备份加密实现尚未选定；实际手机兼容性与外部接入能力需分别验证。
+当前采用 Kotlin、Android 系统控件和 SQLiteOpenHelper，最低支持 Android 8.0（API 26），编译与目标 API 36。备份采用口令派生密钥与 AES-GCM；模型服务尚未选定，实际手机兼容性与外部接入能力需分别验证。

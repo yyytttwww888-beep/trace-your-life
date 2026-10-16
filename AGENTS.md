@@ -16,11 +16,13 @@
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |
 | 华为接入、饮食依据、复盘方法或画像研究 | 从[研究导航](docs/README.md)读取对应笔记，再核验会变化的官方资料 |
 | 新功能排期、验收、提交或协作 | [开发路线](docs/ROADMAP.md)、[贡献约定](CONTRIBUTING.md) |
-| 构建、运行、测试或修改 Android 代码 | [开发与验证](docs/DEVELOPMENT.md)、当前阶段[实施计划](docs/plans/2026-10-16-local-records.md) |
+| 构建、运行、测试或修改 Android 代码 | [开发与验证](docs/DEVELOPMENT.md)；记录功能读 [M1 计划](docs/plans/2026-10-16-local-records.md) |
+| 备份、恢复、导出格式、快照发布或数据迁移 | [数据转移接口](docs/DATA_TRANSFER.md)、[M2 计划](docs/plans/2026-10-16-backup-knowledge-export.md) |
 
 ## 必须保留的边界
 
 - 实现状态以 [README.md](README.md) 和开发路线为准；仅以实际代码和验证结果报告能力，区分自动测试、APK 构建与真机验证。
+- 当前按用户要求优先完成后端功能和验证，前端统一后置；新增接口与已接入页面的能力分别报告。
 - 首版面向个人 Android 使用。通用历史资料导入、多用户平台和双向同步不在当前范围；模板导入与备份恢复是明确例外。
 - 记录、观察、洞察与画像采用统一词汇和证据关系。模型输出、用户自述、设备测量及用户确认分别管理。
 - 所有产品 AI 读取都经过程序执行的范围、快照、预算和证据登记；通过分层索引定位，禁止全库一次性灌入上下文。统计数值由明确口径的程序计算。
