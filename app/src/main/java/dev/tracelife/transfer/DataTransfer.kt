@@ -25,6 +25,8 @@ data class RestorePreview(
     val targetStoreId: String,
     val targetGeneration: Long,
     val targetHasData: Boolean,
+    val analysisRuns: Int,
+    val targetAnalysisGeneration: Long,
 )
 
 /**
@@ -75,9 +77,10 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val snapshot = BackupArchive.read(copy, attachments, password)
         val generation = repository.currentGeneration()
+        val analysisGeneration = repository.currentAnalysisGeneration()
         val hasData = repository.listRecords(RecordFilter(includeArchived = true, limit = 1)).total > 0 ||
-            repository.listTemplates(includeArchived = true).isNotEmpty()
-        if (repository.currentGeneration() != generation) {
+            repository.listTemplates(includeArchived = true).isNotEmpty() || repository.analysisRuns(0, 1).isNotEmpty()
+        if (repository.currentGeneration() != generation || repository.currentAnalysisGeneration() != analysisGeneration) {
             throw StaleSnapshotException("资料在预览期间发生变化，请重新预览")
         }
         RestorePreview(
@@ -86,6 +89,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
             snapshot.attachments.size, snapshot.attachments.sumOf { it.sizeBytes },
             snapshot.deletedRecords.size, snapshot.deletedTemplates.size, digest,
             repository.currentStoreId(), generation, hasData,
+            snapshot.analysisRuns.size, analysisGeneration,
         )
     }
 
@@ -96,7 +100,8 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         replaceExisting: Boolean = false,
     ): RestoreResult = workspace { directory ->
         if (repository.currentStoreId() != preview.targetStoreId ||
-            repository.currentGeneration() != preview.targetGeneration) {
+            repository.currentGeneration() != preview.targetGeneration ||
+            repository.currentAnalysisGeneration() != preview.targetAnalysisGeneration) {
             throw StaleSnapshotException("资料在预览后发生变化，请重新预览")
         }
         val copy = File(directory, "source.tlb")
@@ -106,7 +111,8 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val snapshot = BackupArchive.read(copy, attachments, password)
         if (snapshot.snapshotId != preview.snapshotId) throw InvalidBackupException("备份快照与预览不一致")
-        repository.restoreSnapshot(snapshot, attachments, preview.targetGeneration, replaceExisting)
+        repository.restoreSnapshot(snapshot, attachments, preview.targetGeneration, replaceExisting,
+            expectedAnalysisGeneration = preview.targetAnalysisGeneration)
     }
 
     /** Serializes with active transfers, including other DataTransfer instances in this process. */

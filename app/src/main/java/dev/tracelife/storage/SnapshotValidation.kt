@@ -1,5 +1,6 @@
 package dev.tracelife.storage
 
+import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
 import dev.tracelife.transfer.InvalidBackupException
@@ -14,9 +15,17 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion == 2) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..3) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
+            require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
+                snapshot.analysisRuns.map { it.id }.distinct().size == snapshot.analysisRuns.size) { "分析任务代数、数量或身份无效" }
+            require(snapshot.deletedAnalysisRuns.size <= 100_000 && snapshot.deletedAnalysisRuns.map { it.id }.distinct().size == snapshot.deletedAnalysisRuns.size) { "分析任务删除标记过多或重复" }
+            snapshot.deletedAnalysisRuns.forEach { id(it.id); require(it.lastRevision > 0) { "分析任务删除版本无效" } }
+            require(snapshot.analysisRuns.map { it.id }.toSet().intersect(snapshot.deletedAnalysisRuns.map { it.id }.toSet()).isEmpty()) { "备份同时包含分析任务及其删除标记" }
+            require(snapshot.analysisRuns.all { it.payload.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024 } &&
+                snapshot.analysisRuns.sumOf { it.payload.toByteArray(Charsets.UTF_8).size.toLong() } <= 16L * 1024 * 1024) { "分析任务内容超过大小上限" }
             require(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 &&
                 snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000) { "备份超出当前恢复数量上限" }
             require(snapshot.records.sumOf { it.draft.body.length.toLong() + it.draft.answers.values.sumOf { answer -> answer.length.toLong() } } +
@@ -70,6 +79,19 @@ internal object SnapshotValidation {
                     event.kind.startsWith("RECORD_") -> require((event.entityId to event.revision) in recordVersionIds) { "变更事件引用缺失修订" }
                     else -> require((event.entityId to event.revision) in templatesByVersion) { "变更事件引用缺失模板" }
                 }
+            }
+            var retainedAnalysisBytes = 0L
+            snapshot.analysisRuns.forEach { run ->
+                id(run.id); id(run.source.storeId)
+                require(run.version > 0 && run.source.generation >= 0 && run.updatedAt >= run.createdAt) { "分析任务版本或时间无效" }
+                // Historical source revisions are retained; deleted or missing source material
+                // fails validation instead of making a restored proposal look supported.
+                try {
+                    AnalysisRunCodec.validateStored(run, snapshot.records)
+                    retainedAnalysisBytes += run.payload.toByteArray(Charsets.UTF_8).size + AnalysisRunCodec.reservedResponseBytes(run)
+                }
+                catch (failure: Exception) { throw InvalidBackupException("分析任务结构或来源引用无效", failure) }
+                require(retainedAnalysisBytes <= 16L * 1024 * 1024) { "分析任务及待返回输出预留超过保存上限" }
             }
         } catch (failure: IllegalArgumentException) {
             if (failure is InvalidBackupException) throw failure

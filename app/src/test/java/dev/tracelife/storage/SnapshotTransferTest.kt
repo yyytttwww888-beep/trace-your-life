@@ -261,7 +261,7 @@ class SnapshotTransferTest {
         LifeDatabase(context, sourceName).use { helper ->
             // SQLite synthesizes these bytes; do not allocate a huge Kotlin String or cursor row.
             helper.writableDatabase.execSQL("UPDATE record_revisions SET body = zeroblob(?) WHERE record_id = ?",
-                arrayOf(64 * 1024 * 1024 + 1, record.id))
+                arrayOf<Any>(64 * 1024 * 1024 + 1, record.id))
         }
         val directory = emptyDirectory("over-budget")
         val failure = assertThrows(IllegalArgumentException::class.java) { source.captureSnapshot(directory) }
@@ -274,13 +274,15 @@ class SnapshotTransferTest {
         val deleted = source.saveTemplate(template(), "synthetic-v1-deleted")
         source.deleteTemplate(deleted.id)
         source.close()
-        // Remove only v2 additions to recreate the released v1 schema and its ID-only outbox.
+        // Remove v2/v3 additions to recreate the released v1 schema and its ID-only outbox.
         LifeDatabase(context, sourceName).use { helper ->
             val db = helper.writableDatabase
             val triggers = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'generation_%'", null).use { cursor ->
                 buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
             }
             triggers.forEach { db.execSQL("DROP TRIGGER $it") }
+            db.execSQL("DROP TABLE analysis_runs")
+            db.execSQL("DROP TABLE deleted_analysis_runs")
             db.execSQL("DROP TABLE store_state")
             db.execSQL("DROP TABLE deleted_templates")
             db.version = 1

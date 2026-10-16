@@ -9,6 +9,8 @@ import dev.tracelife.model.TemplateDraft
 import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
+import dev.tracelife.storage.SourceStamp
+import dev.tracelife.storage.StoredAnalysisRun
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -36,6 +38,20 @@ import java.util.zip.ZipFile
 class KnowledgeArchiveTest {
     @get:Rule val temporary = TemporaryFolder()
     private val now = Instant.parse("2026-10-16T08:00:00Z")
+
+    @Test
+    fun `reading export declares analysis omission without leaking proposals or task questions`() {
+        val source = snapshot(listOf(record("synthetic-record")))
+        val marker = "synthetic-private-analysis-payload-marker"
+        val row = StoredAnalysisRun("synthetic-run", 1, SourceStamp(source.storeId, source.generation), now, now, null, marker)
+        val (entries, _) = export(source.copy(analysisRuns = listOf(row), analysisGeneration = 1))
+        val completeness = JSONObject(entries.getValue("manifest.json").text()).getJSONObject("completeness")
+        assertFalse(completeness.getBoolean("analysisRunsIncluded"))
+        assertEquals(1, completeness.getInt("omittedAnalysisRuns"))
+        assertEquals("analysis_not_included", completeness.getString("analysisGap"))
+        assertTrue(entries.values.none { marker in it.text() })
+        assertTrue("待核验提案未纳入" in entries.getValue("README.md").text())
+    }
 
     @Test
     fun `topic time and id routes reach one canonical latest record with its bound old template`() {

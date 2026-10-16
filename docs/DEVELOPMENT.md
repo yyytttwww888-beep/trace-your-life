@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)和 [M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)和 [M3 第一阶段受控分析](plans/2026-10-16-controlled-analysis.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -28,6 +28,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 ```bash
 ./gradlew testDebugUnitTest --tests 'dev.tracelife.templates.*'
 ./gradlew testDebugUnitTest --tests 'dev.tracelife.storage.*'
+./gradlew testDebugUnitTest --tests 'dev.tracelife.analysis.*'
 ```
 
 测试报告在 `app/build/reports/tests/testDebugUnitTest/`，lint 报告在 `app/build/reports/lint-results-debug.html`。GitHub 工作流通过 [setup-android](https://github.com/android-actions/setup-android) 显式安装 SDK 命令行工具，再执行同样的测试、lint 与 APK 构建，并保存报告及调试 APK；远程运行状态需以实际 Actions 结果为准。
@@ -42,13 +43,16 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/storage/` | 数据库迁移、事务、修订、模板版本、附件与变更队列 |
 | `app/src/main/java/dev/tracelife/templates/` | 内置复盘模板、导入预览及输入限制 |
 | `app/src/main/java/dev/tracelife/transfer/` | 备份加密、预览恢复、阅读包与证据包；用法见[接口文档](DATA_TRANSFER.md) |
+| `app/src/main/java/dev/tracelife/analysis/` | 受控取证、完整请求预算、调用证据台账与待核对提案；用法见[接口文档](CONTROLLED_ANALYSIS.md) |
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；升级失败不能删除数据库重新建表。后续 AI 读取须另行实现受控检索接口，不能把当前提供给本地界面的仓储查询直接开放给模型。
+新数据库格式通过明确的版本迁移升级；当前为 v3，可从 v1/v2 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。测试替身只验证流程，生产模型及分词、网络与凭据尚未接入。
 
 ## 设备验证与阶段边界
 
 Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于实体手机测试。安装、系统文件选择器、厂商备份／迁移行为，以及华为授权仍需在目标手机验证。
 
 M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
+
+M3 第一阶段的任务创建、分批执行、恢复、删除及提案查看同样只有后端接口。语义核对、正式发布、自动调度和真实模型效果仍未验证，不能将结构校验通过的提案称为可靠结论。

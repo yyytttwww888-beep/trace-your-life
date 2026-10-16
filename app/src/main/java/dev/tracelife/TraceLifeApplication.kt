@@ -1,6 +1,7 @@
 package dev.tracelife
 
 import android.app.Application
+import dev.tracelife.analysis.ControlledAnalysis
 import dev.tracelife.storage.LifeRepository
 import dev.tracelife.templates.BuiltInTemplates
 import dev.tracelife.transfer.DataTransfer
@@ -9,6 +10,7 @@ import java.util.concurrent.Executors
 class TraceLifeApplication : Application() {
     val io = Executors.newSingleThreadExecutor()
     val dataTransfer by lazy { DataTransfer(this, repository) }
+    val analysis by lazy { ControlledAnalysis(repository) }
     val repository by lazy {
         LifeRepository(this).also { repository ->
             val installation = getSharedPreferences("installation", MODE_PRIVATE)
