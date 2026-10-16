@@ -121,6 +121,7 @@ object KnowledgeArchive {
                         .append(archive.link("README.md", "timeline/intervals/index.md", "跨期区间目录"))
                         .append(" 和 ").append(archive.link("README.md", "timeline/unknown/index.md", "未知时间目录")).append("。\n\n")
                     append("主题和索引中的长名称仅作缩短显示；完整文字保留在原始记录或结构化资料中。所有日/周入口只是导航，未生成任何复盘总结、画像或成长判断。\n")
+                    append("\n分析任务、调用证据台账和待核验提案未纳入本阅读包；这些内容仅保留在完整加密备份中，不能作为本包已验证的分析结论。\n")
                     if (options.question != null) append("\n任务问题（用户资料）：\n").append(fenced(options.question))
                 }
                 archive.text("README.md", readme)
@@ -141,7 +142,9 @@ object KnowledgeArchive {
                         .put("selectedAttachments", neededAttachments.size).put("includedAttachments", if (options.includeAttachments) neededAttachments.size else 0)
                         .put("omittedSelectedAttachments", if (options.includeAttachments) 0 else neededAttachments.size)
                         .put("outOfScopeAttachments", attachments.size - neededAttachments.size)
-                        .put("deletionLedgerIncluded", false).put("changeEventsIncluded", false))
+                        .put("deletionLedgerIncluded", false).put("changeEventsIncluded", false)
+                        .put("analysisRunsIncluded", false).put("omittedAnalysisRuns", snapshot.analysisRuns.size)
+                        .put("analysisGap", "analysis_not_included"))
                     .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json"))
                     .put("inventory", JSONObject().put("path", inventoryRoot.path).put("sha256", inventoryRoot.sha256)
                         .put("excludes", JSONArray(listOf("manifest.json", "inventory/"))))

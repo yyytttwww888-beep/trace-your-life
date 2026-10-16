@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.ChangeEvent
@@ -30,6 +31,7 @@ import java.io.InputStream
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatterBuilder
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -162,6 +164,8 @@ class LifeRepository(
             val now = clock.instant()
             db.insertOrThrow("deleted_records", null, values("id" to id, "last_revision" to current.revision, "deleted_at" to timestamp(now)))
             event(db, id, current.revision + 1, "RECORD_DELETED", now)
+            // Until dependencies are indexed, over-purge rather than retain copied deleted text.
+            db.delete("analysis_runs", null, null)
             attachmentIds.forEach { queueUnreferencedAttachment(db, it) }
         }
         collectGarbage(db)
@@ -223,6 +227,7 @@ class LifeRepository(
         val now = clock.instant()
         db.insertOrThrow("deleted_templates", null, values("id" to id, "last_revision" to current.version, "deleted_at" to timestamp(now)))
         event(db, id, current.version, "TEMPLATE_DELETED", now)
+        db.delete("analysis_runs", null, null)
     } }
 
     /** Caller owns [input]; successful import is durable before any record can refer to it. */
@@ -311,6 +316,145 @@ class LifeRepository(
 
     fun currentStoreId(): String = access { db -> storeState(db).first }
 
+    fun currentAnalysisGeneration(): Long = access(::analysisGeneration)
+
+    internal fun analysisSourceStamp(): SourceStamp = access { db ->
+        storeState(db).let { SourceStamp(it.first, it.second) }
+    }
+
+    /** Metadata only: no record bodies, answers or attachment bytes are selected. */
+    internal fun analysisSourcePage(stamp: SourceStamp, query: AnalysisQuery, offset: Int, limit: Int): SourcePage = access { db ->
+        validateAnalysisQuery(query)
+        require(offset >= 0 && limit in 1..100) { "分析分页范围无效" }
+        transaction(db) {
+            requireAnalysisSource(db, stamp)
+            val (where, args) = analysisScope(query)
+            val join = " FROM records h JOIN record_revisions r ON r.record_id = h.id WHERE $where"
+            val total = count(db, "SELECT COUNT(*)$join", args)
+            val unknown = count(db, "SELECT COUNT(*)$join AND r.start_date IS NULL", args)
+            val overlap = count(db, "SELECT COUNT(*)$join AND (r.start_date < ? OR r.end_date > ?)",
+                args + query.from.toString() + query.through.toString())
+            val items = db.rawQuery("""SELECT h.id, r.revision, r.start_date, r.end_date, r.zone_id, r.archived$join
+                ORDER BY (r.start_date IS NULL), r.start_date, h.id LIMIT ? OFFSET ?""",
+                (args + limit.toString() + offset.toString()).toTypedArray()).use { cursor ->
+                buildList { while (cursor.moveToNext()) add(sourceDescriptor(db, cursor, query)) }
+            }
+            SourcePage(items, total, unknown, overlap, (offset.toLong() + items.size).takeIf { it < total }?.toInt())
+        }
+    }
+
+    /** Content-unit inventory. Attachment units stay separate and are never counted as text reads. */
+    internal fun analysisSourceFields(stamp: SourceStamp, query: AnalysisQuery, id: String): List<SourceField> = access { db ->
+        validateAnalysisQuery(query)
+        validateId(id)
+        transaction(db) {
+            requireAnalysisSource(db, stamp)
+            val revision = scopedRevision(db, query, id)
+            val args = arrayOf(id, revision.toString())
+            buildList {
+                db.rawQuery("SELECT length(body), instr(body, char(0)) FROM record_revisions WHERE record_id = ? AND revision = ?", args).use {
+                    check(it.moveToFirst())
+                    if (it.getInt(1) != 0) throw UnreadableSourceException("正文含无法安全分片的 NUL 字符")
+                    if (it.getInt(0) > 0) add(SourceField("body", it.getInt(0), SourceFieldKind.TEXT))
+                }
+                db.rawQuery("SELECT question_id, length(answer), instr(answer, char(0)) FROM record_answers WHERE record_id = ? AND revision = ? ORDER BY question_id", args).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        if (cursor.getInt(2) != 0) throw UnreadableSourceException("答案含无法安全分片的 NUL 字符")
+                        if (cursor.getInt(1) > 0) add(SourceField("answer:${cursor.getString(0)}", cursor.getInt(1), SourceFieldKind.TEXT))
+                    }
+                }
+                strings(db, "SELECT attachment_id FROM record_attachments WHERE record_id = ? AND revision = ? ORDER BY attachment_id", *args)
+                    .forEach { add(SourceField("attachment:$it", 0, SourceFieldKind.ATTACHMENT, it)) }
+            }
+        }
+    }
+
+    /** Slice in SQLite before returning any source text; offsets count Unicode code points. */
+    internal fun analysisSourceFragment(
+        stamp: SourceStamp, query: AnalysisQuery, id: String, field: String, start: Int, maxCodePoints: Int,
+    ): SourceFragment = access { db ->
+        validateAnalysisQuery(query)
+        validateId(id)
+        require(start >= 0 && maxCodePoints in 1..4096) { "分析原文分片范围无效" }
+        transaction(db) {
+            requireAnalysisSource(db, stamp)
+            val revision = scopedRevision(db, query, id)
+            val args = mutableListOf((start.toLong() + 1).toString(), maxCodePoints.toString(), id, revision.toString())
+            val sql = when {
+                field == "body" -> """SELECT length(body), substr(body, ?, ?), instr(body, char(0)), NULL
+                    FROM record_revisions WHERE record_id = ? AND revision = ?"""
+                field.startsWith("answer:") -> {
+                    val questionId = field.removePrefix("answer:")
+                    validateId(questionId)
+                    args += questionId
+                    """SELECT length(a.answer), substr(a.answer, ?, ?), instr(a.answer, char(0)),
+                        q.prompt || CASE WHEN length(CAST(q.hint AS BLOB)) > 0 THEN char(10) || q.hint ELSE '' END
+                        FROM record_answers a JOIN record_revisions r ON a.record_id = r.record_id AND a.revision = r.revision
+                        JOIN template_questions q ON q.template_id = r.template_id AND q.version = r.template_version AND q.question_id = a.question_id
+                        WHERE a.record_id = ? AND a.revision = ? AND a.question_id = ?"""
+                }
+                else -> throw IllegalArgumentException("原文字段不存在或不是文本")
+            }
+            db.rawQuery(sql, args.toTypedArray()).use { cursor ->
+                require(cursor.moveToFirst()) { "原文字段不存在" }
+                val total = cursor.getInt(0)
+                if (cursor.getInt(2) != 0) throw UnreadableSourceException("原文含无法安全分片的 NUL 字符")
+                require(start < total) { "原文分片超出字段范围" }
+                val text = cursor.getString(1)
+                SourceFragment(id, revision, field, start, start + text.codePointCount(0, text.length), total,
+                    text, if (cursor.isNull(3)) null else cursor.getString(3))
+            }
+        }
+    }
+
+    internal fun analysisRun(id: String): StoredAnalysisRun? = access { db ->
+        validateId(id)
+        transaction(db) { readAnalysisRun(db, id) }
+    }
+
+    internal fun analysisRuns(offset: Int, limit: Int): List<StoredAnalysisRun> = access { db ->
+        require(offset >= 0 && limit in 1..100) { "分析任务分页范围无效" }
+        transaction(db) {
+            db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ORDER BY created_at, id LIMIT ? OFFSET ?", arrayOf(limit.toString(), offset.toString())).use { cursor ->
+                buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
+            }
+        }
+    }
+
+    internal fun saveAnalysisRun(run: StoredAnalysisRun, expectedVersion: Int?): StoredAnalysisRun = access { db ->
+        validateAnalysisRun(run)
+        require(expectedVersion == null || expectedVersion in 1 until Int.MAX_VALUE) { "分析任务预期版本无效" }
+        require(run.version == (expectedVersion?.plus(1) ?: 1)) { "分析任务新版本无效" }
+        transaction(db) {
+            requireAnalysisSource(db, run.source)
+            require(!exists(db, "deleted_analysis_runs", "id = ?", run.id)) { "已删除的分析任务 ID 不可复用" }
+            val current = readAnalysisRun(db, run.id)
+            if (current?.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
+            if (current != null) {
+                require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
+            }
+            db.rawQuery("SELECT COUNT(*), COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE id <> ?", arrayOf(run.id)).use {
+                it.moveToFirst()
+                require(it.getInt(0) < 100 && it.getLong(1) + run.payload.toByteArray(Charsets.UTF_8).size + AnalysisRunCodec.reservedResponseBytes(run) <= 16L * 1024 * 1024) { "分析任务超出本地保存上限" }
+            }
+            if (current == null) insertAnalysisRun(db, run)
+            else db.update("analysis_runs", analysisRunValues(run), "id = ?", arrayOf(run.id))
+            run
+        }
+    }
+
+    /** User-directed removal works for stale or running tasks; its ID can never be reused. */
+    internal fun deleteAnalysisRun(id: String, expectedVersion: Int) = access { db ->
+        validateId(id)
+        require(expectedVersion > 0) { "分析任务预期版本无效" }
+        transaction(db) {
+            val current = readAnalysisRun(db, id)
+            if (current?.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
+            db.delete("analysis_runs", "id = ?", arrayOf(id))
+            insertDeletion(db, "deleted_analysis_runs", Deletion(id, expectedVersion, clock.instant()))
+        }
+    }
+
     /** Copies only attachments referenced by saved revisions, never unsaved editor imports. */
     fun captureSnapshot(attachmentDestination: File): RepositorySnapshot = access { db ->
         requireExternalPath(attachmentDestination)
@@ -327,7 +471,8 @@ class LifeRepository(
                 }
                 val attachments = records.flatMap { it.draft.attachmentIds }.toSortedSet().map { requireNotNull(readAttachment(db, it)) }
                 val snapshot = RepositorySnapshot(UUID.randomUUID().toString(), state.first, state.second, clock.instant(),
-                    records, templates, attachments, deletions(db, "deleted_records"), deletions(db, "deleted_templates"), allChanges(db))
+                    records, templates, attachments, deletions(db, "deleted_records"), deletions(db, "deleted_templates"), allChanges(db),
+                    analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"))
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -350,7 +495,9 @@ class LifeRepository(
         require(!destination.exists() && !Files.isSymbolicLink(destination.toPath())) { "导出目标已经存在" }
         transaction(db) {
             val state = storeState(db)
-            if (snapshot.storeId != state.first || snapshot.generation != state.second) throw StaleSnapshotException("资料已变化，须重新生成导出")
+            if (snapshot.storeId != state.first || snapshot.generation != state.second || snapshot.analysisGeneration != analysisGeneration(db)) {
+                throw StaleSnapshotException("资料或分析已变化，须重新生成导出")
+            }
             Files.move(stagedFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
         }
     }
@@ -361,16 +508,19 @@ class LifeRepository(
         attachmentSource: File,
         expectedGeneration: Long,
         replaceExisting: Boolean = false,
+        expectedAnalysisGeneration: Long? = null,
     ): RestoreResult = access { db ->
         SnapshotValidation.validate(snapshot)
         requireExternalPath(attachmentSource)
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1"))) {
-            throw IllegalStateException("目标已有记录或模板，须明确允许替换后恢复")
+        if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1"))) {
+            throw IllegalStateException("目标已有记录、模板或分析，须明确允许替换后恢复")
         }
         val mergedRecords = mergeDeletions(deletions(db, "deleted_records"), snapshot.deletedRecords)
         val mergedTemplates = mergeDeletions(deletions(db, "deleted_templates"), snapshot.deletedTemplates)
+        val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns)
         val recordDeletionsById = mergedRecords.associateBy { it.id }
         val templateDeletionsById = mergedTemplates.associateBy { it.id }
         val recordTombstones = recordDeletionsById.keys
@@ -382,6 +532,14 @@ class LifeRepository(
         }
         val requiredAttachmentIds = records.flatMap { it.draft.attachmentIds }.toSet()
         val attachments = snapshot.attachments.filter { it.id in requiredAttachmentIds }
+        // A historical analysis may copy text from any source. Additional local deletions suppress
+        // all imported analyses until a dependency-specific deletion index is available.
+        val importedRecordDeletions = snapshot.deletedRecords.associateBy { it.id }
+        val importedTemplateDeletions = snapshot.deletedTemplates.associateBy { it.id }
+        val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
+            mergedTemplates.any { importedTemplateDeletions[it.id] != it }
+        val deletedAnalysisIds = mergedAnalyses.map { it.id }.toSet()
+        val analyses = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
         val createdFiles = mutableListOf<File>()
         var committed = false
         try {
@@ -399,6 +557,7 @@ class LifeRepository(
             }
             val result = transaction(db) {
                 if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
+                if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
                 val oldAttachmentIds = strings(db, "SELECT id FROM attachments").toSet()
                 db.delete("records", null, null)
                 db.delete("templates", null, null)
@@ -406,6 +565,8 @@ class LifeRepository(
                 db.delete("change_events", null, null)
                 db.delete("deleted_records", null, null)
                 db.delete("deleted_templates", null, null)
+                db.delete("analysis_runs", null, null)
+                db.delete("deleted_analysis_runs", null, null)
                 // Some queued files may be deliberately restored from a later valid snapshot.
                 attachments.forEach { db.delete("attachment_garbage", "id = ?", arrayOf(it.id)) }
                 (oldAttachmentIds - requiredAttachmentIds).forEach { id ->
@@ -450,8 +611,12 @@ class LifeRepository(
                     .forEach { event(db, it.id, it.lastRevision + 1, "RECORD_DELETED", it.deletedAt) }
                 mergedTemplates.filterNot { it.id in retainedTemplateDeletions }
                     .forEach { event(db, it.id, it.lastRevision, "TEMPLATE_DELETED", it.deletedAt) }
+                // Keep imported source stamps unchanged: restored results are historical until a
+                // fresh run validates against this store, even when restoring on the same device.
+                analyses.forEach { insertAnalysisRun(db, it) }
+                mergedAnalyses.forEach { insertDeletion(db, "deleted_analysis_runs", it) }
                 // Even an empty→empty restore invalidates a previously captured publication token.
-                db.execSQL("UPDATE store_state SET generation = generation + 1 WHERE singleton = 1")
+                db.execSQL("UPDATE store_state SET generation = generation + 1, analysis_generation = analysis_generation + 1 WHERE singleton = 1")
                 RestoreResult(records.map { it.id }.distinct().size, records.size, templates.map { it.id }.distinct().size,
                     attachments.size, snapshot.records.map { it.id }.distinct().count { it in recordTombstones }, storeState(db).second)
             }
@@ -552,6 +717,105 @@ class LifeRepository(
         if (cursor.moveToFirst()) Attachment(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getLong(3), cursor.getString(4)) else null
     }
 
+    private fun validateAnalysisQuery(query: AnalysisQuery) {
+        require(query.from.year in 1..9999 && query.through.year in 1..9999 && query.from <= query.through) { "分析日期范围无效" }
+        ZoneId.of(query.zoneId)
+        query.recordIds?.let { ids ->
+            require(ids.size in 1..100) { "精确记录范围须包含 1 至 100 个 ID" }
+            ids.forEach(::validateId)
+        }
+    }
+
+    private fun analysisScope(query: AnalysisQuery): Pair<String, List<String>> {
+        val where = mutableListOf("r.revision = h.current_revision", "(r.start_date IS NULL OR (r.end_date >= ? AND r.start_date <= ?))")
+        val args = mutableListOf(query.from.toString(), query.through.toString())
+        if (!query.includeArchived) where += "r.archived = 0"
+        query.recordIds?.let { ids ->
+            where += "h.id IN (${ids.joinToString(",") { "?" }})"
+            args += ids.sorted()
+        }
+        return where.joinToString(" AND ") to args
+    }
+
+    private fun requireAnalysisSource(db: SQLiteDatabase, source: SourceStamp) {
+        val state = storeState(db)
+        if (source.storeId != state.first || source.generation != state.second) {
+            throw StaleSnapshotException("分析来源已变化，须重新建立任务")
+        }
+    }
+
+    private fun scopedRevision(db: SQLiteDatabase, query: AnalysisQuery, id: String): Int {
+        val (where, args) = analysisScope(query)
+        return db.rawQuery("SELECT r.revision FROM records h JOIN record_revisions r ON r.record_id = h.id WHERE $where AND h.id = ?", (args + id).toTypedArray()).use {
+            require(it.moveToFirst()) { "记录不存在或不在分析范围内" }
+            it.getInt(0)
+        }
+    }
+
+    private fun sourceDescriptor(db: SQLiteDatabase, cursor: Cursor, query: AnalysisQuery): SourceDescriptor {
+        val id = cursor.getString(0)
+        val revision = cursor.getInt(1)
+        val start = if (cursor.isNull(2)) null else LocalDate.parse(cursor.getString(2))
+        val end = if (cursor.isNull(3)) null else LocalDate.parse(cursor.getString(3))
+        val topics = strings(db, "SELECT topic FROM record_topics WHERE record_id = ? AND revision = ? ORDER BY topic", id, revision.toString()).toSet()
+        val timeClass = when {
+            start == null -> SourceTimeClass.UNKNOWN
+            start < query.from || end!! > query.through -> SourceTimeClass.OVERLAP
+            else -> SourceTimeClass.WITHIN
+        }
+        return SourceDescriptor(id, revision, Occurrence(start, end, cursor.getString(4)), cursor.getInt(5) == 1, topics, timeClass)
+    }
+
+    private fun validateAnalysisRun(run: StoredAnalysisRun) {
+        validateId(run.id)
+        validateId(run.source.storeId)
+        require(run.version > 0 && run.source.generation >= 0 && run.updatedAt >= run.createdAt) { "分析任务版本或时间无效" }
+        require(run.payload.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024) { "单个分析任务超过 2 MiB" }
+        AnalysisRunCodec.validateStored(run)
+    }
+
+    private fun analysisRunValues(run: StoredAnalysisRun) = values(
+        "id" to run.id, "version" to run.version, "source_store_id" to run.source.storeId, "source_generation" to run.source.generation,
+        "created_at" to timestamp(run.createdAt), "updated_at" to timestamp(run.updatedAt), "expires_at" to run.expiresAt?.let(::timestamp), "payload" to run.payload,
+        "reserved_bytes" to AnalysisRunCodec.reservedResponseBytes(run),
+    )
+
+    private fun insertAnalysisRun(db: SQLiteDatabase, run: StoredAnalysisRun) {
+        db.insertOrThrow("analysis_runs", null, analysisRunValues(run))
+    }
+
+    private fun analysisRunFromCursor(db: SQLiteDatabase, cursor: Cursor): StoredAnalysisRun {
+        val id = cursor.string("id")
+        val bytes = cursor.getLong(cursor.getColumnIndexOrThrow("payload_bytes"))
+        require(bytes in 1..2L * 1024 * 1024) { "保存的分析任务超过大小上限" }
+        val points = cursor.int("payload_points")
+        // Android cursor windows have their own byte ceiling. Never select a possible 2 MiB
+        // payload and its metadata into one row; reconstruct it from bounded SQLite slices.
+        val payload = buildString {
+            var offset = 0
+            while (offset < points) {
+                val fragment = db.rawQuery("SELECT substr(payload, ?, ?) FROM analysis_runs WHERE id = ?",
+                    arrayOf((offset + 1).toString(), "131072", id)).use { check(it.moveToFirst()); it.getString(0) }
+                check(fragment.isNotEmpty()) { "分析任务内容不完整" }
+                append(fragment)
+                offset += fragment.codePointCount(0, fragment.length)
+            }
+        }
+        return StoredAnalysisRun(id, cursor.int("version"), SourceStamp(cursor.string("source_store_id"), cursor.getLong(cursor.getColumnIndexOrThrow("source_generation"))),
+            Instant.parse(cursor.string("created_at")), Instant.parse(cursor.string("updated_at")), cursor.nullableString("expires_at")?.let(Instant::parse), payload)
+    }
+
+    private fun readAnalysisRun(db: SQLiteDatabase, id: String): StoredAnalysisRun? =
+        db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs WHERE id = ?", arrayOf(id)).use { if (it.moveToFirst()) analysisRunFromCursor(db, it) else null }
+
+    private fun allAnalysisRuns(db: SQLiteDatabase): List<StoredAnalysisRun> =
+        db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ORDER BY created_at, id", null).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
+        }
+
+    private fun analysisGeneration(db: SQLiteDatabase): Long =
+        db.rawQuery("SELECT analysis_generation FROM store_state WHERE singleton = 1", null).use { check(it.moveToFirst()); it.getLong(0) }
+
     private fun storeState(db: SQLiteDatabase): Pair<String, Long> = db.rawQuery("SELECT store_id, generation FROM store_state WHERE singleton = 1", null).use {
         check(it.moveToFirst()) { "主存身份缺失" }
         it.getString(0) to it.getLong(1)
@@ -560,7 +824,8 @@ class LifeRepository(
     /** Check row and byte budgets in SQLite before constructing a complete in-memory snapshot. */
     private fun ensureCaptureBounds(db: SQLiteDatabase) {
         val rowLimits = mapOf("record_revisions" to 100_000, "template_versions" to 10_000,
-            "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000)
+            "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to 100,
+            "deleted_analysis_runs" to 100_000)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }
@@ -573,6 +838,8 @@ class LifeRepository(
             "template_questions" to listOf("template_id", "question_id", "prompt", "hint", "intent"),
             "deleted_records" to listOf("id"), "deleted_templates" to listOf("id"),
             "change_events" to listOf("entity_id", "kind"),
+            "analysis_runs" to listOf("id", "source_store_id", "payload"),
+            "deleted_analysis_runs" to listOf("id"),
         )
         var textBytes = 0L
         textColumns.forEach { (table, columns) ->
@@ -711,6 +978,7 @@ class LifeRepository(
     }
 
     companion object {
+        private const val ANALYSIS_METADATA_COLUMNS = "id, version, source_store_id, source_generation, created_at, updated_at, expires_at, length(CAST(payload AS BLOB)) AS payload_bytes, length(payload) AS payload_points"
         const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
         private val locks = ConcurrentHashMap<String, Any>()
         private val instantFormat = DateTimeFormatterBuilder().appendInstant(9).toFormatter()

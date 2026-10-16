@@ -1,5 +1,14 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.analysis.AnalysisCall
+import dev.tracelife.analysis.AnalysisRequest
+import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.AnalysisRunState
+import dev.tracelife.analysis.BatchProposal
+import dev.tracelife.analysis.CallStatus
+import dev.tracelife.analysis.ClaimKind
+import dev.tracelife.analysis.EvidenceReceipt
+import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.ChangeEvent
@@ -10,6 +19,9 @@ import dev.tracelife.model.TemplateDraft
 import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
+import dev.tracelife.storage.SourceStamp
+import dev.tracelife.storage.StoredAnalysisRun
+import dev.tracelife.storage.AnalysisQuery
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -201,11 +213,119 @@ class BackupArchiveTest {
         listOf(
             metadata.replace("\"generation\":41", "\"generation\":41,\"generation\":42"),
             metadata.replace("\"generation\":41", "\"generation\":\"41\""),
-            metadata.replace("\"formatVersion\":1", "\"formatVersion\":999"),
-            metadata.replace("\"sourceSchemaVersion\":2", "\"sourceSchemaVersion\":999"),
+            metadata.replace("\"formatVersion\":2", "\"formatVersion\":999"),
+            metadata.replace("\"sourceSchemaVersion\":3", "\"sourceSchemaVersion\":999"),
             metadata.dropLast(1) + ",\"unknown\":true}",
             metadata + "{}",
         ).forEach { invalid -> assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(invalid.byteInputStream()) } }
+    }
+
+    @Test fun `version one backup remains readable and cannot smuggle analysis fields`() {
+        val current = fixture()
+        val legacy = JSONObject(metadata(current).toString(Charsets.UTF_8)).apply {
+            put("formatVersion", 1); put("sourceSchemaVersion", 2)
+            remove("analysisRuns"); remove("analysisGeneration"); remove("deletedAnalysisRuns")
+        }
+        val bytes = legacy.toString().toByteArray()
+        val expected = current.copy(sourceSchemaVersion = 2)
+        assertEquals(expected, SnapshotJsonCodec.read(bytes.inputStream()))
+        assertEquals(expected, BackupArchive.read(seal(zip(current, metadataOverride = bytes)), File(root, "legacy-restored"), password))
+        legacy.put("analysisRuns", JSONArray())
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(legacy.toString().byteInputStream()) }
+        val incompatible = JSONObject(metadata(current).toString(Charsets.UTF_8)).put("sourceSchemaVersion", 2)
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(incompatible.toString().byteInputStream()) }
+        val incomplete = JSONObject(metadata(current).toString(Charsets.UTF_8)).apply { remove("analysisGeneration") }
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(incomplete.toString().byteInputStream()) }
+    }
+
+    @Test fun `analysis payload count and UTF8 budgets apply before unbounded read or write`() {
+        val base = fixture()
+        val row = StoredAnalysisRun("synthetic-analysis", 1, SourceStamp(base.storeId, base.generation), time, time, null, "合".repeat(750_000))
+        val output = ByteArrayOutputStream()
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.write(base.copy(analysisRuns = listOf(row)), output) }
+        assertEquals(0, output.size())
+        val validSized = row.copy(payload = "x".repeat(1_048_577))
+        val snapshot = base.copy(analysisRuns = listOf(validSized), analysisGeneration = 17)
+        assertEquals(snapshot, SnapshotJsonCodec.read(metadata(snapshot).inputStream()))
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.write(base.copy(analysisRuns = List(101) { validSized.copy(payload = "{}") }), output) }
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.write(base.copy(analysisRuns = List(16) { validSized }), output) }
+        val malformed = JSONObject(metadata(snapshot).toString(Charsets.UTF_8))
+        malformed.getJSONArray("analysisRuns").getJSONObject(0).put("payload", row.payload)
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(malformed.toString().byteInputStream()) }
+    }
+
+    @Test fun `encrypted backups retain proposals and exact historical call evidence`() {
+        val base = fixture()
+        val snapshot = base.copy(analysisRuns = listOf(analysisRun(base)), analysisGeneration = 3)
+        val archive = File(root, "with-analysis.tlb")
+        BackupArchive.write(snapshot, attachments, archive, password)
+        val restored = BackupArchive.read(archive, File(root, "restored-analysis"), password)
+        assertEquals(snapshot, restored)
+        val state = AnalysisRunCodec.decode(restored.analysisRuns.single().payload)
+        assertEquals(1, state.calls.single().evidence.single().revision)
+        assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, state.calls.single().proposal!!.claims.single().kind)
+        assertFalse(archive.readBytes().toString(Charsets.ISO_8859_1).contains("synthetic-provider"))
+    }
+
+    @Test fun `explicit task deletion tombstones survive encryption and cannot coexist with restored task`() {
+        val base = fixture()
+        val tombstone = Deletion("synthetic-deleted-task", 4, time.plusSeconds(1))
+        val snapshot = base.copy(deletedAnalysisRuns = listOf(tombstone), analysisGeneration = 5)
+        val archive = File(root, "deleted-task.tlb")
+        BackupArchive.write(snapshot, attachments, archive, password)
+        assertEquals(snapshot, BackupArchive.read(archive, File(root, "deleted-task-restored"), password))
+        val conflicting = snapshot.copy(analysisRuns = listOf(analysisRun(base).copy(id = tombstone.id)))
+        val duplicate = snapshot.copy(deletedAnalysisRuns = listOf(tombstone, tombstone))
+        listOf(conflicting, duplicate).forEach { invalid ->
+            assertThrows(InvalidBackupException::class.java) {
+                BackupArchive.write(invalid, attachments, File(root, "invalid-task-delete-${sequence++}.tlb"), password)
+            }
+            rejects(seal(zip(invalid)))
+        }
+        val output = ByteArrayOutputStream()
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.write(base.copy(deletedAnalysisRuns = List(100_001) { tombstone }), output) }
+        assertEquals(0, output.size())
+        val incomplete = JSONObject(metadata(snapshot).toString(Charsets.UTF_8)).apply { remove("deletedAnalysisRuns") }
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(incomplete.toString().byteInputStream()) }
+    }
+
+    @Test fun `backup refuses pending calls whose reserved results would exceed total task storage`() {
+        val base = fixture()
+        val row = analysisRun(base)
+        val state = AnalysisRunCodec.decode(row.payload)
+        val originalCall = state.calls.single()
+        val proposal = BatchProposal(List(8) { ProposedClaim("synthetic ".repeat(190),
+            listOf(originalCall.evidence.single().id), ClaimKind.POSSIBLE_INTERPRETATION) })
+        val calls = List(10) { originalCall.copy(batchKey = "synthetic-large-$it", proposal = proposal) } +
+            originalCall.copy(batchKey = "synthetic-pending", status = CallStatus.IN_FLIGHT, finishedAt = null, proposal = null)
+        val payload = AnalysisRunCodec.encode(state.copy(request = state.request.copy(
+            limits = state.request.limits.copy(maxOutputBytes = 65_536)), calls = calls))
+        val bytes = payload.toByteArray(Charsets.UTF_8).size
+        val count = minOf(100, (16L * 1024 * 1024 / bytes).toInt())
+        val rows = List(count) { row.copy(id = "synthetic-capacity-$it", payload = payload) }
+        assertTrue(count * bytes.toLong() <= 16L * 1024 * 1024)
+        assertTrue(count * (bytes.toLong() + AnalysisRunCodec.reservedResponseBytes(rows.first())) > 16L * 1024 * 1024)
+        val destination = File(root, "overbooked-analysis.tlb")
+        assertThrows(InvalidBackupException::class.java) {
+            BackupArchive.write(base.copy(analysisRuns = rows), attachments, destination, password)
+        }
+        assertFalse(destination.exists())
+    }
+
+    @Test fun `invalid analysis structures and deleted or mismatched evidence reject the complete backup`() {
+        val base = fixture()
+        val row = analysisRun(base)
+        val malformed = base.copy(analysisRuns = listOf(row.copy(payload = "{\"formatVersion\":1,\"request\":false,\"calls\":[]}")))
+        val mismatched = base.copy(analysisRuns = listOf(analysisRun(base, incorrectHash = true)))
+        val deleted = base.copy(records = base.records.filterNot { it.id == "record-one" }, attachments = emptyList(),
+            deletedRecords = base.deletedRecords + Deletion("record-one", 2, time.plusSeconds(2)), changes = emptyList(), analysisRuns = listOf(row))
+        val duplicates = base.copy(analysisRuns = listOf(row, row))
+        listOf(malformed, mismatched, deleted, duplicates).forEach { invalid ->
+            val destination = File(root, "rejected-analysis-${sequence++}.tlb")
+            assertThrows(InvalidBackupException::class.java) { BackupArchive.write(invalid, attachments, destination, password) }
+            assertFalse(destination.exists())
+            rejects(seal(zip(invalid)))
+        }
     }
 
     @Test fun `logical event history beyond one hundred thousand entries remains readable`() {
@@ -252,9 +372,26 @@ class BackupArchiveTest {
         )
     }
 
+    private fun analysisRun(snapshot: RepositorySnapshot, incorrectHash: Boolean = false): StoredAnalysisRun {
+        val record = snapshot.records.first()
+        val text = record.draft.body
+        val end = text.codePointCount(0, text.length)
+        val hash = AnalysisRunCodec.sha256(if (incorrectHash) "合成不存在的文字" else text)
+        val receipt = EvidenceReceipt(AnalysisRunCodec.evidenceId(record.id, record.revision, "body", 0, end, hash),
+            record.id, record.revision, "body", 0, end, end, hash)
+        val expiry = time.plusSeconds(3_600)
+        val request = AnalysisRequest("合成问题：本月记录有哪些可能的线索？",
+            AnalysisQuery(LocalDate.parse("2026-10-01"), LocalDate.parse("2026-10-31"), "Asia/Shanghai"), expiresAt = expiry)
+        val call = AnalysisCall("synthetic-batch", 1, "synthetic-provider", "0".repeat(64), 1_000, 300,
+            listOf(receipt), time, CallStatus.SUCCEEDED, time.plusSeconds(1), proposal = BatchProposal(listOf(
+                ProposedClaim("合成提案：此判断仍须核验", listOf(receipt.id), ClaimKind.POSSIBLE_INTERPRETATION))))
+        return StoredAnalysisRun("synthetic-analysis", 2, SourceStamp(snapshot.storeId, snapshot.generation), time,
+            time.plusSeconds(2), expiry, AnalysisRunCodec.encode(AnalysisRunState(request, listOf(call))))
+    }
+
     private fun metadata(snapshot: RepositorySnapshot): ByteArray = ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toByteArray()
-    private fun zip(snapshot: RepositorySnapshot, extra: Pair<String, ByteArray>? = null, alterManifest: (JSONObject) -> Unit = {}): ByteArray {
-        val files = linkedMapOf("snapshot.json" to metadata(snapshot))
+    private fun zip(snapshot: RepositorySnapshot, extra: Pair<String, ByteArray>? = null, metadataOverride: ByteArray? = null, alterManifest: (JSONObject) -> Unit = {}): ByteArray {
+        val files = linkedMapOf("snapshot.json" to (metadataOverride ?: metadata(snapshot)))
         snapshot.attachments.forEach { files["attachments/${it.id}.blob"] = File(attachments, "${it.id}.blob").readBytes() }
         val manifest = JSONObject().put("formatVersion", 1).put("snapshotId", snapshot.snapshotId).put("entries", JSONArray().apply {
             files.forEach { (path, bytes) -> put(JSONObject().put("path", path).put("size", bytes.size).put("sha256", hash(bytes))) }

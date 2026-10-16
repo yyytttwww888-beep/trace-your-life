@@ -1,6 +1,9 @@
 package dev.tracelife.transfer
 
 import android.content.Context
+import dev.tracelife.analysis.AnalysisRequest
+import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.Occurrence
 import dev.tracelife.model.RecordDraft
@@ -8,6 +11,9 @@ import dev.tracelife.model.TemplateDraft
 import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.storage.LifeRepository
+import dev.tracelife.storage.AnalysisQuery
+import dev.tracelife.storage.SourceStamp
+import dev.tracelife.storage.StoredAnalysisRun
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -19,6 +25,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.SQLiteMode
 import java.io.File
 import java.time.LocalDate
+import java.time.Instant
 import java.util.UUID
 import java.util.zip.ZipFile
 
@@ -124,6 +131,44 @@ class DataTransferTest {
         }
     }
 
+    @Test fun `analysis only progress invalidates restore preview and encrypted backup keeps historical task identity`() {
+        val saved = saveAnalysis(source, "synthetic-source-task")
+        val file = File(directory, "analysis.tlb")
+        DataTransfer(context, source).exportBackup(file, password)
+        val transfer = DataTransfer(context, target)
+        val preview = transfer.previewBackup(file, password)
+        assertEquals(1, preview.analysisRuns)
+        val local = saveAnalysis(target, "synthetic-local-task")
+        assertEquals(preview.targetGeneration, target.currentGeneration())
+        assertThrows(StaleSnapshotException::class.java) { transfer.restoreBackup(file, password, preview, true) }
+        assertEquals(local, target.analysisRun(local.id))
+        val fresh = transfer.previewBackup(file, password)
+        assertTrue(fresh.targetHasData)
+        assertThrows(IllegalStateException::class.java) { transfer.restoreBackup(file, password, fresh) }
+        transfer.restoreBackup(file, password, fresh, replaceExisting = true)
+        assertEquals(saved, target.analysisRun(saved.id))
+        assertNull(target.analysisRun(local.id))
+        assertNotEquals(saved.source.storeId, target.currentStoreId())
+        assertCleanStaging()
+    }
+
+    @Test fun `known target deletion suppresses historical analysis during older backup recovery`() {
+        val record = source.createRecord(RecordDraft("合成资料：后来删除"), "synthetic-deleted-source")
+        saveAnalysis(source, "synthetic-task-before-deletion")
+        val file = File(directory, "before-deletion.tlb")
+        DataTransfer(context, source).exportBackup(file, password)
+        val transfer = DataTransfer(context, target)
+        transfer.restoreBackup(file, password, transfer.previewBackup(file, password))
+        assertEquals(1, target.analysisRuns(0, 100).size)
+        target.deleteRecord(record.id, record.revision)
+        val preview = transfer.previewBackup(file, password)
+        assertEquals(1, preview.analysisRuns)
+        transfer.restoreBackup(file, password, preview, replaceExisting = true)
+        assertNull(target.record(record.id))
+        assertTrue(target.analysisRuns(0, 100).isEmpty())
+        assertCleanStaging()
+    }
+
     @Test fun `existing destinations and wrong passwords preserve data and clean temporary files`() {
         val transfer = DataTransfer(context, source)
         val occupied = File(directory, "existing.tlb").apply { writeText("synthetic existing bytes") }
@@ -175,5 +220,14 @@ class DataTransferTest {
 
     private fun assertCleanStaging() {
         assertTrue(File(context.noBackupFilesDir, "transfer-staging").listFiles().orEmpty().isEmpty())
+    }
+
+    private fun saveAnalysis(repository: LifeRepository, id: String): StoredAnalysisRun {
+        val time = Instant.parse("2026-10-16T03:04:05Z")
+        val state = AnalysisRunState(AnalysisRequest("合成问题：期间内有哪些学习线索？",
+            AnalysisQuery(LocalDate.parse("2026-10-01"), LocalDate.parse("2026-10-31"), "Asia/Shanghai")))
+        return repository.saveAnalysisRun(StoredAnalysisRun(id, 1,
+            SourceStamp(repository.currentStoreId(), repository.currentGeneration()), time, time, null,
+            AnalysisRunCodec.encode(state)), expectedVersion = null)
     }
 }

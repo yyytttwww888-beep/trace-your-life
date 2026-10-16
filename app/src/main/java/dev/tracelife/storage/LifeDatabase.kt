@@ -5,8 +5,8 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
-/** Versioned source data. Derived search indexes and AI state are added by later migrations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 2) {
+/** Source writes and saved analysis progress have separate generations. */
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 3) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -16,11 +16,29 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
     override fun onCreate(db: SQLiteDatabase) {
         statements.forEach(db::execSQL)
         upgradeToVersionTwo(db)
+        upgradeToVersionThree(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion == 1 && newVersion == 2) { "缺少数据库迁移：$oldVersion → $newVersion" }
-        upgradeToVersionTwo(db)
+        require(oldVersion in 1..2 && newVersion == 3) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        if (oldVersion < 2) upgradeToVersionTwo(db)
+        upgradeToVersionThree(db)
+    }
+
+    private fun upgradeToVersionThree(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE store_state ADD COLUMN analysis_generation INTEGER NOT NULL DEFAULT 0 CHECK(analysis_generation >= 0)")
+        db.execSQL("""CREATE TABLE analysis_runs (
+            id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0),
+            source_store_id TEXT NOT NULL, source_generation INTEGER NOT NULL CHECK(source_generation >= 0),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT, payload TEXT NOT NULL,
+            reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reserved_bytes >= 0))""")
+        db.execSQL("CREATE TABLE deleted_analysis_runs (id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL, deleted_at TEXT NOT NULL)")
+        listOf("analysis_runs", "deleted_analysis_runs").forEach { table ->
+            listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+                db.execSQL("""CREATE TRIGGER analysis_generation_${table}_${operation.lowercase()} AFTER $operation ON $table
+                    BEGIN UPDATE store_state SET analysis_generation = analysis_generation + 1 WHERE singleton = 1; END""")
+            }
+        }
     }
 
     private fun upgradeToVersionTwo(db: SQLiteDatabase) {
