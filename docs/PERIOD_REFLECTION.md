@@ -40,7 +40,7 @@ val knowledge = app.periodReports.knowledge(report, limit = 25)
 val sources = app.periodReports.records(report, limit = 25)
 ```
 
-报告只组织已有材料，`synthesisStatus=NOT_GENERATED`。当前没有新生成的“本周为什么没有成长”“未来几周应关注什么”等综合判断，也不推断行动已执行。按模板问题的稳定 `intent` 分组，原问题、提示、意图与历史模板版本全部保留；分组不代表不同模板的语义完全相同。
+本报告接口只组织已有材料，`synthesisStatus=NOT_GENERATED`，不新生成“本周为什么没有成长”“未来几周应关注什么”等综合判断，也不推断行动已执行。另有[有界综合与行动实验接口](SYNTHESIS_ACTIONS.md)生成原文对照提案、保存用户选择及回看；它与此材料视图分别调用。材料按模板问题的稳定 `intent` 分组，原问题、提示、意图与历史模板版本全部保留；分组不代表不同模板的语义完全相同。
 
 | 分组 | 原问题意图 |
 | --- | --- |

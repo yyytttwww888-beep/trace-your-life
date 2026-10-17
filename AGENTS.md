@@ -15,6 +15,8 @@
 | 修改受控分析执行、任务台账或模型适配器 | [受控分析接口](docs/CONTROLLED_ANALYSIS.md)、[M3 第一阶段计划](docs/plans/2026-10-16-controlled-analysis.md) |
 | 语义核对、用户确认／纠正／否定、反馈删除或恢复 | [核对与反馈接口](docs/CLAIM_REVIEW.md)、[第三阶段计划](docs/plans/2026-10-17-evidence-review-and-feedback.md)；持久化变更同时读数据转移接口 |
 | 正式知识发布、知识索引或记录覆盖指标 | [知识与指标接口](docs/KNOWLEDGE.md)、[第四阶段计划](docs/plans/2026-10-17-knowledge-publication.md)；持久化和导出同时读数据转移接口 |
+| 自动整理、周期材料或报告导出 | [周期材料接口](docs/PERIOD_REFLECTION.md)、[第五阶段计划](docs/plans/2026-10-17-period-reflection.md) |
+| 综合判断、行动采纳、回看或行动修订 | [综合与行动接口](docs/SYNTHESIS_ACTIONS.md)、[第六阶段计划](docs/plans/2026-10-17-synthesis-actions.md)；持久化与恢复同时读数据转移接口 |
 | DeepSeek、密钥、网络或自动分批处理 | [DeepSeek 接入](docs/DEEPSEEK.md)、[第二阶段计划](docs/plans/2026-10-17-deepseek-analysis.md)；接口事实变更时核验[官方研究](docs/research/2026-10-17-deepseek-integration.md) |
 | 画像维度、更新、用户反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)；涉及生成和维护时同时读检索协议 |
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |

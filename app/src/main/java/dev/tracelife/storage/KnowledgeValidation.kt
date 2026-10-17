@@ -31,8 +31,8 @@ object KnowledgeValidation {
         AnalysisRunCodec.validateStored(run)
         val state = AnalysisRunCodec.decode(run.payload)
         val extraction = requireNotNull(state.calls.singleOrNull {
-            it.batchKey == claimRef.batchKey && it.purpose == CallPurpose.EXTRACTION && it.status == CallStatus.SUCCEEDED
-        }) { "知识条目缺少成功提取" }
+            it.batchKey == claimRef.batchKey && it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED
+        }) { "知识条目缺少已成功生成的提案" }
         val claim = requireNotNull(extraction.proposal?.claims?.getOrNull(claimRef.claimIndex)) { "知识目标不存在" }
         require(AnalysisRunCodec.claimSha256(claim) == claimRef.claimSha256) { "知识目标已变化" }
         val call = requireNotNull(state.calls.singleOrNull {

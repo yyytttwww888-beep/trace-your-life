@@ -31,9 +31,11 @@ android {
             // Opt-in synthetic live test. Only a file PATH crosses Gradle; keys never enter build config/APK.
             val smokeEnabled = providers.gradleProperty("traceLifeDeepSeekSmoke").orNull == "true"
             val reviewEnabled = providers.gradleProperty("traceLifeDeepSeekReview").orNull == "true"
-            if (smokeEnabled || reviewEnabled) {
+            val synthesisEnabled = providers.gradleProperty("traceLifeDeepSeekSynthesis").orNull == "true"
+            if (smokeEnabled || reviewEnabled || synthesisEnabled) {
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
+                if (synthesisEnabled) it.systemProperty("traceLife.deepSeekSynthesis", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
             }

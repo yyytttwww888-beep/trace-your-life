@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 5) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 6) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -19,14 +19,35 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionThree(db)
         upgradeToVersionFour(db)
         upgradeToVersionFive(db)
+        upgradeToVersionSix(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..4 && newVersion == 5) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..5 && newVersion == 6) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
-        upgradeToVersionFive(db)
+        if (oldVersion < 5) upgradeToVersionFive(db)
+        upgradeToVersionSix(db)
+    }
+
+    private fun upgradeToVersionSix(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE action_revisions (
+            id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), operation_id TEXT,
+            payload TEXT NOT NULL, encoded_bytes INTEGER NOT NULL CHECK(encoded_bytes > 0),
+            PRIMARY KEY(id, revision), UNIQUE(id, operation_id))""")
+        db.execSQL("""CREATE TABLE action_heads (
+            id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0),
+            status TEXT NOT NULL, review_on TEXT NOT NULL, zone_id TEXT NOT NULL,
+            FOREIGN KEY(id, revision) REFERENCES action_revisions(id, revision))""")
+        db.execSQL("CREATE INDEX action_due_lookup ON action_heads(status, review_on, id)")
+        db.execSQL("CREATE TABLE deleted_actions (id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL, deleted_at TEXT NOT NULL)")
+        listOf("action_revisions", "action_heads", "deleted_actions").forEach { table ->
+            listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+                db.execSQL("""CREATE TRIGGER analysis_generation_${table}_${operation.lowercase()} AFTER $operation ON $table
+                    BEGIN UPDATE store_state SET analysis_generation = analysis_generation + 1 WHERE singleton = 1; END""")
+            }
+        }
     }
 
     private fun upgradeToVersionFive(db: SQLiteDatabase) {
