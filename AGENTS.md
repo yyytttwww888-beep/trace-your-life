@@ -13,6 +13,7 @@
 | 功能范围、记录、复盘、模板、看板、存储或导出 | [主设计](docs/superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md) 的相关章节 |
 | AI 调用、检索、摘要、批处理、纠错、删除、任务发布 | [检索与可靠性协议](docs/superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md) |
 | 修改受控分析执行、任务台账或模型适配器 | [受控分析接口](docs/CONTROLLED_ANALYSIS.md)、[M3 第一阶段计划](docs/plans/2026-10-16-controlled-analysis.md) |
+| DeepSeek、密钥、网络或自动分批处理 | [DeepSeek 接入](docs/DEEPSEEK.md)、[第二阶段计划](docs/plans/2026-10-17-deepseek-analysis.md)；接口事实变更时核验[官方研究](docs/research/2026-10-17-deepseek-integration.md) |
 | 画像维度、更新、用户反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)；涉及生成和维护时同时读检索协议 |
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |
 | 华为接入、饮食依据、复盘方法或画像研究 | 从[研究导航](docs/README.md)读取对应笔记，再核验会变化的官方资料 |

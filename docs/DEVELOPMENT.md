@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)和 [M3 第一阶段受控分析](plans/2026-10-16-controlled-analysis.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)、[M3 第一阶段受控分析](plans/2026-10-16-controlled-analysis.md)及[第二阶段 DeepSeek 与分批整理](plans/2026-10-17-deepseek-analysis.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -44,10 +44,11 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/templates/` | 内置复盘模板、导入预览及输入限制 |
 | `app/src/main/java/dev/tracelife/transfer/` | 备份加密、预览恢复、阅读包与证据包；用法见[接口文档](DATA_TRANSFER.md) |
 | `app/src/main/java/dev/tracelife/analysis/` | 受控取证、完整请求预算、调用证据台账与待核对提案；用法见[接口文档](CONTROLLED_ANALYSIS.md) |
+| `app/src/main/java/dev/tracelife/providers/` | DeepSeek HTTPS、严格响应解析、凭据加密；配置和显式测试见[接入说明](DEEPSEEK.md) |
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；当前为 v3，可从 v1/v2 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。测试替身只验证流程，生产模型及分词、网络与凭据尚未接入。
+新数据库格式通过明确的版本迁移升级；当前为 v3，可从 v1/v2 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。DeepSeek 已接入接口、保守计量和凭据保存，并通过一次显式合成资料真实测试，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过该项，不读取真实 KEY。
 
 ## 设备验证与阶段边界
 

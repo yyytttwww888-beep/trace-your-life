@@ -18,15 +18,21 @@ object AnalysisRunCodec {
     const val MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
     private val digest = Regex("[0-9a-f]{64}")
 
-    fun encode(state: AnalysisRunState): String {
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 2)
+
+    private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
         val reserved = responseReservation(state)
-        return json(mapOf("formatVersion" to 1, "request" to requestMap(state.request), "calls" to state.calls.map(::callMap)),
+        return json(mapOf("formatVersion" to version, "request" to requestMap(state.request), "calls" to state.calls.map {
+            if (version == 1) callMap(it) - setOf("tokenCountKind", "usage") else callMap(it)
+        }),
             nodeLimit = if (reserved > 0) 59_000 else 60_000)
             .also { require(it.toByteArray(Charsets.UTF_8).size + reserved <= MAX_PAYLOAD_BYTES) { "分析任务及输出预留超过保存上限" } }
     }
 
-    fun decode(payload: String): AnalysisRunState {
+    fun decode(payload: String): AnalysisRunState = decodeEnvelope(payload).first
+
+    private fun decodeEnvelope(payload: String): Pair<AnalysisRunState, Int> {
         require(payload.toByteArray(Charsets.UTF_8).size <= MAX_PAYLOAD_BYTES) { "分析任务超过保存上限" }
         val reader = JsonReader(StringReader(payload)).apply { isLenient = false }
         var nodes = 0
@@ -58,7 +64,8 @@ object AnalysisRunCodec {
             }
         }
         val root = read(0).obj("formatVersion", "request", "calls")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") == 1)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..2)
+        val legacy = root.int("formatVersion") == 1
         val request = root["request"].obj("question", "scope", "limits", "focusTopics", "expiresAt")
         val scope = request["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
         val limits = request["limits"].obj("pageSize", "fragmentCodePoints", "maxInputBytes", "inputTokenLimit", "outputTokenReserve", "maxCalls", "totalInputBytes", "maxOutputBytes")
@@ -72,25 +79,29 @@ object AnalysisRunCodec {
                 limits.long("totalInputBytes"), limits.int("maxOutputBytes")),
                 request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt")),
             root.list("calls").map { raw ->
-                val call = raw.obj("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
+                val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
+                val call = raw.obj(*(if (legacy) fields else fields + arrayOf("tokenCountKind", "usage")))
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
                         val ref = item.obj("id", "recordId", "revision", "field", "start", "end", "totalCodePoints", "sha256")
                         EvidenceReceipt(ref.string("id"), ref.string("recordId"), ref.int("revision"), ref.string("field"),
                             ref.int("start"), ref.int("end"), ref.int("totalCodePoints"), ref.string("sha256"))
                     }, Instant.parse(call.string("startedAt")), CallStatus.valueOf(call.string("status")), call.optionalInstant("finishedAt"),
-                    call["failureCode"]?.let { call.string("failureCode") }, call["proposal"]?.let(::parseProposal))
+                    call["failureCode"]?.let { call.string("failureCode") }, call["proposal"]?.let(::parseProposal),
+                    if (legacy) TokenCountKind.EXACT else TokenCountKind.valueOf(call.string("tokenCountKind")),
+                    call["usage"]?.let { value -> value.obj("promptTokens", "completionTokens").let { ModelUsage(it.int("promptTokens"), it.int("completionTokens")) } })
             },
         )
         validate(state)
-        return state
+        return state to root.int("formatVersion")
     }
 
     fun validateStored(run: StoredAnalysisRun, records: List<RecordRevision>? = null) {
         validId(run.id); validId(run.source.storeId)
         require(run.version > 0 && run.source.generation >= 0 && run.updatedAt >= run.createdAt)
-        val state = decode(run.payload)
-        encode(state) // Read and write use the same structural and reserved-capacity limits.
+        val (state, format) = decodeEnvelope(run.payload)
+        // Preserve valid near-limit historical v1 payloads without forcing an expanded v2 rewrite.
+        encodeVersion(state, format)
         require(run.payload.toByteArray(Charsets.UTF_8).size + responseReservation(state) <= MAX_PAYLOAD_BYTES) { "分析任务及输出预留超过保存上限" }
         require(run.expiresAt == state.request.expiresAt)
         require(run.expiresAt == null || run.expiresAt > run.createdAt)
@@ -144,6 +155,7 @@ object AnalysisRunCodec {
         state.calls.forEach { call ->
             validId(call.batchKey); validId(call.providerId)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
+            call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
             require(call.evidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
             call.evidence.forEach { ref ->
                 validId(ref.recordId)
@@ -158,7 +170,7 @@ object AnalysisRunCodec {
             } else {
                 require(call.proposal == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)
-                else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED"))
+                else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED") + ProviderFailureCode.entries.map { "PROVIDER_${it.name}" })
             }
         }
     }
@@ -200,7 +212,8 @@ object AnalysisRunCodec {
     private fun callMap(call: AnalysisCall) = mapOf("batchKey" to call.batchKey, "attempt" to call.attempt, "providerId" to call.providerId,
         "requestSha256" to call.requestSha256, "inputBytes" to call.inputBytes, "inputTokens" to call.inputTokens,
         "evidence" to call.evidence.map(::receiptMap), "startedAt" to call.startedAt.toString(), "status" to call.status.name,
-        "finishedAt" to call.finishedAt?.toString(), "failureCode" to call.failureCode, "proposal" to call.proposal?.let(::proposalMap))
+        "finishedAt" to call.finishedAt?.toString(), "failureCode" to call.failureCode, "proposal" to call.proposal?.let(::proposalMap),
+        "tokenCountKind" to call.tokenCountKind.name, "usage" to call.usage?.let { mapOf("promptTokens" to it.promptTokens, "completionTokens" to it.completionTokens) })
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map { mapOf("text" to it.text,
         "evidenceIds" to it.evidenceIds, "kind" to it.kind.name) }, "unknowns" to proposal.unknowns)
     private fun parseProposal(raw: Any?): BatchProposal {

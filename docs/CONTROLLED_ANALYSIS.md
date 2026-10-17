@@ -1,6 +1,6 @@
-# 受控分析接口：M3 第一阶段
+# 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存。它没有生产模型适配器，不会自动联网，也没有正式报告、画像发布或语义支持核对。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，实施范围见[M3 计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)，并通过一条合成记录的开发机真实调用测试。它没有正式报告、画像发布或语义支持核对。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 
@@ -20,7 +20,7 @@ val task = analysis.start(request)
 val route = analysis.route(task.stored.id)
 val page = analysis.evidencePage(task.stored.id)
 val fields = analysis.fields(task.stored.id, page.page.items.first().id)
-// 只有配置经过验证的 AnalysisProvider 后，才能调用 runBatch。
+// 配置 DeepSeek KEY 后可调用 runBatch，或由 AnalysisBatchProcessor 自动选择下一批。
 ```
 
 | 接口 | 返回与约束 |
@@ -53,7 +53,7 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 默认每页 25 条，每片段 1,024 码点；每批 1–32 个片段。完整请求包括系统指令、额外指令、历史、范围与计数、模板问题、证据元数据和正文。默认单次输入 64 KiB / 12,000 tokens，输出预留 2,000 tokens；单任务最多 100 次尝试、累计输入 1 MiB，提案输出 32 KiB。具体可配置范围由 `AnalysisLimits` 拒绝越界值，不能省略预算后无限读取。
 
-`AnalysisProvider.countInputTokens` 必须在本地计算实际供应商请求的完整 token 数，计入消息封装；`complete` 必须仅发送该 `ModelRequest`，不得追加隐藏历史、工具或其他资料，并遵守 `maximumOutputTokens`。适配器 `id` 必须固定供应商、模型和封装版本。字节预算不能替代真实分词；本轮的合成测试替身不构成任何真实模型 token 计量保证。生产适配器、凭据和数据处理方案尚未选择与验证。
+`AnalysisProvider.prepare` 生成实际发送的完整请求体及计量，执行器对该请求体计算字节预算和摘要；`completePrepared` 只能发送该请求，不能追加隐藏历史、工具或其他资料，并遵守 `maximumOutputTokens`。适配器 `id` 固定供应商、模型、封装及计量版本。计量明确区分 `EXACT` 和 `CONSERVATIVE_UTF8_BOUND`，后者不是实际 token 用量。DeepSeek 使用有公开 tokenizer 依据的保守上界，响应实际用量另行校验和保存，详见[预算与校验](DEEPSEEK.md)。默认接口保留用于合成测试的直接计量行为。
 
 请求超过任一预算时拒绝派发，调用者应减小批次或留下未处理缺口；不会静默截断或扩展范围。异常文本不保存，防止供应商错误串带入完整敏感请求。输出仅允许有限数量的待核对自述或可能解释，每条都有本次引用；它没有直接修改原记录、统计或当前画像的权限。
 
@@ -71,4 +71,4 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 后续验收
 
-M3 尚需接入真实模型及其计量、实现语义支持核对和人工纠正、确定性指标、自动分批调度与观察/知识提取、带条件切换的正式发布。所有本轮输出均为 `NEEDS_REVIEW` 候选，不能作为已验证周报或长期画像。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
+M3 已通过单样本真实调用及用量校验；仍需评估更多场景的模型质量，并实现语义支持核对和人工纠正、确定性指标、正式观察/知识条目和带条件切换的发布。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。所有模型输出仍为 `NEEDS_REVIEW` 候选，不能作为已验证周报或长期画像。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
