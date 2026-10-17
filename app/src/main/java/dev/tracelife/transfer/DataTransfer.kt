@@ -2,10 +2,15 @@ package dev.tracelife.transfer
 
 import android.content.Context
 import dev.tracelife.model.RecordFilter
+import dev.tracelife.metrics.RecordMetricEvidenceService
+import dev.tracelife.reports.PeriodReport
+import dev.tracelife.reports.PeriodReports
+import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.LifeRepository
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.time.Clock
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -42,7 +47,7 @@ data class RestorePreview(
  * File-based operations are the backend seam. A future document-provider UI must preserve these
  * commit semantics rather than treating an unfinished stream as a completed backup.
  */
-class DataTransfer(context: Context, private val repository: LifeRepository) {
+class DataTransfer(context: Context, private val repository: LifeRepository, private val clock: Clock = Clock.systemUTC()) {
     private val staging = File(context.applicationContext.noBackupFilesDir, "transfer-staging").canonicalFile
     private val databaseDirectory = context.applicationContext.getDatabasePath("placeholder").parentFile!!.canonicalFile
     private val managedAttachments = File(context.applicationContext.filesDir, "attachments").canonicalFile
@@ -56,7 +61,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         val snapshot = repository.captureSnapshot(attachments)
         val archive = File(directory, "backup.tlb")
         val result = BackupArchive.write(snapshot, attachments, archive, password)
-        publish(snapshot, archive, target, directory)
+        publish(archive, target, directory) { adjacent, published -> repository.publishSnapshot(snapshot, adjacent, published) }
         result.copy(bytes = target.length())
     }
 
@@ -69,7 +74,26 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         val snapshot = repository.captureSnapshot(attachments)
         val archive = File(directory, "knowledge.zip")
         val result = KnowledgeArchive.write(snapshot, attachments, archive, options)
-        publish(snapshot, archive, target, directory)
+        publish(archive, target, directory) { adjacent, published -> repository.publishSnapshot(snapshot, adjacent, published) }
+        result.copy(bytes = target.length())
+    }
+
+    /** Derived materials only: no whole-store snapshot, model call, record bodies or attachments. */
+    fun exportPeriodReport(destination: File, scope: AnalysisQuery): ExportResult =
+        exportPeriodReport(destination, PeriodReports(repository, clock).open(scope))
+
+    /** Export exactly the report the caller reviewed; any intervening change requires reopening it. */
+    fun exportPeriodReport(destination: File, report: PeriodReport): ExportResult = workspace { directory ->
+        val target = destinationFor(destination)
+        val reports = PeriodReports(repository, clock)
+        reports.assertCurrent(report)
+        val metricEvidence = RecordMetricEvidenceService(repository, clock).describe(report.metrics)
+        val archive = File(directory, "period-report.zip")
+        val result = PeriodReportArchive.write(reports, report, metricEvidence, archive)
+        reports.assertCurrent(report)
+        publish(archive, target, directory) { adjacent, published ->
+            repository.publishDerivedFile(report.source, report.analysisGeneration, report.validUntil, adjacent, published)
+        }
         result.copy(bytes = target.length())
     }
 
@@ -139,7 +163,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         return target
     }
 
-    private fun publish(snapshot: RepositorySnapshot, archive: File, target: File, directory: File) {
+    private fun publish(archive: File, target: File, directory: File, commit: (File, File) -> Unit) {
         val adjacent = File(target.parentFile, ".trace-life-${directory.name.removePrefix("job-")}.pending")
         check(adjacent.createNewFile()) { "临时导出文件已存在" }
         try {
@@ -150,7 +174,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
                 it.fd.sync()
             }
             copyAndHash(archive, adjacent)
-            repository.publishSnapshot(snapshot, adjacent, target)
+            commit(adjacent, target)
         } finally {
             adjacent.delete()
         }

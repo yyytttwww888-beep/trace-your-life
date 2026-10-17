@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)、[M3 受控分析](plans/2026-10-16-controlled-analysis.md)、[DeepSeek 与分批整理](plans/2026-10-17-deepseek-analysis.md)、[核对与纠正](plans/2026-10-17-evidence-review-and-feedback.md)及[正式知识与记录指标](plans/2026-10-17-knowledge-publication.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)、[M3 受控分析](plans/2026-10-16-controlled-analysis.md)、[DeepSeek 与分批整理](plans/2026-10-17-deepseek-analysis.md)、[核对与纠正](plans/2026-10-17-evidence-review-and-feedback.md)、[正式知识与记录指标](plans/2026-10-17-knowledge-publication.md)及[自动整理与周期材料](plans/2026-10-17-period-reflection.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -46,6 +46,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/analysis/` | 受控取证、完整请求预算、调用证据台账与待核对提案；见[分析接口](CONTROLLED_ANALYSIS.md)和[核对／反馈接口](CLAIM_REVIEW.md) |
 | `app/src/main/java/dev/tracelife/providers/` | DeepSeek HTTPS、严格响应解析、凭据加密；配置和显式测试见[接入说明](DEEPSEEK.md) |
 | `app/src/main/java/dev/tracelife/knowledge/`、`metrics/` | 正式知识发布／分页查阅、严格审核副本编码与确定性记录指标；见[接口](KNOWLEDGE.md) |
+| `app/src/main/java/dev/tracelife/reports/` | 固定快照的周期复盘材料、原模板答案和引用下钻；自动编排与指标证据见[接口](PERIOD_REFLECTION.md) |
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
@@ -57,4 +58,4 @@ Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于�
 
 M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
 
-M3 任务创建、分批执行、核对、反馈、正式知识发布及记录指标同样只有后端接口。自动调度、周期报告、健康指标与画像尚未实现。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。
+M3 任务创建、分批执行、核对、反馈、正式知识发布、自动整理、记录指标及周期材料同样只有后端接口。自动调度、新的 AI 周期综合、健康指标与画像尚未实现。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。当前 `File` 导出需要目标文件系统支持同目录硬链接创建，详情见[发布限制](DATA_TRANSFER.md#一致性与中断)；系统文档 provider 的发布机制仍待接入。

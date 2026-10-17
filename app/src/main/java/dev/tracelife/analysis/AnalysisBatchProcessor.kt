@@ -42,6 +42,9 @@ data class AnalysisProcessingReport(
  * Call off the main thread; cancellation is checked before dispatching the next fragment.
  */
 class AnalysisBatchProcessor(private val analysis: ControlledAnalysis) {
+    /** Read-only processing coverage. This neither dispatches a model nor recovers interrupted work. */
+    fun coverage(runId: String): AnalysisProcessingCoverage = inventory(analysis.task(runId), 0).coverage
+
     fun process(
         runId: String,
         provider: AnalysisProvider,

@@ -372,6 +372,41 @@ class LifeRepository(
         }
     }
 
+    /** Historical template identity only; does not load the record body or answer text. */
+    internal fun analysisSourceTemplate(stamp: SourceStamp, query: AnalysisQuery, id: String): TemplateRef? = access { db ->
+        validateAnalysisQuery(query)
+        validateId(id)
+        transaction(db) {
+            requireAnalysisSource(db, stamp)
+            val revision = scopedRevision(db, query, id)
+            db.rawQuery("SELECT template_id, template_version FROM record_revisions WHERE record_id = ? AND revision = ?",
+                arrayOf(id, revision.toString())).use {
+                check(it.moveToFirst())
+                if (it.isNull(0)) null else TemplateRef(it.getString(0), it.getInt(1))
+            }
+        }
+    }
+
+    /** Questions retain the exact template version used by this current record revision. */
+    internal fun analysisSourceQuestions(stamp: SourceStamp, query: AnalysisQuery, id: String): Map<String, TemplateQuestion> = access { db ->
+        validateAnalysisQuery(query)
+        validateId(id)
+        transaction(db) {
+            requireAnalysisSource(db, stamp)
+            val revision = scopedRevision(db, query, id)
+            db.rawQuery("""SELECT q.question_id, q.prompt, q.hint, q.intent FROM record_revisions r
+                JOIN template_questions q ON q.template_id = r.template_id AND q.version = r.template_version
+                WHERE r.record_id = ? AND r.revision = ? ORDER BY q.ordinal""", arrayOf(id, revision.toString())).use { cursor ->
+                buildMap {
+                    while (cursor.moveToNext()) {
+                        val question = TemplateQuestion(cursor.getString(0), cursor.getString(1), cursor.getString(2), cursor.getString(3))
+                        put("answer:${question.id}", question)
+                    }
+                }
+            }
+        }
+    }
+
     /** Slice in SQLite before returning any source text; offsets count Unicode code points. */
     internal fun analysisSourceFragment(
         stamp: SourceStamp, query: AnalysisQuery, id: String, field: String, start: Int, maxCodePoints: Int,
@@ -617,6 +652,11 @@ class LifeRepository(
         }
     }
 
+    fun knowledgeDeleted(id: String): Boolean = access { db ->
+        validateId(id)
+        exists(db, "deleted_knowledge", "id = ?", id)
+    }
+
     fun deleteKnowledge(id: String, expectedRevision: Int) = access { db ->
         validateId(id)
         require(expectedRevision > 0)
@@ -657,10 +697,18 @@ class LifeRepository(
     }
 
     /**
-     * The caller owns a unique destination name and its adjacent staging file. Same-parent atomic
-     * moves are required; filesystems without atomic rename fail rather than exposing a partial file.
+     * The caller owns the adjacent immutable staging file and removes it after publication. Atomic
+     * link creation never replaces a concurrently created destination. Unsupported filesystems fail
+     * rather than falling back to a replacing rename or exposing a partially copied final file.
      */
-    fun publishSnapshot(snapshot: RepositorySnapshot, stagedFile: File, destination: File) = access { db ->
+    fun publishSnapshot(snapshot: RepositorySnapshot, stagedFile: File, destination: File) = publishDerivedFile(
+        SourceStamp(snapshot.storeId, snapshot.generation), snapshot.analysisGeneration, null, stagedFile, destination,
+    )
+
+    /** A derived export additionally becomes invalid when one of its included results expires. */
+    fun publishDerivedFile(
+        source: SourceStamp, analysisGeneration: Long, validUntil: Instant?, stagedFile: File, destination: File,
+    ) = access { db ->
         requireExternalPath(stagedFile)
         requireExternalPath(destination)
         require(stagedFile.isFile && !Files.isSymbolicLink(stagedFile.toPath())) { "发布暂存文件不存在" }
@@ -668,10 +716,13 @@ class LifeRepository(
         require(!destination.exists() && !Files.isSymbolicLink(destination.toPath())) { "导出目标已经存在" }
         transaction(db) {
             val state = storeState(db)
-            if (snapshot.storeId != state.first || snapshot.generation != state.second || snapshot.analysisGeneration != analysisGeneration(db)) {
+            if (source.storeId != state.first || source.generation != state.second || analysisGeneration != analysisGeneration(db)) {
                 throw StaleSnapshotException("资料或分析已变化，须重新生成导出")
             }
-            Files.move(stagedFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            if (validUntil != null && !clock.instant().isBefore(validUntil)) {
+                throw StaleSnapshotException("报告材料已过期，须重新生成导出")
+            }
+            Files.createLink(destination.toPath(), stagedFile.toPath())
         }
     }
 
