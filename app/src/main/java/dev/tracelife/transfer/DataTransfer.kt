@@ -28,6 +28,7 @@ data class RestorePreview(
     val analysisRuns: Int,
     val targetAnalysisGeneration: Long,
     val claimFeedback: Int,
+    val knowledge: Int,
 )
 
 /**
@@ -81,7 +82,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
         val analysisGeneration = repository.currentAnalysisGeneration()
         val hasData = repository.listRecords(RecordFilter(includeArchived = true, limit = 1)).total > 0 ||
             repository.listTemplates(includeArchived = true).isNotEmpty() || repository.analysisRuns(0, 1).isNotEmpty() ||
-            repository.claimFeedbacks(0, 1).isNotEmpty()
+            repository.claimFeedbacks(0, 1).isNotEmpty() || repository.knowledgeHeads(0, 1).isNotEmpty()
         if (repository.currentGeneration() != generation || repository.currentAnalysisGeneration() != analysisGeneration) {
             throw StaleSnapshotException("资料在预览期间发生变化，请重新预览")
         }
@@ -91,7 +92,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository) {
             snapshot.attachments.size, snapshot.attachments.sumOf { it.sizeBytes },
             snapshot.deletedRecords.size, snapshot.deletedTemplates.size, digest,
             repository.currentStoreId(), generation, hasData,
-            snapshot.analysisRuns.size, analysisGeneration, snapshot.claimFeedback.size,
+            snapshot.analysisRuns.size, analysisGeneration, snapshot.claimFeedback.size, snapshot.knowledgeHeads.size,
         )
     }
 

@@ -1,6 +1,6 @@
 # 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)，以及[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。它没有正式知识、报告或画像发布。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存，报告与画像尚未实现。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 
@@ -72,4 +72,4 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 后续验收
 
-M3 已实现语义核对与独立用户纠正；仍需持续评估模型质量，并实现确定性指标、正式观察/知识条目和带条件切换的发布。核对目前只检查明确提供的原文，自动反例查找、跨任务同义陈述与反馈合并仍待实现。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。所有模型输出仍为 `NEEDS_REVIEW` 候选，不能作为已验证周报或长期画像。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
+M3 已实现语义核对、独立纠正、条件发布和记录覆盖指标；后两者见[知识接口](KNOWLEDGE.md)。核对只检查明确提供的原文，自动反例查找、跨任务同义陈述与反馈合并仍待实现。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。任务输出仍为 `NEEDS_REVIEW` 候选，必须经独立发布检查才能进入正式知识；不是已验证周报或长期画像。健康指标、指标取证、周期报告和自动更新后置。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。

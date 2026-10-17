@@ -213,8 +213,8 @@ class BackupArchiveTest {
         listOf(
             metadata.replace("\"generation\":41", "\"generation\":41,\"generation\":42"),
             metadata.replace("\"generation\":41", "\"generation\":\"41\""),
-            metadata.replace("\"formatVersion\":3", "\"formatVersion\":999"),
-            metadata.replace("\"sourceSchemaVersion\":4", "\"sourceSchemaVersion\":999"),
+            metadata.replace("\"formatVersion\":4", "\"formatVersion\":999"),
+            metadata.replace("\"sourceSchemaVersion\":5", "\"sourceSchemaVersion\":999"),
             metadata.dropLast(1) + ",\"unknown\":true}",
             metadata + "{}",
         ).forEach { invalid -> assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(invalid.byteInputStream()) } }
@@ -226,6 +226,7 @@ class BackupArchiveTest {
             put("formatVersion", 1); put("sourceSchemaVersion", 2)
             remove("analysisRuns"); remove("analysisGeneration"); remove("deletedAnalysisRuns")
             remove("claimFeedback"); remove("deletedClaimFeedback")
+            remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
         }
         val bytes = legacy.toString().toByteArray()
         val expected = current.copy(sourceSchemaVersion = 2)

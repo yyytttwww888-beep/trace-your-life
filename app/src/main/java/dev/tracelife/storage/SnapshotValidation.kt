@@ -16,9 +16,10 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..4) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..5) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
+            require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
             require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
@@ -107,6 +108,21 @@ internal object SnapshotValidation {
             snapshot.claimFeedback.forEach { value -> runs[value.runId]?.let { run ->
                 ClaimFeedbackValidation.validateTarget(value, run, feedbackStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) })
             } }
+            KnowledgeValidation.validateCollection(snapshot.knowledgeRevisions, snapshot.knowledgeHeads)
+            require(snapshot.deletedKnowledge.size <= KnowledgeValidation.MAX_DELETIONS &&
+                snapshot.deletedKnowledge.map { it.id }.distinct().size == snapshot.deletedKnowledge.size) { "知识删除标记过多或重复" }
+            snapshot.deletedKnowledge.forEach {
+                require(digest.matches(it.id) && it.lastRevision in 1 until Int.MAX_VALUE) { "知识删除标记无效" }
+            }
+            require(snapshot.knowledgeHeads.map { it.id }.toSet().intersect(snapshot.deletedKnowledge.map { it.id }.toSet()).isEmpty()) { "备份同时包含知识及其删除标记" }
+            val erasedRuns = snapshot.deletedAnalysisRuns.map { it.id }.toSet()
+            val erasedFeedback = snapshot.deletedClaimFeedback.map { it.id }.toSet()
+            require(snapshot.knowledgeRevisions.none { value -> value.runId in erasedRuns ||
+                AnalysisRunCodec.feedbackId(value.runId, value.claimRef) in erasedFeedback }) { "备份包含已永久删除任务或反馈的知识副本" }
+            // Publications own their immutable claim/review proof; later task edits or feedback
+            // redaction must not retroactively change the meaning of historical revisions.
+            val knowledgeSources = snapshot.records.associateBy { it.id to it.revision }
+            snapshot.knowledgeRevisions.forEach { KnowledgeValidation.validateEvidence(it, knowledgeSources) }
         } catch (failure: IllegalArgumentException) {
             if (failure is InvalidBackupException) throw failure
             throw InvalidBackupException(failure.message ?: "备份资料无效", failure)

@@ -6,6 +6,8 @@ import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.storage.StoredAnalysisRun
 import dev.tracelife.storage.StoredClaimFeedback
+import dev.tracelife.storage.StoredKnowledgeRevision
+import dev.tracelife.storage.KnowledgeHead
 import java.time.Instant
 import java.time.LocalDate
 
@@ -21,12 +23,15 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 4,
+    val sourceSchemaVersion: Int = 5,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
     val claimFeedback: List<StoredClaimFeedback> = emptyList(),
     val deletedClaimFeedback: List<Deletion> = emptyList(),
+    val knowledgeRevisions: List<StoredKnowledgeRevision> = emptyList(),
+    val knowledgeHeads: List<KnowledgeHead> = emptyList(),
+    val deletedKnowledge: List<Deletion> = emptyList(),
 )
 
 data class Deletion(val id: String, val lastRevision: Int, val deletedAt: Instant)

@@ -222,6 +222,9 @@ class ClaimFeedbackStorageTest {
         repository.close()
         LifeDatabase(context, name).use { helper ->
             helper.writableDatabase.apply {
+                execSQL("DROP TABLE knowledge_heads")
+                execSQL("DROP TABLE knowledge_revisions")
+                execSQL("DROP TABLE deleted_knowledge")
                 execSQL("DROP TABLE claim_feedback")
                 execSQL("DROP TABLE deleted_claim_feedback")
                 version = 3
@@ -234,7 +237,7 @@ class ClaimFeedbackStorageTest {
         assertEquals("合成资料：用户记录了疲劳。", repository.record("synthetic-source")!!.draft.body)
         assertTrue(repository.claimFeedbacks().isEmpty())
         repository.saveClaimFeedback(feedback(run), null, run.version)
-        assertEquals(4, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(5, repository.captureSnapshot(directory()).sourceSchemaVersion)
     }
 
     private fun run(expiresAt: Instant? = null): StoredAnalysisRun {
