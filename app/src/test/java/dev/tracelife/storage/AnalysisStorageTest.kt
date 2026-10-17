@@ -294,6 +294,8 @@ class AnalysisStorageTest {
         repository.close()
         LifeDatabase(context, name).use { helper ->
             val db = helper.writableDatabase
+            db.execSQL("DROP TABLE claim_feedback")
+            db.execSQL("DROP TABLE deleted_claim_feedback")
             db.execSQL("DROP TABLE analysis_runs")
             db.execSQL("DROP TABLE deleted_analysis_runs")
             // Recreate exactly the released v2 store_state while keeping all source tables/triggers.

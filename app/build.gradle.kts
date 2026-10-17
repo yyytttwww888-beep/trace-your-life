@@ -29,8 +29,11 @@ android {
             }
             it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
             // Opt-in synthetic live test. Only a file PATH crosses Gradle; keys never enter build config/APK.
-            if (providers.gradleProperty("traceLifeDeepSeekSmoke").orNull == "true") {
-                it.systemProperty("traceLife.deepSeekSmoke", "true")
+            val smokeEnabled = providers.gradleProperty("traceLifeDeepSeekSmoke").orNull == "true"
+            val reviewEnabled = providers.gradleProperty("traceLifeDeepSeekReview").orNull == "true"
+            if (smokeEnabled || reviewEnabled) {
+                if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
+                if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
             }

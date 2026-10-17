@@ -1,6 +1,7 @@
 package dev.tracelife.storage
 
 import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
 import dev.tracelife.transfer.InvalidBackupException
@@ -15,8 +16,9 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..3) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..4) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
+            require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
             require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
@@ -93,6 +95,18 @@ internal object SnapshotValidation {
                 catch (failure: Exception) { throw InvalidBackupException("分析任务结构或来源引用无效", failure) }
                 require(retainedAnalysisBytes <= 16L * 1024 * 1024) { "分析任务及待返回输出预留超过保存上限" }
             }
+            ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
+            require(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS &&
+                snapshot.deletedClaimFeedback.map { it.id }.distinct().size == snapshot.deletedClaimFeedback.size) { "反馈删除标记过多或重复" }
+            snapshot.deletedClaimFeedback.forEach {
+                require(it.id.matches(Regex("[0-9a-f]{64}")) && it.lastRevision in 1 until Int.MAX_VALUE) { "反馈删除标记无效" }
+            }
+            require(snapshot.claimFeedback.map { it.id }.toSet().intersect(snapshot.deletedClaimFeedback.map { it.id }.toSet()).isEmpty()) { "备份同时包含反馈及其删除标记" }
+            val runs = snapshot.analysisRuns.associateBy { it.id }
+            val feedbackStates = mutableMapOf<String, AnalysisRunState>()
+            snapshot.claimFeedback.forEach { value -> runs[value.runId]?.let { run ->
+                ClaimFeedbackValidation.validateTarget(value, run, feedbackStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) })
+            } }
         } catch (failure: IllegalArgumentException) {
             if (failure is InvalidBackupException) throw failure
             throw InvalidBackupException(failure.message ?: "备份资料无效", failure)
