@@ -100,7 +100,7 @@ class AnalysisBatchProcessor(private val analysis: ControlledAnalysis) {
         val runId = task.stored.id
         val route = analysis.route(runId)
         val fragmentSize = task.state.request.limits.fragmentCodePoints
-        val successful = task.state.calls.filter { it.status == CallStatus.SUCCEEDED }.flatMap { it.evidence }
+        val successful = task.state.calls.filter { it.status == CallStatus.SUCCEEDED && it.purpose == CallPurpose.EXTRACTION }.flatMap { it.evidence }
             .groupBy { Triple(it.recordId, it.revision, it.field) }
         val selections = mutableListOf<EvidenceSelection>()
         var textLength = 0L

@@ -274,13 +274,15 @@ class SnapshotTransferTest {
         val deleted = source.saveTemplate(template(), "synthetic-v1-deleted")
         source.deleteTemplate(deleted.id)
         source.close()
-        // Remove v2/v3 additions to recreate the released v1 schema and its ID-only outbox.
+        // Remove v2/v3/v4 additions to recreate the released v1 schema and its ID-only outbox.
         LifeDatabase(context, sourceName).use { helper ->
             val db = helper.writableDatabase
             val triggers = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'generation_%'", null).use { cursor ->
                 buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
             }
             triggers.forEach { db.execSQL("DROP TRIGGER $it") }
+            db.execSQL("DROP TABLE claim_feedback")
+            db.execSQL("DROP TABLE deleted_claim_feedback")
             db.execSQL("DROP TABLE analysis_runs")
             db.execSQL("DROP TABLE deleted_analysis_runs")
             db.execSQL("DROP TABLE store_state")

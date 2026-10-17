@@ -154,6 +154,7 @@ class AnalysisAccountingTest {
         val template = root.getJSONArray("calls").getJSONObject(0)
         template.remove("tokenCountKind")
         template.remove("usage")
+        listOf("purpose", "reviewTarget", "review", "feedbackVersion").forEach(template::remove)
         val calls = JSONArray()
         repeat(callCount) { index -> calls.put(JSONObject(template.toString()).put("batchKey", "synthetic-batch-$index")) }
         return root.put("formatVersion", 1).put("calls", calls)

@@ -455,6 +455,89 @@ class LifeRepository(
         }
     }
 
+    fun claimFeedback(id: String): StoredClaimFeedback? = access { db ->
+        validateId(id)
+        transaction(db) { readClaimFeedback(db, id) }
+    }
+
+    /** Includes a permanent deletion fence, so create → delete never appears unchanged to a review. */
+    fun claimFeedbackVersion(id: String): Int = access { db ->
+        validateId(id)
+        transaction(db) {
+            readClaimFeedback(db, id)?.version ?: db.rawQuery("SELECT last_revision FROM deleted_claim_feedback WHERE id = ?", arrayOf(id))
+                .use { if (it.moveToFirst()) it.getInt(0) + 1 else 0 }
+        }
+    }
+
+    fun claimFeedbacks(offset: Int = 0, limit: Int = 100): List<StoredClaimFeedback> = access { db ->
+        require(offset >= 0 && limit in 1..100) { "反馈分页范围无效" }
+        transaction(db) {
+            ensureFeedbackBounds(db)
+            db.rawQuery("SELECT * FROM claim_feedback ORDER BY created_at, id LIMIT ? OFFSET ?", arrayOf(limit.toString(), offset.toString()))
+                .use { cursor -> buildList { while (cursor.moveToNext()) add(feedbackFromCursor(cursor)) } }
+        }
+    }
+
+    /** Feedback changes never overwrite model text. They also advance the task CAS token, making
+     * an already running model completion unable to silently commit over the user's decision. */
+    fun saveClaimFeedback(value: StoredClaimFeedback, expectedVersion: Int?, expectedRunVersion: Int?): StoredClaimFeedback = access { db ->
+        ClaimFeedbackValidation.validate(value)
+        require(expectedVersion == null || expectedVersion in 1 until Int.MAX_VALUE - 1) { "反馈预期版本无效" }
+        require(value.version == (expectedVersion?.plus(1) ?: 1)) { "反馈新版本无效" }
+        transaction(db) {
+            require(!exists(db, "deleted_claim_feedback", "id = ?", value.id)) { "已删除的反馈 ID 不可复用" }
+            val current = readClaimFeedback(db, value.id)
+            if (current?.version != expectedVersion) throw RevisionConflictException("反馈已有新版本或不存在")
+            if (current != null) {
+                require(value.copy(version = current.version, decision = current.decision, userText = current.userText,
+                    updatedAt = current.updatedAt) == current && value.updatedAt >= current.updatedAt) { "反馈身份或时间不一致" }
+            }
+            val run = readAnalysisRun(db, value.runId)
+            if (expectedRunVersion != null && run?.version != expectedRunVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
+            val sourceState = storeState(db)
+            val active = run != null && run.source == SourceStamp(sourceState.first, sourceState.second) &&
+                (run.expiresAt == null || clock.instant() < run.expiresAt)
+            if (active) {
+                if (expectedRunVersion == null) throw RevisionConflictException("当前分析反馈需要预期任务版本")
+                ClaimFeedbackValidation.validateTarget(value, requireNotNull(run))
+            } else {
+                require(current != null) { "失效或缺失任务不能新增反馈" }
+                require(value.decision == current.decision || value.decision in setOf(ClaimFeedbackDecision.REJECTED, ClaimFeedbackDecision.WITHDRAWN)) {
+                    "失效反馈只能维护独立文字、否定或撤回，不能重新确认结论"
+                }
+            }
+            val bytes = ClaimFeedbackValidation.encodedBytes(value)
+            db.rawQuery("SELECT COUNT(*), COALESCE(SUM(encoded_bytes), 0) FROM claim_feedback WHERE id <> ?", arrayOf(value.id)).use {
+                it.moveToFirst()
+                require(it.getInt(0) < ClaimFeedbackValidation.MAX_ROWS && it.getLong(1) + bytes <= ClaimFeedbackValidation.MAX_BYTES) { "反馈超过本地保存上限" }
+            }
+            if (current == null) insertClaimFeedback(db, value) else db.update("claim_feedback", feedbackValues(value), "id = ?", arrayOf(value.id))
+            bumpFeedbackRun(db, run)
+            value
+        }
+    }
+
+    fun deleteClaimFeedback(id: String, expectedVersion: Int) = access { db ->
+        validateId(id)
+        require(expectedVersion in 1 until Int.MAX_VALUE) { "反馈预期版本无效" }
+        transaction(db) {
+            val current = readClaimFeedback(db, id)
+            if (current?.version != expectedVersion) throw RevisionConflictException("反馈已有新版本或不存在")
+            require(count(db, "SELECT COUNT(*) FROM deleted_claim_feedback", emptyList()) < ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记达到保存上限" }
+            db.delete("claim_feedback", "id = ?", arrayOf(id))
+            insertDeletion(db, "deleted_claim_feedback", Deletion(id, expectedVersion, clock.instant()))
+            val run = readAnalysisRun(db, current.runId)
+            if (run != null) {
+                val redacted = AnalysisRunCodec.redactDeletedFeedback(run, setOf(id), clock.instant())
+                if (redacted == run) bumpFeedbackRun(db, run)
+                else {
+                    validateAnalysisRun(redacted)
+                    db.update("analysis_runs", analysisRunValues(redacted), "id = ?", arrayOf(run.id))
+                }
+            }
+        }
+    }
+
     /** Copies only attachments referenced by saved revisions, never unsaved editor imports. */
     fun captureSnapshot(attachmentDestination: File): RepositorySnapshot = access { db ->
         requireExternalPath(attachmentDestination)
@@ -472,7 +555,8 @@ class LifeRepository(
                 val attachments = records.flatMap { it.draft.attachmentIds }.toSortedSet().map { requireNotNull(readAttachment(db, it)) }
                 val snapshot = RepositorySnapshot(UUID.randomUUID().toString(), state.first, state.second, clock.instant(),
                     records, templates, attachments, deletions(db, "deleted_records"), deletions(db, "deleted_templates"), allChanges(db),
-                    analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"))
+                    analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"),
+                    claimFeedback = allClaimFeedback(db), deletedClaimFeedback = deletions(db, "deleted_claim_feedback"))
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -515,12 +599,20 @@ class LifeRepository(
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
         if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1"))) {
-            throw IllegalStateException("目标已有记录、模板或分析，须明确允许替换后恢复")
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1"))) {
+            throw IllegalStateException("目标已有记录、模板、分析或反馈，须明确允许替换后恢复")
         }
         val mergedRecords = mergeDeletions(deletions(db, "deleted_records"), snapshot.deletedRecords)
         val mergedTemplates = mergeDeletions(deletions(db, "deleted_templates"), snapshot.deletedTemplates)
         val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns)
+        val mergedFeedbackDeletions = mergeDeletions(deletions(db, "deleted_claim_feedback"), snapshot.deletedClaimFeedback)
+        require(mergedFeedbackDeletions.size <= ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记超过保存上限" }
+        val deletedFeedbackIds = mergedFeedbackDeletions.map { it.id }.toSet()
+        // Present user authority wins even over a backup with a higher revision or timestamp.
+        // Feedback can outlive the original task; restoring must not erase that independent text.
+        val feedback = (snapshot.claimFeedback.associateBy { it.id } + allClaimFeedback(db).associateBy { it.id })
+            .values.filterNot { it.id in deletedFeedbackIds }.sortedBy { it.id }
+        ClaimFeedbackValidation.validateCollection(feedback)
         val recordDeletionsById = mergedRecords.associateBy { it.id }
         val templateDeletionsById = mergedTemplates.associateBy { it.id }
         val recordTombstones = recordDeletionsById.keys
@@ -539,7 +631,18 @@ class LifeRepository(
         val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
             mergedTemplates.any { importedTemplateDeletions[it.id] != it }
         val deletedAnalysisIds = mergedAnalyses.map { it.id }.toSet()
+        val feedbackByRun = feedback.groupBy { it.runId }
         val analyses = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
+            .map { AnalysisRunCodec.redactDeletedFeedback(it, deletedFeedbackIds, clock.instant()) }
+            .filter { run ->
+                // A valid older backup can predate the claim a user has since corrected. Keep
+                // the independent feedback and omit only that incompatible historical task.
+                val related = feedbackByRun[run.id].orEmpty()
+                if (related.isEmpty()) true else {
+                    val state = AnalysisRunCodec.decode(run.payload)
+                    related.all { ClaimFeedbackValidation.matchesTarget(it, run, state) }
+                }
+            }
         val createdFiles = mutableListOf<File>()
         var committed = false
         try {
@@ -567,6 +670,8 @@ class LifeRepository(
                 db.delete("deleted_templates", null, null)
                 db.delete("analysis_runs", null, null)
                 db.delete("deleted_analysis_runs", null, null)
+                db.delete("claim_feedback", null, null)
+                db.delete("deleted_claim_feedback", null, null)
                 // Some queued files may be deliberately restored from a later valid snapshot.
                 attachments.forEach { db.delete("attachment_garbage", "id = ?", arrayOf(it.id)) }
                 (oldAttachmentIds - requiredAttachmentIds).forEach { id ->
@@ -615,8 +720,17 @@ class LifeRepository(
                 // fresh run validates against this store, even when restoring on the same device.
                 analyses.forEach { insertAnalysisRun(db, it) }
                 mergedAnalyses.forEach { insertDeletion(db, "deleted_analysis_runs", it) }
-                // Even an empty→empty restore invalidates a previously captured publication token.
-                db.execSQL("UPDATE store_state SET generation = generation + 1, analysis_generation = analysis_generation + 1 WHERE singleton = 1")
+                feedback.forEach { insertClaimFeedback(db, it) }
+                mergedFeedbackDeletions.forEach { insertDeletion(db, "deleted_claim_feedback", it) }
+                // A same-store backup may carry a source generation ahead of the target. Move
+                // beyond every imported stamp, not merely +1, so no restored task becomes current
+                // by numeric coincidence. Even empty→empty restore invalidates publication.
+                val targetStore = storeState(db)
+                val importedGeneration = (analyses.map { it.source } + feedback.map { it.source })
+                    .filter { it.storeId == targetStore.first }.maxOfOrNull { it.generation } ?: 0L
+                val generationFloor = maxOf(targetStore.second, snapshot.generation, importedGeneration)
+                require(generationFloor < Long.MAX_VALUE) { "来源代数达到上限，无法安全恢复" }
+                db.execSQL("UPDATE store_state SET generation = ?, analysis_generation = analysis_generation + 1 WHERE singleton = 1", arrayOf(generationFloor + 1))
                 RestoreResult(records.map { it.id }.distinct().size, records.size, templates.map { it.id }.distinct().size,
                     attachments.size, snapshot.records.map { it.id }.distinct().count { it in recordTombstones }, storeState(db).second)
             }
@@ -813,6 +927,50 @@ class LifeRepository(
             buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
         }
 
+    private fun feedbackValues(value: StoredClaimFeedback) = values(
+        "id" to value.id, "version" to value.version, "run_id" to value.runId, "batch_key" to value.batchKey,
+        "claim_index" to value.claimIndex, "claim_sha256" to value.claimSha256,
+        "source_store_id" to value.source.storeId, "source_generation" to value.source.generation,
+        "decision" to value.decision.name, "user_text" to value.userText,
+        "created_at" to timestamp(value.createdAt), "updated_at" to timestamp(value.updatedAt),
+        "encoded_bytes" to ClaimFeedbackValidation.encodedBytes(value),
+    )
+
+    private fun feedbackFromCursor(cursor: Cursor): StoredClaimFeedback = StoredClaimFeedback(
+        cursor.string("id"), cursor.int("version"), cursor.string("run_id"), cursor.string("batch_key"),
+        cursor.int("claim_index"), cursor.string("claim_sha256"),
+        SourceStamp(cursor.string("source_store_id"), cursor.getLong(cursor.getColumnIndexOrThrow("source_generation"))),
+        ClaimFeedbackDecision.valueOf(cursor.string("decision")), cursor.nullableString("user_text"),
+        Instant.parse(cursor.string("created_at")), Instant.parse(cursor.string("updated_at")),
+    ).also(ClaimFeedbackValidation::validate)
+
+    private fun readClaimFeedback(db: SQLiteDatabase, id: String): StoredClaimFeedback? =
+        db.rawQuery("SELECT * FROM claim_feedback WHERE id = ?", arrayOf(id)).use { if (it.moveToFirst()) feedbackFromCursor(it) else null }
+
+    private fun allClaimFeedback(db: SQLiteDatabase): List<StoredClaimFeedback> {
+        ensureFeedbackBounds(db)
+        return db.rawQuery("SELECT * FROM claim_feedback ORDER BY created_at, id", null)
+            .use { cursor -> buildList { while (cursor.moveToNext()) add(feedbackFromCursor(cursor)) } }
+    }
+
+    private fun insertClaimFeedback(db: SQLiteDatabase, value: StoredClaimFeedback) {
+        db.insertOrThrow("claim_feedback", null, feedbackValues(value))
+    }
+
+    private fun bumpFeedbackRun(db: SQLiteDatabase, run: StoredAnalysisRun?) {
+        if (run == null) return
+        require(run.version < Int.MAX_VALUE) { "分析任务版本达到上限" }
+        db.update("analysis_runs", values("version" to run.version + 1,
+            "updated_at" to timestamp(maxOf(clock.instant(), run.updatedAt))), "id = ?", arrayOf(run.id))
+    }
+
+    private fun ensureFeedbackBounds(db: SQLiteDatabase) {
+        db.rawQuery("SELECT COUNT(*), COALESCE(SUM(encoded_bytes), 0), COALESCE(MAX(length(user_text)), 0) FROM claim_feedback", null).use {
+            it.moveToFirst()
+            require(it.getInt(0) <= ClaimFeedbackValidation.MAX_ROWS && it.getLong(1) <= ClaimFeedbackValidation.MAX_BYTES && it.getInt(2) <= 2_000) { "反馈超过本地保存上限" }
+        }
+    }
+
     private fun analysisGeneration(db: SQLiteDatabase): Long =
         db.rawQuery("SELECT analysis_generation FROM store_state WHERE singleton = 1", null).use { check(it.moveToFirst()); it.getLong(0) }
 
@@ -823,9 +981,11 @@ class LifeRepository(
 
     /** Check row and byte budgets in SQLite before constructing a complete in-memory snapshot. */
     private fun ensureCaptureBounds(db: SQLiteDatabase) {
+        ensureFeedbackBounds(db)
         val rowLimits = mapOf("record_revisions" to 100_000, "template_versions" to 10_000,
             "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to 100,
-            "deleted_analysis_runs" to 100_000)
+            "deleted_analysis_runs" to 100_000, "claim_feedback" to ClaimFeedbackValidation.MAX_ROWS,
+            "deleted_claim_feedback" to ClaimFeedbackValidation.MAX_DELETIONS)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }
@@ -840,6 +1000,8 @@ class LifeRepository(
             "change_events" to listOf("entity_id", "kind"),
             "analysis_runs" to listOf("id", "source_store_id", "payload"),
             "deleted_analysis_runs" to listOf("id"),
+            "claim_feedback" to listOf("id", "run_id", "batch_key", "claim_sha256", "source_store_id", "decision", "user_text"),
+            "deleted_claim_feedback" to listOf("id"),
         )
         var textBytes = 0L
         textColumns.forEach { (table, columns) ->

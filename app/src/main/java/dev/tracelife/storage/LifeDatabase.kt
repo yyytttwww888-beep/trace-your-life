@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 3) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 4) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -17,12 +17,34 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         statements.forEach(db::execSQL)
         upgradeToVersionTwo(db)
         upgradeToVersionThree(db)
+        upgradeToVersionFour(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..2 && newVersion == 3) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..3 && newVersion == 4) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
-        upgradeToVersionThree(db)
+        if (oldVersion < 3) upgradeToVersionThree(db)
+        upgradeToVersionFour(db)
+    }
+
+    private fun upgradeToVersionFour(db: SQLiteDatabase) {
+        // No cascade to tasks: explicit user wording and rejection remain authoritative after
+        // a task or source is deleted. Source availability is evaluated at read time.
+        db.execSQL("""CREATE TABLE claim_feedback (
+            id TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0),
+            run_id TEXT NOT NULL, batch_key TEXT NOT NULL, claim_index INTEGER NOT NULL,
+            claim_sha256 TEXT NOT NULL, source_store_id TEXT NOT NULL,
+            source_generation INTEGER NOT NULL CHECK(source_generation >= 0),
+            decision TEXT NOT NULL, user_text TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            encoded_bytes INTEGER NOT NULL CHECK(encoded_bytes > 0))""")
+        db.execSQL("CREATE INDEX claim_feedback_run_lookup ON claim_feedback(run_id)")
+        db.execSQL("CREATE TABLE deleted_claim_feedback (id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL, deleted_at TEXT NOT NULL)")
+        listOf("claim_feedback", "deleted_claim_feedback").forEach { table ->
+            listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+                db.execSQL("""CREATE TRIGGER analysis_generation_${table}_${operation.lowercase()} AFTER $operation ON $table
+                    BEGIN UPDATE store_state SET analysis_generation = analysis_generation + 1 WHERE singleton = 1; END""")
+            }
+        }
     }
 
     private fun upgradeToVersionThree(db: SQLiteDatabase) {

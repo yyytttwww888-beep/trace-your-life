@@ -54,6 +54,19 @@ enum class ClaimKind { REPORTED_EXPERIENCE, POSSIBLE_INTERPRETATION }
 data class ProposedClaim(val text: String, val evidenceIds: List<String>, val kind: ClaimKind)
 data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<String> = emptyList())
 
+data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
+enum class CallPurpose { EXTRACTION, REVIEW }
+enum class ReviewVerdict { SUPPORTED, UNSUPPORTED, CONTRADICTED, INSUFFICIENT_CONTEXT }
+enum class ReviewIssue { USER_REPORT_AS_FACT, SCOPE_OVERGENERALIZATION, CAUSAL_OVERREACH, COUNTEREVIDENCE_OMISSION, INSUFFICIENT_CONTEXT, OTHER }
+/** A bounded model quality check, never an independent truth or permission to publish. */
+data class ClaimReview(
+    val verdict: ReviewVerdict,
+    val supportingEvidenceIds: List<String> = emptyList(),
+    val contradictingEvidenceIds: List<String> = emptyList(),
+    val issues: List<ReviewIssue> = emptyList(),
+    val unknowns: List<String> = emptyList(),
+)
+
 enum class CallStatus { IN_FLIGHT, SUCCEEDED, FAILED, INTERRUPTED }
 data class AnalysisCall(
     val batchKey: String,
@@ -70,6 +83,10 @@ data class AnalysisCall(
     val proposal: BatchProposal? = null,
     val tokenCountKind: TokenCountKind = TokenCountKind.EXACT,
     val usage: ModelUsage? = null,
+    val purpose: CallPurpose = CallPurpose.EXTRACTION,
+    val reviewTarget: ClaimRef? = null,
+    val review: ClaimReview? = null,
+    val feedbackVersion: Int = 0,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList())
@@ -118,6 +135,14 @@ data class ModelUsage(val promptTokens: Int, val completionTokens: Int)
 data class PreparedModelRequest(val original: ModelRequest, val payloadJson: String, val inputTokens: Int,
     val tokenCountKind: TokenCountKind = TokenCountKind.EXACT)
 data class ModelCompletion(val proposal: BatchProposal, val usage: ModelUsage? = null)
+data class ReviewCompletion(val review: ClaimReview, val usage: ModelUsage? = null)
+
+interface SemanticReviewProvider {
+    val id: String
+    val contextWindowTokens: Int
+    fun prepareReview(request: ModelRequest): PreparedModelRequest
+    fun reviewPrepared(request: PreparedModelRequest): ReviewCompletion
+}
 
 /** Trusted adapters prepare the exact wire body before the executor checks bytes, tokens and hash.
  * Conservative counts are labeled separately from model-specific exact tokenization. */

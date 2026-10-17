@@ -18,19 +18,44 @@ object AnalysisRunCodec {
     const val MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
     private val digest = Regex("[0-9a-f]{64}")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 2)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 3)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
         val reserved = responseReservation(state)
         return json(mapOf("formatVersion" to version, "request" to requestMap(state.request), "calls" to state.calls.map {
-            if (version == 1) callMap(it) - setOf("tokenCountKind", "usage") else callMap(it)
+            val fields = callMap(it)
+            when (version) {
+                1 -> fields - setOf("tokenCountKind", "usage", "purpose", "reviewTarget", "review", "feedbackVersion")
+                2 -> fields - setOf("purpose", "reviewTarget", "review", "feedbackVersion")
+                else -> fields
+            }
         }),
             nodeLimit = if (reserved > 0) 59_000 else 60_000)
             .also { require(it.toByteArray(Charsets.UTF_8).size + reserved <= MAX_PAYLOAD_BYTES) { "分析任务及输出预留超过保存上限" } }
     }
 
     fun decode(payload: String): AnalysisRunState = decodeEnvelope(payload).first
+
+    /** Erase model text derived from deleted user feedback without refunding consumed budgets.
+     * An untouched historical payload is returned byte-for-byte, without a format upgrade. */
+    fun redactDeletedFeedback(run: StoredAnalysisRun, deletedFeedbackIds: Set<String>, now: Instant): StoredAnalysisRun {
+        if (deletedFeedbackIds.isEmpty()) return run
+        val state = decode(run.payload)
+        var changed = false
+        val calls = state.calls.map { call ->
+            val ref = call.reviewTarget
+            if (call.purpose == CallPurpose.REVIEW && ref != null && call.feedbackVersion > 0 &&
+                feedbackId(run.id, ref) in deletedFeedbackIds && call.status in setOf(CallStatus.SUCCEEDED, CallStatus.IN_FLIGHT)) {
+                changed = true
+                call.copy(status = CallStatus.FAILED, failureCode = "FEEDBACK_DELETED", finishedAt = maxOf(now, call.startedAt),
+                    review = null, usage = null)
+            } else call
+        }
+        if (!changed) return run
+        require(run.version < Int.MAX_VALUE) { "分析任务版本达到上限" }
+        return run.copy(version = run.version + 1, updatedAt = maxOf(now, run.updatedAt), payload = encode(state.copy(calls = calls)))
+    }
 
     private fun decodeEnvelope(payload: String): Pair<AnalysisRunState, Int> {
         require(payload.toByteArray(Charsets.UTF_8).size <= MAX_PAYLOAD_BYTES) { "分析任务超过保存上限" }
@@ -64,8 +89,9 @@ object AnalysisRunCodec {
             }
         }
         val root = read(0).obj("formatVersion", "request", "calls")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..2)
-        val legacy = root.int("formatVersion") == 1
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..3)
+        val format = root.int("formatVersion")
+        val legacy = format == 1
         val request = root["request"].obj("question", "scope", "limits", "focusTopics", "expiresAt")
         val scope = request["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
         val limits = request["limits"].obj("pageSize", "fragmentCodePoints", "maxInputBytes", "inputTokenLimit", "outputTokenReserve", "maxCalls", "totalInputBytes", "maxOutputBytes")
@@ -80,7 +106,12 @@ object AnalysisRunCodec {
                 request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt")),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
-                val call = raw.obj(*(if (legacy) fields else fields + arrayOf("tokenCountKind", "usage")))
+                val metered = fields + arrayOf("tokenCountKind", "usage")
+                val call = raw.obj(*when (format) {
+                    1 -> fields
+                    2 -> metered
+                    else -> metered + arrayOf("purpose", "reviewTarget", "review", "feedbackVersion")
+                })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
                         val ref = item.obj("id", "recordId", "revision", "field", "start", "end", "totalCodePoints", "sha256")
@@ -89,7 +120,11 @@ object AnalysisRunCodec {
                     }, Instant.parse(call.string("startedAt")), CallStatus.valueOf(call.string("status")), call.optionalInstant("finishedAt"),
                     call["failureCode"]?.let { call.string("failureCode") }, call["proposal"]?.let(::parseProposal),
                     if (legacy) TokenCountKind.EXACT else TokenCountKind.valueOf(call.string("tokenCountKind")),
-                    call["usage"]?.let { value -> value.obj("promptTokens", "completionTokens").let { ModelUsage(it.int("promptTokens"), it.int("completionTokens")) } })
+                    call["usage"]?.let { value -> value.obj("promptTokens", "completionTokens").let { ModelUsage(it.int("promptTokens"), it.int("completionTokens")) } },
+                    if (format < 3) CallPurpose.EXTRACTION else CallPurpose.valueOf(call.string("purpose")),
+                    call["reviewTarget"]?.let { value -> value.obj("batchKey", "claimIndex", "claimSha256").let {
+                        ClaimRef(it.string("batchKey"), it.int("claimIndex"), it.string("claimSha256"))
+                    } }, call["review"]?.let(::parseReview), if (format < 3) 0 else call.int("feedbackVersion"))
             },
         )
         validate(state)
@@ -138,6 +173,23 @@ object AnalysisRunCodec {
         require(json(proposalMap(proposal)).toByteArray(Charsets.UTF_8).size <= maxBytes) { "提案输出超过预算" }
     }
 
+    internal fun validateReview(review: ClaimReview, evidence: List<EvidenceReceipt>, maxBytes: Int) {
+        val ids = evidence.map { it.id }.toSet()
+        listOf(review.supportingEvidenceIds, review.contradictingEvidenceIds).forEach { refs ->
+            require(refs.size <= 32 && refs.distinct().size == refs.size && refs.all { it in ids }) { "核对引用不属于本次证据" }
+        }
+        require(review.supportingEvidenceIds.intersect(review.contradictingEvidenceIds.toSet()).isEmpty()) { "支持和反例引用不能重叠" }
+        require(review.issues.distinct().size == review.issues.size)
+        require(review.unknowns.size <= 20 && review.unknowns.all { it.isNotBlank() && it.length <= 2_000 })
+        when (review.verdict) {
+            ReviewVerdict.SUPPORTED -> require(review.supportingEvidenceIds.isNotEmpty() && review.contradictingEvidenceIds.isEmpty() && review.issues.isEmpty())
+            ReviewVerdict.CONTRADICTED -> require(review.contradictingEvidenceIds.isNotEmpty())
+            ReviewVerdict.INSUFFICIENT_CONTEXT -> require(review.unknowns.isNotEmpty() || ReviewIssue.INSUFFICIENT_CONTEXT in review.issues)
+            ReviewVerdict.UNSUPPORTED -> Unit
+        }
+        require(json(reviewMap(review)).toByteArray(Charsets.UTF_8).size <= maxBytes) { "核对输出超过预算" }
+    }
+
     private fun validate(state: AnalysisRunState) {
         val scope = state.request.scope
         require(scope.from.year in 1..9999 && scope.through.year in 1..9999 && scope.from <= scope.through)
@@ -150,9 +202,10 @@ object AnalysisRunCodec {
         state.calls.groupBy { it.batchKey }.values.forEach { attempts ->
             require(attempts.map { it.attempt } == (1..attempts.size).toList())
             require(attempts.map { it.requestSha256 to it.providerId }.distinct().size == 1) { "重试改变了请求或模型" }
+            require(attempts.map { Triple(it.purpose, it.reviewTarget, it.feedbackVersion) }.distinct().size == 1) { "重试改变了核对目标或反馈" }
             require(attempts.dropLast(1).all { it.status == CallStatus.FAILED || it.status == CallStatus.INTERRUPTED })
         }
-        state.calls.forEach { call ->
+        state.calls.forEachIndexed { index, call ->
             validId(call.batchKey); validId(call.providerId)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
             call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
@@ -164,13 +217,30 @@ object AnalysisRunCodec {
                 require(ref.start >= 0 && ref.end > ref.start && ref.end <= ref.totalCodePoints && ref.end - ref.start <= limits.fragmentCodePoints)
                 require(ref.id == evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
             }
-            if (call.status == CallStatus.SUCCEEDED) {
-                require(call.finishedAt != null && call.failureCode == null && call.proposal != null)
-                validateProposal(call.proposal, call.evidence, limits.maxOutputBytes)
+            require(call.feedbackVersion >= 0)
+            if (call.purpose == CallPurpose.EXTRACTION) {
+                require(call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
             } else {
                 require(call.proposal == null)
+                val target = requireNotNull(call.reviewTarget)
+                validId(target.batchKey)
+                require(target.claimIndex in 0..19 && digest.matches(target.claimSha256))
+                val extraction = requireNotNull(state.calls.take(index).lastOrNull {
+                    it.batchKey == target.batchKey && it.purpose == CallPurpose.EXTRACTION && it.status == CallStatus.SUCCEEDED
+                }) { "核对缺少成功提取目标" }
+                val claim = requireNotNull(extraction.proposal?.claims?.getOrNull(target.claimIndex))
+                require(claimSha256(claim) == target.claimSha256) { "核对目标文字或引用已变化" }
+                require(claim.evidenceIds.all { id -> extraction.evidence.single { it.id == id } in call.evidence }) { "核对没有重新提供全部目标原文" }
+            }
+            if (call.status == CallStatus.SUCCEEDED) {
+                require(call.finishedAt != null && call.failureCode == null)
+                if (call.purpose == CallPurpose.EXTRACTION) validateProposal(requireNotNull(call.proposal), call.evidence, limits.maxOutputBytes)
+                else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes)
+            } else {
+                require(call.proposal == null && call.review == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)
-                else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED") + ProviderFailureCode.entries.map { "PROVIDER_${it.name}" })
+                else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED", "FEEDBACK_DELETED") + ProviderFailureCode.entries.map { "PROVIDER_${it.name}" })
+                if (call.failureCode == "FEEDBACK_DELETED") require(call.purpose == CallPurpose.REVIEW && call.feedbackVersion > 0 && call.status == CallStatus.FAILED)
             }
         }
     }
@@ -179,6 +249,8 @@ object AnalysisRunCodec {
         sha256(json(listOf(recordId, revision, field, start, end, hash)))
     internal fun sha256(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it.toInt() and 255) }
+    fun claimSha256(claim: ProposedClaim): String = sha256(json(claimMap(claim)))
+    fun feedbackId(runId: String, claim: ClaimRef): String = sha256(json(listOf(runId, claim.batchKey, claim.claimIndex, claim.claimSha256)))
     internal fun slice(value: String, start: Int, end: Int): String = value.substring(value.offsetByCodePoints(0, start), value.offsetByCodePoints(0, end))
     internal fun validId(id: String) { require(id.isNotBlank() && id.length <= 200 && id.none { it.isISOControl() }) }
 
@@ -213,9 +285,20 @@ object AnalysisRunCodec {
         "requestSha256" to call.requestSha256, "inputBytes" to call.inputBytes, "inputTokens" to call.inputTokens,
         "evidence" to call.evidence.map(::receiptMap), "startedAt" to call.startedAt.toString(), "status" to call.status.name,
         "finishedAt" to call.finishedAt?.toString(), "failureCode" to call.failureCode, "proposal" to call.proposal?.let(::proposalMap),
-        "tokenCountKind" to call.tokenCountKind.name, "usage" to call.usage?.let { mapOf("promptTokens" to it.promptTokens, "completionTokens" to it.completionTokens) })
-    private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map { mapOf("text" to it.text,
-        "evidenceIds" to it.evidenceIds, "kind" to it.kind.name) }, "unknowns" to proposal.unknowns)
+        "tokenCountKind" to call.tokenCountKind.name, "usage" to call.usage?.let { mapOf("promptTokens" to it.promptTokens, "completionTokens" to it.completionTokens) },
+        "purpose" to call.purpose.name, "reviewTarget" to call.reviewTarget?.let(::claimRefMap), "review" to call.review?.let(::reviewMap),
+        "feedbackVersion" to call.feedbackVersion)
+    internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
+    internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
+    private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)
+    internal fun reviewMap(review: ClaimReview) = mapOf("verdict" to review.verdict.name,
+        "supportingEvidenceIds" to review.supportingEvidenceIds, "contradictingEvidenceIds" to review.contradictingEvidenceIds,
+        "issues" to review.issues.map { it.name }, "unknowns" to review.unknowns)
+    private fun parseReview(raw: Any?): ClaimReview {
+        val review = raw.obj("verdict", "supportingEvidenceIds", "contradictingEvidenceIds", "issues", "unknowns")
+        return ClaimReview(ReviewVerdict.valueOf(review.string("verdict")), review.strings("supportingEvidenceIds"),
+            review.strings("contradictingEvidenceIds"), review.strings("issues").map(ReviewIssue::valueOf), review.strings("unknowns"))
+    }
     private fun parseProposal(raw: Any?): BatchProposal {
         val proposal = raw.obj("claims", "unknowns")
         return BatchProposal(proposal.list("claims").map { item ->

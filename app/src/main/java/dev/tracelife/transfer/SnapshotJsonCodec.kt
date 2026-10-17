@@ -15,6 +15,9 @@ import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.storage.SourceStamp
 import dev.tracelife.storage.StoredAnalysisRun
+import dev.tracelife.storage.StoredClaimFeedback
+import dev.tracelife.storage.ClaimFeedbackDecision
+import dev.tracelife.storage.ClaimFeedbackValidation
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -25,7 +28,7 @@ import java.time.LocalDate
 
 /** Versioned logical transfer format. Streams belong to the caller; no credentials are serialized. */
 object SnapshotJsonCodec {
-    const val FORMAT_VERSION = 2
+    const val FORMAT_VERSION = 3
     private const val MAX_DEPTH = 16
     internal const val MAX_NODES = 2_000_000L
     private const val MAX_STRING_CHARACTERS = 1_048_576
@@ -47,6 +50,7 @@ object SnapshotJsonCodec {
                 field("createdAt", run.createdAt.toString()); field("updatedAt", run.updatedAt.toString())
                 field("expiresAt", run.expiresAt?.toString()); field("payload", run.payload)
             } }
+            array("claimFeedback", snapshot.claimFeedback) { feedback -> ClaimFeedbackValidation.writeJson(this, feedback) }
             array("records", snapshot.records) { record -> objectValue {
                 field("id", record.id); field("revision", record.revision)
                 field("createdAt", record.createdAt.toString()); field("updatedAt", record.updatedAt.toString()); field("archived", record.archived)
@@ -84,6 +88,7 @@ object SnapshotJsonCodec {
             deletions("deletedRecords", snapshot.deletedRecords)
             deletions("deletedTemplates", snapshot.deletedTemplates)
             deletions("deletedAnalysisRuns", snapshot.deletedAnalysisRuns)
+            deletions("deletedClaimFeedback", snapshot.deletedClaimFeedback)
             array("changes", snapshot.changes) { change -> objectValue {
                 field("id", change.id); field("entityId", change.entityId); field("revision", change.revision)
                 field("kind", change.kind); field("createdAt", change.createdAt.toString())
@@ -97,11 +102,14 @@ object SnapshotJsonCodec {
         reader.isLenient = false
         val root = readValue(reader, 0, rootShape, NodeBudget()).objectFields()
         checkBackup(reader.peek() == JsonToken.END_DOCUMENT, "资料 JSON 包含额外内容")
-        val legacy = root.int("formatVersion") == 1
-        checkBackup(legacy || root.int("formatVersion") == FORMAT_VERSION, "不支持的资料格式版本")
-        checkBackup(root.int("sourceSchemaVersion") == if (legacy) 2 else 3, "不支持的来源数据库版本")
+        val format = root.int("formatVersion")
+        val legacy = format == 1
+        checkBackup(format in 1..FORMAT_VERSION, "不支持的资料格式版本")
+        checkBackup(root.int("sourceSchemaVersion") == format + 1, "不支持的来源数据库版本")
         val analysisFields = setOf("analysisRuns", "analysisGeneration", "deletedAnalysisRuns")
         checkBackup(if (legacy) analysisFields.none(root::containsKey) else analysisFields.all(root::containsKey), "分析任务字段与资料版本不一致")
+        val feedbackFields = setOf("claimFeedback", "deletedClaimFeedback")
+        checkBackup(if (format < 3) feedbackFields.none(root::containsKey) else feedbackFields.all(root::containsKey), "反馈字段与资料版本不一致")
         RepositorySnapshot(
             snapshotId = root.string("snapshotId"), storeId = root.string("storeId"), generation = root.long("generation"), capturedAt = root.instant("capturedAt"),
             sourceSchemaVersion = root.int("sourceSchemaVersion"),
@@ -114,6 +122,8 @@ object SnapshotJsonCodec {
             analysisRuns = if (legacy) emptyList() else root.array("analysisRuns").map { it as StoredAnalysisRun },
             analysisGeneration = if (legacy) 0 else root.long("analysisGeneration"),
             deletedAnalysisRuns = if (legacy) emptyList() else root.array("deletedAnalysisRuns").map { it as Deletion },
+            claimFeedback = if (format < 3) emptyList() else root.array("claimFeedback").map { it as StoredClaimFeedback },
+            deletedClaimFeedback = if (format < 3) emptyList() else root.array("deletedClaimFeedback").map { it as Deletion },
         )
     } catch (failure: InvalidBackupException) {
         throw failure
@@ -150,7 +160,9 @@ object SnapshotJsonCodec {
     private data class MappedShape(val value: Shape, val convert: (Any?) -> Any) : Shape
     private object AnswersShape : Shape
     private object AnalysisPayloadShape : Shape
-    private class NodeBudget(var remaining: Long = MAX_NODES, var analysisBytes: Long = 0)
+    private object FeedbackTextShape : Shape
+    private data class FeedbackShape(val value: Shape) : Shape
+    private class NodeBudget(var remaining: Long = MAX_NODES, var analysisBytes: Long = 0, var feedbackBytes: Long = 0)
     private fun obj(vararg fields: Pair<String, Shape>) = ObjectShape(linkedMapOf(*fields))
 
     // Convert each record/template before reading the next item: never retain an entire JSON AST.
@@ -172,6 +184,9 @@ object SnapshotJsonCodec {
         val change = obj("id" to number, "entityId" to string, "revision" to number, "kind" to string, "createdAt" to string)
         val analysis = obj("id" to string, "version" to number, "source" to obj("storeId" to string, "generation" to number),
             "createdAt" to string, "updatedAt" to string, "expiresAt" to NullableShape(string), "payload" to AnalysisPayloadShape)
+        val feedback = FeedbackShape(obj("id" to string, "version" to number, "runId" to string, "batchKey" to string,
+            "claimIndex" to number, "claimSha256" to string, "source" to obj("storeId" to string, "generation" to number),
+            "decision" to string, "userText" to NullableShape(FeedbackTextShape), "createdAt" to string, "updatedAt" to string))
         fun mappedDeletion() = MappedShape(deletion) { value -> value.objectFields().let { Deletion(it.string("id"), it.int("lastRevision"), it.instant("deletedAt")) } }
         obj("formatVersion" to number, "snapshotId" to string, "storeId" to string, "generation" to number, "capturedAt" to string, "sourceSchemaVersion" to number,
             "analysisGeneration" to number, "analysisRuns" to ArrayShape(MappedShape(analysis) { value -> value.objectFields().let { fields ->
@@ -179,16 +194,29 @@ object SnapshotJsonCodec {
                 StoredAnalysisRun(fields.string("id"), fields.int("version"), SourceStamp(source.string("storeId"), source.long("generation")),
                     fields.instant("createdAt"), fields.instant("updatedAt"), fields["expiresAt"]?.let { Instant.parse(it as String) }, fields.string("payload"))
             } }, 100),
+            "claimFeedback" to ArrayShape(feedback, ClaimFeedbackValidation.MAX_ROWS),
             "records" to ArrayShape(MappedShape(record, ::parseRecord), 100_000), "templates" to ArrayShape(MappedShape(template, ::parseTemplate), 10_000),
             "attachments" to ArrayShape(MappedShape(attachment) { value -> value.objectFields().let { Attachment(it.string("id"), it.string("displayName"), it.string("mimeType"), it.long("sizeBytes"), it.string("sha256")) } }, 10_000),
             "deletedRecords" to ArrayShape(mappedDeletion(), 100_000), "deletedTemplates" to ArrayShape(mappedDeletion(), 10_000),
             "deletedAnalysisRuns" to ArrayShape(mappedDeletion(), 100_000),
+            "deletedClaimFeedback" to ArrayShape(mappedDeletion(), ClaimFeedbackValidation.MAX_DELETIONS),
             "changes" to ArrayShape(MappedShape(change) { value -> value.objectFields().let { ChangeEvent(it.long("id"), it.string("entityId"), it.int("revision"), it.string("kind"), it.instant("createdAt")) } }, 200_000))
-            .copy(optional = setOf("analysisGeneration", "analysisRuns", "deletedAnalysisRuns"))
+            .copy(optional = setOf("analysisGeneration", "analysisRuns", "deletedAnalysisRuns", "claimFeedback", "deletedClaimFeedback"))
     }
 
     private fun readValue(reader: JsonReader, depth: Int, shape: Shape, budget: NodeBudget): Any? {
         if (shape is MappedShape) return shape.convert(readValue(reader, depth, shape.value, budget))
+        if (shape is FeedbackShape) {
+            val fields = readValue(reader, depth, shape.value, budget).objectFields()
+            val source = fields["source"].objectFields()
+            val value = StoredClaimFeedback(fields.string("id"), fields.int("version"), fields.string("runId"), fields.string("batchKey"),
+                fields.int("claimIndex"), fields.string("claimSha256"), SourceStamp(source.string("storeId"), source.long("generation")),
+                ClaimFeedbackDecision.valueOf(fields.string("decision")), fields["userText"] as String?, fields.instant("createdAt"), fields.instant("updatedAt"))
+            ClaimFeedbackValidation.validate(value)
+            budget.feedbackBytes += ClaimFeedbackValidation.encodedBytes(value)
+            checkBackup(budget.feedbackBytes <= ClaimFeedbackValidation.MAX_BYTES, "反馈超过 4 MiB 保存上限")
+            return value
+        }
         if (shape is NullableShape && reader.peek() != JsonToken.NULL) return readValue(reader, depth, shape.value, budget)
         checkBackup(depth <= MAX_DEPTH && --budget.remaining >= 0, "资料 JSON 超出结构预算")
         return when (shape) {
@@ -213,6 +241,7 @@ object SnapshotJsonCodec {
                 reader.endArray()
             }
             Primitive.STRING -> { checkBackup(reader.peek() == JsonToken.STRING, "资料字段须为文字"); reader.nextString().also { checkBackup(it.length <= MAX_STRING_CHARACTERS, "资料文字过长") } }
+            FeedbackTextShape -> { checkBackup(reader.peek() == JsonToken.STRING, "独立反馈须为文字"); reader.nextString().also { checkBackup(it.length <= 2_000, "独立文字超过 2000 字符") } }
             AnalysisPayloadShape -> {
                 checkBackup(reader.peek() == JsonToken.STRING, "分析任务内容须为文字")
                 reader.nextString().also {
@@ -232,18 +261,21 @@ object SnapshotJsonCodec {
             }
             Primitive.BOOLEAN -> { checkBackup(reader.peek() == JsonToken.BOOLEAN, "资料字段须为布尔值"); reader.nextBoolean() }
             is MappedShape -> invalid("资料结构无效")
+            is FeedbackShape -> invalid("反馈结构无效")
         }
     }
 
     private fun validateWriteBudget(snapshot: RepositorySnapshot) {
-        checkBackup(snapshot.sourceSchemaVersion == 3, "新建备份必须使用当前来源数据库版本")
+        checkBackup(snapshot.sourceSchemaVersion == 4, "新建备份必须使用当前来源数据库版本")
+        ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
+        checkBackup(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS, "反馈删除标记过多")
         checkBackup(snapshot.analysisRuns.size <= 100 && snapshot.analysisGeneration >= 0 && snapshot.deletedAnalysisRuns.size <= 100_000, "分析任务数量或代数无效")
         checkBackup(snapshot.analysisRuns.all { it.payload.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024 } &&
             snapshot.analysisRuns.sumOf { it.payload.toByteArray(Charsets.UTF_8).size.toLong() } <= 16L * 1024 * 1024, "分析任务内容超过大小上限")
         checkBackup(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 && snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000, "资料列表过大")
         checkBackup(snapshot.records.all { it.draft.topics.size <= 30 && it.draft.answers.size <= 100 && it.draft.attachmentIds.size <= 20 } && snapshot.templates.all { it.draft.questions.size <= 100 }, "资料字段过多")
-        val nodes = 16L + snapshot.analysisRuns.size * 10L + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
-            snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size) + 6L * snapshot.changes.size
+        val nodes = 18L + snapshot.analysisRuns.size * 10L + snapshot.claimFeedback.size * 15L + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
+            snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size + snapshot.deletedClaimFeedback.size) + 6L * snapshot.changes.size
         checkBackup(nodes <= MAX_NODES, "资料 JSON 超出结构预算")
     }
 
