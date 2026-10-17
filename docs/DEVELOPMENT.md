@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)、[M3 第一阶段受控分析](plans/2026-10-16-controlled-analysis.md)、[第二阶段 DeepSeek 与分批整理](plans/2026-10-17-deepseek-analysis.md)及[第三阶段核对与纠正](plans/2026-10-17-evidence-review-and-feedback.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 [M1 记录功能](plans/2026-10-16-local-records.md)、[M2 数据转移后端](plans/2026-10-16-backup-knowledge-export.md)、[M3 受控分析](plans/2026-10-16-controlled-analysis.md)、[DeepSeek 与分批整理](plans/2026-10-17-deepseek-analysis.md)、[核对与纠正](plans/2026-10-17-evidence-review-and-feedback.md)及[正式知识与记录指标](plans/2026-10-17-knowledge-publication.md)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -45,10 +45,11 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/transfer/` | 备份加密、预览恢复、阅读包与证据包；用法见[接口文档](DATA_TRANSFER.md) |
 | `app/src/main/java/dev/tracelife/analysis/` | 受控取证、完整请求预算、调用证据台账与待核对提案；见[分析接口](CONTROLLED_ANALYSIS.md)和[核对／反馈接口](CLAIM_REVIEW.md) |
 | `app/src/main/java/dev/tracelife/providers/` | DeepSeek HTTPS、严格响应解析、凭据加密；配置和显式测试见[接入说明](DEEPSEEK.md) |
+| `app/src/main/java/dev/tracelife/knowledge/`、`metrics/` | 正式知识发布／分页查阅、严格审核副本编码与确定性记录指标；见[接口](KNOWLEDGE.md) |
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；当前为 v4，可从 v1/v2/v3 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。DeepSeek 真实调用与核对案例使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过两项，不读取真实 KEY。
+新数据库格式通过明确的版本迁移升级；当前为 v5，可从 v1–v4 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询或备份快照直接开放给模型。DeepSeek 真实调用与核对案例使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过两项，不读取真实 KEY。
 
 ## 设备验证与阶段边界
 
@@ -56,4 +57,4 @@ Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于�
 
 M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
 
-M3 任务创建、分批执行、恢复、删除、提案核对及用户反馈同样只有后端接口。正式发布与自动调度尚未实现，语义核对不是事实认证，模型质量和真机行为需分别验证。
+M3 任务创建、分批执行、核对、反馈、正式知识发布及记录指标同样只有后端接口。自动调度、周期报告、健康指标与画像尚未实现。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。

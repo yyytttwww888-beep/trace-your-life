@@ -1,8 +1,10 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
+import dev.tracelife.storage.StoredKnowledgeRevision
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -57,6 +59,7 @@ object KnowledgeArchive {
             if (reason == null) true else { excluded[reason] = excluded.getValue(reason) + 1; false }
         }
         require(included.size <= MAX_CURRENT_RECORDS) { "阅读包最多支持 10000 条当前记录，请分批导出" }
+        val knowledge = PublishedKnowledgeExport.select(snapshot, current, included, options)
         val unknownEligible = current.count { record ->
             record.draft.occurrence.startDate == null &&
                 (options.scope.includeArchived || !record.archived) &&
@@ -83,10 +86,15 @@ object KnowledgeArchive {
             writer.use { archive ->
                 val paths = included.associate { it.id to recordPath(it) }
                 require(paths.values.distinct().size == paths.size) { "记录路径冲突" }
+                val knowledgePaths = knowledge.entries.associate { it.value.id to knowledgePath(it.value) }
+                val relatedKnowledge = knowledge.entries.flatMap { entry -> entry.value.evidence.map { it.recordId }.distinct().map { it to entry.value } }
+                    .groupBy({ it.first }, { it.second })
                 val templatePaths = boundTemplates.associate { (it.id to it.version) to templatePath(it) }
                 included.forEach { record ->
-                    archive.text(paths.getValue(record.id), recordText(record, paths.getValue(record.id), templatePaths, attachments, options, archive))
+                    archive.text(paths.getValue(record.id), recordText(record, paths.getValue(record.id), templatePaths, attachments, options, archive,
+                        relatedKnowledge[record.id]?.let { "notes/sources/${hash(record.id)}/index.md" }))
                 }
+                writeKnowledge(archive, knowledge, knowledgePaths, paths)
                 boundTemplates.forEach { template ->
                     val path = templatePaths.getValue(template.id to template.version)
                     archive.text(path, templateText(template))
@@ -97,21 +105,22 @@ object KnowledgeArchive {
                     require(file.isFile && file.length() == metadata.sizeBytes) { "附件文件缺失或不完整" }
                     archive.attachment("attachments/${metadata.id}.blob", file, metadata)
                 }
-                val rootLinks = listOf(
+                val rootLinks = mutableListOf(
                     Nav("主题入口", "topics/index.md"), Nav("时间入口", "timeline/index.md"),
                     Nav("分页证据目录", "indexes/evidence/index.md"), Nav("精确 ID 定位", "indexes/ids/index.json"),
                     Nav("所绑定的模板版本", "templates/index.md"), Nav("结构化资料（迁移工具使用）", "data/index.md"),
                 )
+                if (knowledge.entries.isNotEmpty()) rootLinks += Nav("已发布知识（非原始证据）", "notes/index.md")
                 archive.pages("indexes/index.md", "分层索引", rootLinks, "先确定任务、时间和主题；分页枚举范围，再按需读取原文。此包没有执行模型读取预算。")
                 archive.recordPages("indexes/evidence/index.md", "当前范围证据目录", included, paths)
                 archive.pages("templates/index.md", "所绑定的模板版本", boundTemplates.map { Nav("${it.draft.name} · 版本 ${it.version}", templatePaths.getValue(it.id to it.version)) })
-                writeTopics(archive, included, paths)
-                writeTimeline(archive, included, paths)
+                writeTopics(archive, included, paths, knowledge)
+                writeTimeline(archive, included, paths, knowledge.entries.isNotEmpty())
                 writeIdRoutes(archive, included, paths)
-                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options)
+                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options, knowledge.entries.isNotEmpty())
                 val readme = buildString {
                     append("# Trace Life 阅读资料包\n\n")
-                    append("这是固定来源快照的阅读包，不能完整恢复。仅包含所选范围的当前记录修订及其绑定模板版本；历史修订、删除台账、变更任务、凭据和未纳入资料均未包含。\n\n")
+                    append("这是 capturedAt 时点的固定历史快照阅读包，不能完整恢复，也不会随时间或应用内纠正自动更新。包含所选范围的记录修订、绑定模板版本及清单明确纳入的已发布知识；历史修订、删除台账、变更任务、凭据和未纳入资料均未包含。\n\n")
                     append("读取顺序：先查看 ").append(archive.link("README.md", "manifest.json", "范围和覆盖说明"))
                         .append("，再从 ").append(archive.link("README.md", "indexes/index.md", "分层索引"))
                         .append(" 选择主题或期间，进入分页证据目录，最后按需读取单条原文。精确 ID 路由使用 ID 的 UTF-8 SHA-256 前两位作为分片。不要将整个 ZIP、所有目录或 data/ 一次装入模型上下文。\n\n")
@@ -121,8 +130,10 @@ object KnowledgeArchive {
                         .append(archive.link("README.md", "timeline/intervals/index.md", "跨期区间目录"))
                         .append(" 和 ").append(archive.link("README.md", "timeline/unknown/index.md", "未知时间目录")).append("。\n\n")
                     append("主题和索引中的长名称仅作缩短显示；完整文字保留在原始记录或结构化资料中。所有日/周入口只是导航，未生成任何复盘总结、画像或成长判断。\n")
-                    append("\n分析任务、调用证据台账和待核验提案未纳入本阅读包；这些内容仅保留在完整加密备份中，不能作为本包已验证的分析结论。\n")
-                    append("\n用户反馈及独立文字同样未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；请通过完整加密备份保留。\n")
+                    append("\n完整分析任务、完整调用证据台账和待核验提案未纳入本阅读包；这些内容仅保留在完整加密备份中。知识条目仅保留对应发布的核对凭据，不代表全部分析历史或事实认证。\n")
+                    append("\n已纳入 ${knowledge.entries.size} 条在 capturedAt 时有效的已发布知识，省略 ${knowledge.omitted} 条当前指针及 ${knowledge.omittedHistoricalRevisions} 份历史知识修订。已发布知识是保存的分析，不是新增原始证据，也不代表用户已掌握或实践；新的判断必须沿引用重新核对原文。\n")
+                    if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
+                    append("\n完整用户反馈及独立文字未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；知识正文仅显示对应决定与版本，不复制用户文字。请通过完整加密备份保留。\n")
                     if (options.question != null) append("\n任务问题（用户资料）：\n").append(fenced(options.question))
                 }
                 archive.text("README.md", readme)
@@ -130,6 +141,7 @@ object KnowledgeArchive {
                 val manifest = JSONObject().put("format", "trace-life-reading").put("formatVersion", 1)
                     .put("kind", options.kind.name.lowercase()).put("restorable", false)
                     .put("snapshotId", snapshot.snapshotId).put("storeId", snapshot.storeId).put("generation", snapshot.generation)
+                    .put("analysisGeneration", snapshot.analysisGeneration).put("validity", "historical_snapshot_at_capturedAt")
                     .put("capturedAt", snapshot.capturedAt.toString()).put("sourceSchemaVersion", snapshot.sourceSchemaVersion)
                     .put("scope", scopeJson(options.scope)).put("question", options.question ?: JSONObject.NULL)
                     .put("coverage", JSONObject().put("sourceCurrentRecords", current.size).put("includedRecords", included.size)
@@ -147,11 +159,18 @@ object KnowledgeArchive {
                         .put("analysisRunsIncluded", false).put("omittedAnalysisRuns", snapshot.analysisRuns.size)
                         .put("claimFeedbackIncluded", false).put("omittedClaimFeedback", snapshot.claimFeedback.size)
                         .put("claimFeedbackGap", "claim_feedback_not_included")
+                        .put("knowledgeRevisionsIncluded", knowledge.entries.size).put("omittedHistoricalKnowledgeRevisions", knowledge.omittedHistoricalRevisions)
                         .put("analysisGap", "analysis_not_included"))
-                    .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json"))
+                    .put("knowledge", JSONObject().put("sourceHeads", knowledge.sourceHeads).put("included", knowledge.entries.size)
+                        .put("omitted", knowledge.omitted).put("omittedByReason", JSONObject(knowledge.omittedByReason as Map<*, *>))
+                        .put("originalEvidence", false).put("validAt", snapshot.capturedAt.toString()).put("userTextIncluded", false))
+                    .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json")
+                        .put("knowledge", if (knowledge.entries.isNotEmpty()) "notes/index.md" else JSONObject.NULL)
+                        .put("knowledgeIds", if (knowledge.entries.isNotEmpty()) "indexes/note-ids/index.json" else JSONObject.NULL))
                     .put("inventory", JSONObject().put("path", inventoryRoot.path).put("sha256", inventoryRoot.sha256)
                         .put("excludes", JSONArray(listOf("manifest.json", "inventory/"))))
                 listOf("README.md", "indexes/index.md", "indexes/ids/index.json", inventoryRoot.path).forEach { archive.reference("manifest.json", it) }
+                if (knowledge.entries.isNotEmpty()) listOf("notes/index.md", "indexes/note-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 archive.text("manifest.json", manifest.toString(2), index = true)
                 archive.validateReferences()
             }
@@ -171,11 +190,13 @@ object KnowledgeArchive {
         return null
     }
 
-    private fun writeTopics(archive: ArchiveWriter, records: List<RecordRevision>, paths: Map<String, String>) {
+    private fun writeTopics(archive: ArchiveWriter, records: List<RecordRevision>, paths: Map<String, String>, knowledge: PublishedKnowledgeExport.Selection) {
+        val knowledgeTopics = knowledge.entries.flatMap { it.value.topics }.toSet()
         val groups = records.flatMap { record -> record.draft.topics.map { it to record } }.groupBy({ it.first }, { it.second }).toSortedMap()
         val entries = groups.map { (topic, members) ->
             val path = "topics/${hash(topic)}/index.md"
-            archive.recordPages(path, "主题：$topic", members, paths)
+            val note = if (topic in knowledgeTopics) "相关已发布知识：" + archive.link(path, "notes/topics/${hash(topic)}/index.md", "知识条目（非原始证据）") else ""
+            archive.recordPages(path, "主题：$topic", members, paths, note)
             Nav("$topic · ${members.size} 条", path)
         }.toMutableList()
         val unclassified = records.filter { it.draft.topics.isEmpty() }
@@ -184,7 +205,7 @@ object KnowledgeArchive {
         archive.pages("topics/index.md", "主题入口", entries, "主题是关联关系，同一记录可以出现在多个入口；原文只有一个 Markdown 路径。")
     }
 
-    private fun writeTimeline(archive: ArchiveWriter, records: List<RecordRevision>, paths: Map<String, String>) {
+    private fun writeTimeline(archive: ArchiveWriter, records: List<RecordRevision>, paths: Map<String, String>, hasKnowledge: Boolean) {
         val unknown = records.filter { it.draft.occurrence.startDate == null }
         val intervals = records.filter(::isInterval)
         archive.recordPages("timeline/unknown/index.md", "发生时间未知", unknown, paths, "这些记录不能确定归属任何日/月/周，不能用录入时间补足。")
@@ -193,6 +214,7 @@ object KnowledgeArchive {
         val allWeeks = records.filter { it.draft.occurrence.startDate != null }.groupBy { weekKey(it.draft.occurrence.startDate!!) }
         val years = months.keys.groupBy { it.year }.toSortedMap()
         val rootEntries = mutableListOf(Nav("区间记录（查任一期间都须核对）", "timeline/intervals/index.md"), Nav("未知时间", "timeline/unknown/index.md"))
+        if (hasKnowledge) rootEntries += Nav("已发布知识的分析范围", "notes/timeline/index.md")
         years.forEach { (year, yearMonths) ->
             val yearPath = "timeline/${year.toString().padStart(4, '0')}/index.md"
             val monthEntries = yearMonths.map { month ->
@@ -260,6 +282,7 @@ object KnowledgeArchive {
         templates: Map<Pair<String, Int>, String>,
         attachments: List<Attachment>,
         options: ReadingExportOptions,
+        hasKnowledge: Boolean,
     ) {
         val pages = mutableListOf<Nav>()
         val lines = mutableListOf<String>()
@@ -306,7 +329,133 @@ object KnowledgeArchive {
             Nav("附件元数据 · 第 ${index + 1} 页", path)
         }
         archive.pages("data/attachments/index.md", "所选记录的附件", attachmentPages, if (options.includeAttachments) "文件已包含，但未被 AI 分析。" else "文件未包含；元数据不能代替图片内容。")
-        archive.pages("data/index.md", "结构化资料入口", listOf(Nav("当前记录 JSONL", "data/records/index.md"), Nav("附件元数据", "data/attachments/index.md")), "历史修订和恢复所需台账未包含；不可完整恢复。")
+        val dataLinks = mutableListOf(Nav("当前记录 JSONL", "data/records/index.md"), Nav("附件元数据", "data/attachments/index.md"))
+        if (hasKnowledge) dataLinks += Nav("已发布知识 JSONL（非原始证据）", "data/knowledge/index.md")
+        archive.pages("data/index.md", "结构化资料入口", dataLinks, "历史修订和恢复所需台账未包含；不可完整恢复。")
+    }
+
+    private fun writeKnowledge(
+        archive: ArchiveWriter,
+        selection: PublishedKnowledgeExport.Selection,
+        paths: Map<String, String>,
+        recordPaths: Map<String, String>,
+    ) {
+        if (selection.entries.isEmpty()) return
+        val notes = selection.entries.map { it.value }
+        fun notePages(path: String, title: String, values: List<StoredKnowledgeRevision>, note: String = "") {
+            archive.pages(path, title, values.map { Nav("${it.id} · 修订 ${it.revision} · ${it.category.name}", paths.getValue(it.id)) },
+                "节点内容为已保存分析的导航，不是新的原始证据。$note")
+        }
+        selection.entries.forEach { entry ->
+            val value = entry.value
+            val path = paths.getValue(value.id)
+            archive.text(path, buildString {
+                append("# 已发布知识\n\n节点：已保存分析；非独立原始证据。仅说明本阅读包 capturedAt 时点的状态，不随应用变化自动更新。\n\n")
+                append("ID：${escape(value.id)}；修订：${value.revision}；类别：${value.category.name}；陈述性质：${value.claim.kind.name}。\n\n")
+                append("保存知识不代表已经掌握、实践或证明个人成长；用户确认不改变原始资料的自述性质。\n\n")
+                append("分析范围：${value.scope.from} 至 ${value.scope.through}；时区：${escape(value.scope.zoneId)}；含归档：${value.scope.includeArchived}。范围不是逐日行为已经发生的证明。\n\n")
+                value.scope.recordIds?.let { ids ->
+                    append("本任务还限定以下精确记录 ID，不代表期间全部记录：\n").append(fenced(ids.sorted().joinToString("\n"))).append("\n")
+                }
+                append("来源：${escape(value.source.storeId)} / ${value.source.generation}；发布：${value.publishedAt}；到期：${value.expiresAt ?: "未设置"}。\n\n")
+                append("## 保存的陈述\n\n").append(fenced(value.claim.text))
+                append("\n主题（资料）：\n").append(fenced(value.topics.sorted().joinToString("\n")))
+                append("\n## 核对与用户决定\n\n")
+                append("核对结果：${value.review.verdict.name}；提供方：${escape(value.reviewProviderId)}；核对批次：${escape(value.reviewBatchKey)}；尝试：${value.reviewAttempt}。模型核对不是事实认证。\n\n")
+                append("用户决定：${entry.feedbackDecision?.name ?: "未提供"}；反馈版本：${value.feedbackVersion}。独立用户文字未复制。\n\n")
+                append("适用范围仅限已提供片段；没有穷尽反例搜索，也未分析附件，不能将以下原文目录解释为完整生活记录。\n\n")
+                append("核对未知项（不是新增证据）：\n").append(fenced(value.review.unknowns.joinToString("\n")))
+                append("\n## 原始证据定位\n\n片段位置采用 Unicode 码点，起点包含、终点不包含；链接指向原始修订，片段未在知识正文重复复制。\n\n")
+                value.evidence.forEach { evidence ->
+                    append("- ").append(archive.link(path, recordPaths.getValue(evidence.recordId), "${evidence.recordId} · 修订 ${evidence.revision}"))
+                    append("；字段：${escape(evidence.field)}；片段：[${evidence.start}, ${evidence.end}) / ${evidence.totalCodePoints}；SHA-256：${evidence.sha256}；引用：${evidence.id}")
+                    append("；核对用途：${if (evidence.id in value.review.supportingEvidenceIds) "支持" else "已读上下文"}。\n")
+                }
+            })
+        }
+        notePages("notes/all/index.md", "已发布知识目录", notes)
+        val topics = notes.flatMap { note -> note.topics.map { it to note } }.groupBy({ it.first }, { it.second }).toSortedMap()
+        val topicLinks = topics.map { (topic, values) ->
+            val path = "notes/topics/${hash(topic)}/index.md"
+            notePages(path, "知识主题：$topic", values)
+            Nav("$topic · ${values.size} 条", path)
+        }.toMutableList()
+        val unclassified = notes.filter { it.topics.isEmpty() }
+        notePages("notes/topics/unclassified/index.md", "未分类知识", unclassified)
+        topicLinks += Nav("未分类 · ${unclassified.size} 条", "notes/topics/unclassified/index.md")
+        archive.pages("notes/topics/index.md", "知识主题入口", topicLinks, "同一知识可关联多个主题，正文只保留一份。")
+
+        val months = notes.groupBy { YearMonth.from(it.scope.from) }.toSortedMap()
+        val yearLinks = months.keys.groupBy { it.year }.toSortedMap().map { (year, yearMonths) ->
+            val yearPath = "notes/timeline/${year.toString().padStart(4, '0')}/index.md"
+            val monthLinks = yearMonths.map { month ->
+                val path = "notes/timeline/${month.year.toString().padStart(4, '0')}/${month.monthValue.toString().padStart(2, '0')}/index.md"
+                notePages(path, "$month 分析范围起点", months.getValue(month), "按分析范围起始月定位；跨月内容须查区间目录，不能推断所有事件发生在本月。")
+                Nav("$month · ${months.getValue(month).size} 条", path)
+            }
+            archive.pages(yearPath, "$year 知识范围入口", monthLinks)
+            Nav("$year 年", yearPath)
+        }
+        notePages("notes/timeline/intervals/index.md", "跨日期分析范围", notes.filter { it.scope.from != it.scope.through },
+            "查任意期间都需核对各条目的完整范围；不将长范围展开为每天的条目。")
+        archive.pages("notes/timeline/index.md", "知识分析范围入口", listOf(Nav("跨日期范围", "notes/timeline/intervals/index.md")) + yearLinks,
+            "此处按分析计划定位，不以发布时间代替原始记录发生时间；未知日期仍以原始记录为准。")
+
+        notes.flatMap { note -> note.evidence.map { it.recordId }.distinct().map { it to note } }
+            .groupBy({ it.first }, { it.second }).forEach { (recordId, values) ->
+                val path = "notes/sources/${hash(recordId)}/index.md"
+                notePages(path, "与原始记录相关的已发布知识", values,
+                    "返回 " + archive.link(path, recordPaths.getValue(recordId), "原始记录") + "。")
+            }
+        val shards = notes.groupBy { hash(it.id).take(2) }.toSortedMap().map { (prefix, values) ->
+            val shardPath = "indexes/note-ids/$prefix/index.json"
+            val pages = values.chunked(archive.pageSize).mapIndexed { index, page ->
+                val path = "indexes/note-ids/$prefix/notes-${number(index)}.jsonl"
+                archive.text(path, page.joinToString("\n", postfix = "\n") { note ->
+                    archive.reference(path, paths.getValue(note.id))
+                    JSONObject().put("id", note.id).put("revision", note.revision).put("type", "saved-analysis")
+                        .put("path", paths.getValue(note.id)).toString()
+                }, index = true)
+                JSONObject().put("firstId", page.first().id).put("lastId", page.last().id).put("path", path).put("count", page.size)
+            }
+            archive.jsonPages(shardPath, "knowledge-id-mapping-pages", pages)
+            JSONObject().put("prefix", prefix).put("path", shardPath).put("count", values.size)
+        }
+        archive.jsonPages("indexes/note-ids/index.json", "sha256-utf8-prefix-2-knowledge", shards)
+
+        val dataPages = mutableListOf<Nav>()
+        val lines = mutableListOf<String>()
+        val targets = mutableSetOf<String>()
+        var bytes = 0
+        fun flush() {
+            if (lines.isEmpty()) return
+            val path = "data/knowledge/page-${number(dataPages.size)}.jsonl"
+            targets.forEach { archive.reference(path, it) }
+            archive.text(path, lines.joinToString("\n", postfix = "\n"))
+            dataPages += Nav("已发布知识 · 第 ${dataPages.size + 1} 页 · ${lines.size} 条", path)
+            lines.clear(); targets.clear(); bytes = 0
+        }
+        selection.entries.forEach { entry ->
+            val value = entry.value
+            val json = JSONObject(KnowledgeCodec.encode(value)).put("nodeType", "saved-analysis").put("originalEvidence", false)
+                .put("path", paths.getValue(value.id)).put("feedbackDecision", entry.feedbackDecision?.name ?: JSONObject.NULL)
+                .put("recordPaths", JSONArray(value.evidence.map { it.recordId }.distinct().map { id ->
+                    JSONObject().put("id", id).put("path", recordPaths.getValue(id))
+                })).toString()
+            val size = json.toByteArray(Charsets.UTF_8).size + 1
+            require(size <= MAX_TEXT_BYTES) { "单份知识条目过大" }
+            if (lines.isNotEmpty() && (lines.size == archive.pageSize || bytes + size > JSON_PAGE_BYTES)) flush()
+            lines += json
+            targets += paths.getValue(value.id)
+            targets += value.evidence.map { recordPaths.getValue(it.recordId) }
+            bytes += size
+        }
+        flush()
+        archive.pages("data/knowledge/index.md", "已发布知识结构化资料", dataPages, "仅供工具处理；不是默认模型上下文，不是原始证据，也不是完整恢复备份。")
+        archive.pages("notes/index.md", "已发布知识入口", listOf(
+            Nav("知识主题", "notes/topics/index.md"), Nav("分析范围", "notes/timeline/index.md"), Nav("分页目录", "notes/all/index.md"),
+            Nav("精确知识 ID 定位", "indexes/note-ids/index.json"),
+        ), "仅包含 capturedAt 时有效且全部核对原文位于本包范围内的知识。已有判断不能重新计算为独立证据。")
     }
 
     private fun recordText(
@@ -316,6 +465,7 @@ object KnowledgeArchive {
         attachments: Map<String, Attachment>,
         options: ReadingExportOptions,
         archive: ArchiveWriter,
+        knowledgeIndex: String? = null,
     ): String = buildString {
         append("# 原始记录\n\nID：").append(escape(record.id)).append("；修订：${record.revision}\n\n")
         append("发生时间：${dateLabel(record)}；时区：${escape(record.draft.occurrence.zoneId)}\n\n")
@@ -337,6 +487,7 @@ object KnowledgeArchive {
                 append("；${item.sizeBytes} 字节；未分析。\n")
             }
         }
+        if (knowledgeIndex != null) append("\n相关 ").append(archive.link(path, knowledgeIndex, "已发布知识（非原始证据）")).append("。\n")
     }
 
     private fun templateText(template: TemplateVersion): String = buildString {
@@ -362,6 +513,7 @@ object KnowledgeArchive {
         return "records/$bucket/${hash(record.id)}-r${record.revision}.md"
     }
     private fun templatePath(template: TemplateVersion) = "templates/${hash(template.id)}/v${template.version}.md"
+    private fun knowledgePath(value: StoredKnowledgeRevision) = "notes/entries/${hash(value.id)}-r${value.revision}.md"
     private fun weekKey(date: LocalDate) = "${date.get(IsoFields.WEEK_BASED_YEAR).toString().padStart(4, '0')}-W${date.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR).toString().padStart(2, '0')}"
     private fun dateLabel(record: RecordRevision) = record.draft.occurrence.let { when {
         it.startDate == null -> "未知"

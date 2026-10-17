@@ -98,6 +98,7 @@ class ClaimFeedbackTransferTest {
         val legacy = json(snapshot).apply {
             put("formatVersion", 2); put("sourceSchemaVersion", 3)
             remove("claimFeedback"); remove("deletedClaimFeedback")
+            remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
         }
         val expected = snapshot.copy(sourceSchemaVersion = 3, claimFeedback = emptyList(), deletedClaimFeedback = emptyList())
         assertEquals(expected, SnapshotJsonCodec.read(legacy.toString().byteInputStream()))
