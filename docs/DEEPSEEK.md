@@ -1,6 +1,6 @@
 # DeepSeek 配置与分批整理
 
-用户已指定 DeepSeek。本轮实现官方 HTTPS 适配器、密钥保存与自动分批整理；真实 KEY 尚未配置，因此线上调用和模型效果仍待验证。模型协议依据及核验日期见[官方资料调研](research/2026-10-17-deepseek-integration.md)，实施范围见[第二阶段计划](plans/2026-10-17-deepseek-analysis.md)。
+用户已指定 DeepSeek。已实现官方 HTTPS 适配器、密钥保存与自动分批整理；用户配置 KEY 后，开发机上的单样本真实调用测试已通过，分析质量和真机行为仍待验证。模型协议依据及核验日期见[官方资料调研](research/2026-10-17-deepseek-integration.md)，实施范围见[第二阶段计划](plans/2026-10-17-deepseek-analysis.md)。
 
 ## 配置 KEY 后的开发机验证
 
@@ -20,6 +20,12 @@
 如需其他路径，设置 `TRACE_LIFE_DEEPSEEK_KEY_FILE`，值为仓库外的绝对文件路径。测试只读取该文件，不打印 KEY。构建只接收路径，不把密钥编译进 APK。
 
 该测试使用一条明确标注的合成记录，经过真实 `ControlledAnalysis → AnalysisBatchProcessor → DeepSeekProvider → HTTPS`，最多一次模型请求，核对响应、引文与服务端用量。会使用账户额度。测试后清理临时数据库和凭据副本。JVM 中只替换 Android Keystore 的包装密钥；设备 Keystore、手机联网与真实个人任务的分析质量另行验证。完整测试日志与模型输出不写进仓库。
+
+## 实际验证
+
+2026-10-17：用户完成仓库外 KEY 配置后，显式执行一次 `DeepSeekLiveTest`，使用一条合成记录向默认 `deepseek-flash` 发起一次请求。结果为 1 项通过、0 失败、0 跳过；任务达到 `ALL_TEXT_PROCESSED`，提案成功保存，服务端用量通过生产适配器的完整性及预算校验。未修改生产代码，未读取个人记录，未重复发送付费请求。
+
+该测试允许返回空的结论列表，因此通过证明调用链和响应约束有效，不证明产生了非空引用或结论的语义正确。尚未评估多日期、多主题、反例、长记录及长期判断的模型效果，也未验证手机 Keystore 和网络。这次独立真实测试与此前 174 项离线测试、lint、APK 和 GitHub CI 通过分别记录，不表示本轮重跑了全套测试。
 
 ## Android 后端接口
 

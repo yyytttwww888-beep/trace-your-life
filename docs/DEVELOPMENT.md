@@ -48,7 +48,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；当前为 v3，可从 v1/v2 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。DeepSeek 已接入接口、保守计量和凭据保存，真实调用在 KEY 配置后使用显式合成资料测试；普通测试与 CI 自动跳过该项，不读取真实 KEY。
+新数据库格式通过明确的版本迁移升级；当前为 v3，可从 v1/v2 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的仓储查询或备份快照直接开放给模型。DeepSeek 已接入接口、保守计量和凭据保存，并通过一次显式合成资料真实测试，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过该项，不读取真实 KEY。
 
 ## 设备验证与阶段边界
 

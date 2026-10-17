@@ -1,6 +1,6 @@
 # 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)，KEY 配置与真实验证待完成。它没有正式报告、画像发布或语义支持核对。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)，并通过一条合成记录的开发机真实调用测试。它没有正式报告、画像发布或语义支持核对。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 
@@ -71,4 +71,4 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 后续验收
 
-M3 尚需在 KEY 配置后验证真实模型及计量，并实现语义支持核对和人工纠正、确定性指标、正式观察/知识条目和带条件切换的发布。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。所有模型输出仍为 `NEEDS_REVIEW` 候选，不能作为已验证周报或长期画像。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
+M3 已通过单样本真实调用及用量校验；仍需评估更多场景的模型质量，并实现语义支持核对和人工纠正、确定性指标、正式观察/知识条目和带条件切换的发布。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。所有模型输出仍为 `NEEDS_REVIEW` 候选，不能作为已验证周报或长期画像。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。

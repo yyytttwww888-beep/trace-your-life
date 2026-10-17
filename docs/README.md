@@ -13,7 +13,7 @@
 - [M2 实施计划](plans/2026-10-16-backup-knowledge-export.md)：备份恢复与知识导出的实现约束。
 - [数据转移接口](DATA_TRANSFER.md)：调用方式、恢复语义、格式和当前上限。
 - [M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)：受控取证与可恢复分析提案的范围和验证。
-- [受控分析接口](CONTROLLED_ANALYSIS.md)：路由、请求预算、证据台账、恢复及生产模型待验证条件。
+- [受控分析接口](CONTROLLED_ANALYSIS.md)：路由、请求预算、证据台账、恢复及后续验收条件。
 - [DeepSeek 接入](DEEPSEEK.md)：密钥配置、分批整理、预算计量与真实测试入口。
 - [M3 第二阶段计划](plans/2026-10-17-deepseek-analysis.md)：模型适配与分批整理的实现范围。
 
