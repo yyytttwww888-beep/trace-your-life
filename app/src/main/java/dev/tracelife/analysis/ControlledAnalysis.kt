@@ -31,7 +31,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         task(repository.saveAnalysisRun(StoredAnalysisRun(id, 1, source, now, now, request.expiresAt, payload), null))
     }
 
-    fun task(id: String): AnalysisTask = task(requireNotNull(repository.analysisRun(id)) { "分析任务不存在或已清理" })
+    fun task(id: String): AnalysisTask = task(repository.analysisRun(id) ?: throw AnalysisTaskUnavailableException())
     fun tasks(offset: Int = 0, limit: Int = 25): List<AnalysisTask> = repository.analysisRuns(offset, limit).map(::task)
 
     /** Explicit history removal also prevents an older managed backup from restoring this task. */
@@ -127,15 +127,18 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                     "zoneId" to descriptor.occurrence.zoneId, "topics" to descriptor.topics.sorted())
             },
         ))
-        val inputBytes = payload.toByteArray(Charsets.UTF_8).size
-        if (inputBytes > limits.maxInputBytes) throw AnalysisBudgetException("完整模型输入超过字节预算，请减少片段或历史")
+        if (payload.toByteArray(Charsets.UTF_8).size > limits.maxInputBytes) throw AnalysisBudgetException("完整模型输入超过字节预算，请减少片段或历史")
         val modelRequest = ModelRequest(payload, AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
-        val inputTokens = provider.countInputTokens(modelRequest)
+        val prepared = provider.prepare(modelRequest)
+        require(prepared.original == modelRequest) { "模型适配器改变了原始请求" }
+        val inputBytes = prepared.payloadJson.toByteArray(Charsets.UTF_8).size
+        if (inputBytes > limits.maxInputBytes) throw AnalysisBudgetException("供应商完整请求超过字节预算")
+        val inputTokens = prepared.inputTokens
         if (inputTokens !in 1..limits.inputTokenLimit || provider.contextWindowTokens <= 0 ||
             inputTokens.toLong() + limits.outputTokenReserve > provider.contextWindowTokens.toLong()) {
             throw AnalysisBudgetException("完整模型输入与输出预留超过模型上下文预算，或计量无效")
         }
-        val requestHash = AnalysisRunCodec.sha256(payload)
+        val requestHash = AnalysisRunCodec.sha256(prepared.payloadJson)
         val previous = state.calls.lastOrNull { it.batchKey == batchKey }
         if (previous != null) {
             if (previous.providerId != providerId || previous.requestSha256 != requestHash) throw AnalysisConflictException("同一批次不能更换请求或模型")
@@ -149,25 +152,30 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         if (state.calls.size >= limits.maxCalls || state.calls.sumOf { it.inputBytes.toLong() } + inputBytes > limits.totalInputBytes) {
             throw AnalysisBudgetException("任务累计预算已用尽，保留现有进度")
         }
-        val call = AnalysisCall(batchKey, (previous?.attempt ?: 0) + 1, providerId, requestHash, inputBytes, inputTokens, receipts, clock.instant(), CallStatus.IN_FLIGHT)
+        val call = AnalysisCall(batchKey, (previous?.attempt ?: 0) + 1, providerId, requestHash, inputBytes, inputTokens, receipts, clock.instant(), CallStatus.IN_FLIGHT,
+            tokenCountKind = prepared.tokenCountKind)
         val registered = save(task.stored, state.copy(calls = state.calls + call))
         // Recheck after tokenization/registration. Once a network request is sent it cannot be recalled;
         // a source change during that request is caught again by the conditional completion save.
         current(id)
-        val proposal = try {
-            provider.complete(modelRequest)
-        } catch (_: Exception) {
-            finishFailure(registered, state, call, "PROVIDER_FAILED")
+        val completion = try {
+            provider.completePrepared(prepared)
+        } catch (failure: Exception) {
+            finishFailure(registered, state, call, if (failure is AnalysisProviderException) "PROVIDER_${failure.code.name}" else "PROVIDER_FAILED")
             throw AnalysisValidationException("模型调用失败，已保留重试进度")
         }
+        val proposal = completion.proposal
         try {
+            completion.usage?.let { usage ->
+                require(usage.promptTokens in 1..inputTokens && usage.completionTokens in 0..limits.outputTokenReserve) { "模型实际用量超出已登记预算" }
+            }
             AnalysisRunCodec.validateProposal(proposal, receipts, limits.maxOutputBytes)
         } catch (_: IllegalArgumentException) {
             finishFailure(registered, state, call, "INVALID_RESPONSE")
             throw AnalysisValidationException("模型提案结构、引用或输出预算未通过校验")
         }
         ensureCurrent(registered)
-        save(registered, state.copy(calls = state.calls + call.copy(status = CallStatus.SUCCEEDED, finishedAt = clock.instant(), proposal = proposal)))
+        save(registered, state.copy(calls = state.calls + call.copy(status = CallStatus.SUCCEEDED, finishedAt = clock.instant(), proposal = proposal, usage = completion.usage)))
         proposal
     }
 

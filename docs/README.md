@@ -1,6 +1,6 @@
 # Trace Life 文档入口
 
-当前推进 M3 受控取证与分析提案后端，代码及页面接入状态见[项目入口](../README.md)与开发路线。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
+当前推进 M3 DeepSeek 与自动分批整理后端，代码及页面接入状态见[项目入口](../README.md)与开发路线。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
 
 ## 开始与协作
 
@@ -14,6 +14,8 @@
 - [数据转移接口](DATA_TRANSFER.md)：调用方式、恢复语义、格式和当前上限。
 - [M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)：受控取证与可恢复分析提案的范围和验证。
 - [受控分析接口](CONTROLLED_ANALYSIS.md)：路由、请求预算、证据台账、恢复及生产模型待验证条件。
+- [DeepSeek 接入](DEEPSEEK.md)：密钥配置、分批整理、预算计量与真实测试入口。
+- [M3 第二阶段计划](plans/2026-10-17-deepseek-analysis.md)：模型适配与分批整理的实现范围。
 
 ## 架构决策
 
@@ -32,6 +34,7 @@
 | 主题 | 研究笔记 |
 | --- | --- |
 | 分层检索、长上下文与可靠性边界 | [检索与可靠性调研](research/2026-10-16-hierarchical-retrieval-reliability.md) |
+| DeepSeek 接口、token 计量与资料处理 | [DeepSeek 官方资料核验](research/2026-10-17-deepseek-integration.md) |
 | 画像维度、人格与价值观框架 | [框架调研](research/2026-10-16-personal-profile-frameworks.md) |
 | 个体纵向分析、情境与证据维护 | [纵向证据调研](research/2026-10-16-longitudinal-profile-evidence.md) |
 | 深度复盘的成熟方法 | [AAR、无责复盘与 PDSA](research/2026-10-16-reflection-methods.md) |

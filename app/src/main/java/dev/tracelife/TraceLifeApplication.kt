@@ -2,6 +2,9 @@ package dev.tracelife
 
 import android.app.Application
 import dev.tracelife.analysis.ControlledAnalysis
+import dev.tracelife.analysis.AnalysisBatchProcessor
+import dev.tracelife.providers.DeepSeekCredentials
+import dev.tracelife.providers.DeepSeekProvider
 import dev.tracelife.storage.LifeRepository
 import dev.tracelife.templates.BuiltInTemplates
 import dev.tracelife.transfer.DataTransfer
@@ -11,6 +14,9 @@ class TraceLifeApplication : Application() {
     val io = Executors.newSingleThreadExecutor()
     val dataTransfer by lazy { DataTransfer(this, repository) }
     val analysis by lazy { ControlledAnalysis(repository) }
+    val analysisProcessor by lazy { AnalysisBatchProcessor(analysis) }
+    val deepSeekCredentials by lazy { DeepSeekCredentials(this) }
+    val deepSeekProvider by lazy { DeepSeekProvider(deepSeekCredentials) }
     val repository by lazy {
         LifeRepository(this).also { repository ->
             val installation = getSharedPreferences("installation", MODE_PRIVATE)

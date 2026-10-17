@@ -28,6 +28,12 @@ android {
                 exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
             }
             it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+            // Opt-in synthetic live test. Only a file PATH crosses Gradle; keys never enter build config/APK.
+            if (providers.gradleProperty("traceLifeDeepSeekSmoke").orNull == "true") {
+                it.systemProperty("traceLife.deepSeekSmoke", "true")
+                it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
+                System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
+            }
             listOf("http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort", "http.nonProxyHosts").forEach { key ->
                 System.getProperty(key)?.let { value -> it.systemProperty(key, value) }
             }

@@ -68,6 +68,8 @@ data class AnalysisCall(
     val finishedAt: Instant? = null,
     val failureCode: String? = null,
     val proposal: BatchProposal? = null,
+    val tokenCountKind: TokenCountKind = TokenCountKind.EXACT,
+    val usage: ModelUsage? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList())
@@ -111,15 +113,27 @@ data class AnalysisCoveragePage(
 /** The adapter must send exactly this complete input; it may not append hidden history/tools. */
 data class ModelRequest(val payloadJson: String, val idempotencyKey: String, val maximumOutputTokens: Int)
 
-/** Trusted app adapter. Its tokenizer must count the complete serialized model input including framing.
- * No production adapter is supplied until its provider/tokenizer contract has been verified. */
+enum class TokenCountKind { EXACT, CONSERVATIVE_UTF8_BOUND }
+data class ModelUsage(val promptTokens: Int, val completionTokens: Int)
+data class PreparedModelRequest(val original: ModelRequest, val payloadJson: String, val inputTokens: Int,
+    val tokenCountKind: TokenCountKind = TokenCountKind.EXACT)
+data class ModelCompletion(val proposal: BatchProposal, val usage: ModelUsage? = null)
+
+/** Trusted adapters prepare the exact wire body before the executor checks bytes, tokens and hash.
+ * Conservative counts are labeled separately from model-specific exact tokenization. */
 interface AnalysisProvider {
     val id: String
     val contextWindowTokens: Int
     fun countInputTokens(request: ModelRequest): Int
     fun complete(request: ModelRequest): BatchProposal
+    fun prepare(request: ModelRequest): PreparedModelRequest = PreparedModelRequest(request, request.payloadJson, countInputTokens(request))
+    fun completePrepared(request: PreparedModelRequest): ModelCompletion = ModelCompletion(complete(request.original))
 }
 
 class AnalysisBudgetException(message: String) : IllegalStateException(message)
 class AnalysisConflictException(message: String) : IllegalStateException(message)
 class AnalysisValidationException(message: String) : IllegalArgumentException(message)
+class AnalysisTaskUnavailableException : IllegalArgumentException("分析任务不存在或已清理")
+
+enum class ProviderFailureCode { CONFIGURATION, CREDENTIAL_ACCESS, AUTHENTICATION, BALANCE, RATE_LIMIT, TIMEOUT, NETWORK, SERVER, REQUEST, REDIRECT, RESPONSE, USAGE }
+open class AnalysisProviderException(val code: ProviderFailureCode) : IllegalStateException("模型请求未完成：${code.name}")
