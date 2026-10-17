@@ -80,6 +80,24 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
     fun next(page: KnowledgeIndexPage): KnowledgeIndexPage = indexPage(page.filter,
         requireNotNull(page.nextOffset) { "已到知识目录末页" }, page.pageSize, page)
 
+    /** Trusted derived-view builder: one snapshot, one head scan and a shared task decode cache.
+     * The visitor must retain only the bounded result it needs; this is not a model-reading API. */
+    internal fun scanCurrent(filter: KnowledgeFilter = KnowledgeFilter(), visit: (KnowledgeView) -> Unit) = consistentRead { source, _, now ->
+        val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
+        var offset = 0
+        do {
+            val heads = repository.knowledgeHeads(offset, 100)
+            heads.forEach { head ->
+                val value = repository.knowledgeRevision(head.id, head.revision)
+                    ?: throw StaleSnapshotException("知识目录在读取期间变化")
+                if (!matches(value, filter)) return@forEach
+                val result = view(value, true, source, now, states)
+                if (filter.includeInvalid || result.evidenceState == KnowledgeEvidenceState.CURRENT) visit(result)
+            }
+            offset += heads.size
+        } while (heads.size == 100)
+    }
+
     private fun indexPage(filter: KnowledgeFilter, offset: Int, limit: Int, previous: KnowledgeIndexPage? = null): KnowledgeIndexPage {
         require(offset >= 0 && limit in 1..100)
         return consistentRead { source, generation, now ->
@@ -97,10 +115,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                 for (head in heads) {
                     val value = repository.knowledgeRevision(head.id, head.revision)
                         ?: throw StaleSnapshotException("知识目录在读取期间变化")
-                    if (filter.from != null && value.scope.through < filter.from ||
-                        filter.through != null && value.scope.from > filter.through ||
-                        filter.category != null && value.category != filter.category ||
-                        filter.topics != null && value.topics.none { it in filter.topics }) continue
+                    if (!matches(value, filter)) continue
                     val state = view(value, true, source, evaluatedAt, states).evidenceState
                     if (!filter.includeInvalid && state != KnowledgeEvidenceState.CURRENT) { omitted++; continue }
                     if (total >= offset && selected.size < limit) selected += KnowledgeIndexItem(value.id, value.revision,
@@ -116,6 +131,12 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
 
     /** Permanent deletion; independent user feedback remains available through AnalysisFeedback. */
     fun delete(id: String, expectedRevision: Int) = repository.deleteKnowledge(id, expectedRevision)
+
+    private fun matches(value: StoredKnowledgeRevision, filter: KnowledgeFilter): Boolean =
+        (filter.from == null || value.scope.through >= filter.from) &&
+            (filter.through == null || value.scope.from <= filter.through) &&
+            (filter.category == null || value.category == filter.category) &&
+            (filter.topics == null || value.topics.any { it in filter.topics })
 
     private fun view(value: StoredKnowledgeRevision, currentRevision: Boolean, source: SourceStamp, now: Instant,
         states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?> = mutableMapOf()): KnowledgeView {

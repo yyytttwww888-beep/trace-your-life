@@ -4,8 +4,11 @@ import android.app.Application
 import dev.tracelife.analysis.ControlledAnalysis
 import dev.tracelife.analysis.AnalysisBatchProcessor
 import dev.tracelife.analysis.AnalysisFeedback
+import dev.tracelife.analysis.AutomaticOrganizer
 import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.metrics.RecordMetrics
+import dev.tracelife.metrics.RecordMetricEvidenceService
+import dev.tracelife.reports.PeriodReports
 import dev.tracelife.providers.DeepSeekCredentials
 import dev.tracelife.providers.DeepSeekProvider
 import dev.tracelife.storage.LifeRepository
@@ -21,6 +24,9 @@ class TraceLifeApplication : Application() {
     val analysisFeedback by lazy { AnalysisFeedback(repository) }
     val knowledge by lazy { KnowledgeLibrary(repository) }
     val recordMetrics by lazy { RecordMetrics(repository) }
+    val metricEvidence by lazy { RecordMetricEvidenceService(repository) }
+    val automaticOrganizer by lazy { AutomaticOrganizer(repository, analysis, analysisProcessor, knowledge) }
+    val periodReports by lazy { PeriodReports(repository) }
     val deepSeekCredentials by lazy { DeepSeekCredentials(this) }
     val deepSeekProvider by lazy { DeepSeekProvider(deepSeekCredentials) }
     val repository by lazy {

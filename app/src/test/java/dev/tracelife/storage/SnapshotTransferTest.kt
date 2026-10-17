@@ -218,7 +218,7 @@ class SnapshotTransferTest {
         assertFalse(File(oldFile.parentFile, "${incoming.id}.blob").exists())
     }
 
-    @Test fun `snapshot publication checks store generation paths and destination before atomic move`() {
+    @Test fun `snapshot publication checks store generation paths and destination before atomic link`() {
         val record = source.createRecord(RecordDraft("合成资料：发布"))
         val snapshot = source.captureSnapshot(emptyDirectory("publish-snapshot"))
         val stage = File(workspace, "output.stage").apply { writeText("synthetic encrypted backup") }
@@ -236,7 +236,8 @@ class SnapshotTransferTest {
         assertThrows(IllegalArgumentException::class.java) { source.publishSnapshot(current, stage, context.getDatabasePath("bad.backup")) }
         source.publishSnapshot(current, stage, destination)
         assertEquals("synthetic encrypted backup", destination.readText())
-        assertFalse(stage.exists())
+        assertTrue(stage.delete()) // The staging file remains caller-owned after atomic publication.
+        assertEquals("synthetic encrypted backup", destination.readText())
     }
 
     @Test fun `generation advances only for committed changes and survives reopen`() {
