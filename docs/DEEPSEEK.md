@@ -101,4 +101,18 @@ val result = app.analysisProcessor.process(
 | `STALE` / `EXPIRED` | 来源变化或任务过期，建立新任务 |
 | `NO_DATA` / `TASK_UNAVAILABLE` / `CONFLICT` | 无资料、任务已删除或并发冲突，需要对应处理 |
 
-当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。新增[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；周期材料报告组织已有内容，新的综合判断和画像仍待实现。
+当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，跨批整合和画像仍待实现。
+
+## 综合真实调用验证
+
+2026-10-17 使用同一仓库外 KEY 完成 1 项显式合成测试，0 失败、0 跳过。两条合成记录描述“先看资料未动手”与“先练习后查资料”，同时提供难度和可用时间不同的替代解释；生产综合调用生成 2 条 `POSSIBLE_INTERPRETATION`，其中一条同时引用两份原文。随后生产核对调用重新读取本批全部原文，返回 `SUPPORTED`。未自动发布知识或采纳行动。
+
+本次共 2 次请求，无重试：综合实际用量为 1,139 输入／456 输出 token，核对为 1,732 输入／175 输出 token，均在已登记预算内。验证的是这一组有界合成资料的提案、引用及核对链，不代表跨批整合、自动反例召回、真实个人记录总体准确率或手机能力。
+
+```bash
+./gradlew testDebugUnitTest \
+  --tests 'dev.tracelife.providers.DeepSeekSynthesisLiveTest' \
+  -PtraceLifeDeepSeekSynthesis=true
+```
+
+此开关只启用综合测试，默认最多一次综合加一次核对，资料固定为合成内容，不输出 KEY、请求头或模型正文。普通测试和 CI 跳过它，也不读取真实凭据；显式测试仅验证开发机联网，Android Keystore 包装密钥在 JVM 使用替身。

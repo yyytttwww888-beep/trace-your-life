@@ -242,6 +242,9 @@ class KnowledgeStorageTest {
         val source = repository.analysisSourceStamp()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            execSQL("DROP TABLE action_heads")
+            execSQL("DROP TABLE action_revisions")
+            execSQL("DROP TABLE deleted_actions")
             execSQL("DROP TABLE knowledge_heads")
             execSQL("DROP TABLE knowledge_revisions")
             execSQL("DROP TABLE deleted_knowledge")
@@ -252,7 +255,7 @@ class KnowledgeStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(value, repository.claimFeedback(value.id))
         assertTrue(repository.knowledgeHeads().isEmpty())
-        assertEquals(5, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(6, repository.captureSnapshot(directory()).sourceSchemaVersion)
     }
 
     private fun run(id: String = "synthetic-run", kind: ClaimKind = ClaimKind.REPORTED_EXPERIENCE, expiresAt: Instant? = null): StoredAnalysisRun {

@@ -2,6 +2,7 @@ package dev.tracelife.storage
 
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
+import dev.tracelife.actions.ActionValidation
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
 import dev.tracelife.transfer.InvalidBackupException
@@ -16,10 +17,11 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..5) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..6) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
+            require(snapshot.sourceSchemaVersion >= 6 || snapshot.actionRevisions.isEmpty() && snapshot.actionHeads.isEmpty() && snapshot.deletedActions.isEmpty()) { "旧版资料不能包含行动" }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
             require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
@@ -123,6 +125,13 @@ internal object SnapshotValidation {
             // redaction must not retroactively change the meaning of historical revisions.
             val knowledgeSources = snapshot.records.associateBy { it.id to it.revision }
             snapshot.knowledgeRevisions.forEach { KnowledgeValidation.validateEvidence(it, knowledgeSources) }
+            ActionValidation.validateCollection(snapshot.actionRevisions, snapshot.actionHeads)
+            require(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS &&
+                snapshot.deletedActions.map { it.id }.distinct().size == snapshot.deletedActions.size) { "行动删除标记过多或重复" }
+            snapshot.deletedActions.forEach { id(it.id); require(it.lastRevision in 1 until Int.MAX_VALUE) { "行动删除版本无效" } }
+            require(snapshot.actionHeads.map { it.id }.toSet().intersect(snapshot.deletedActions.map { it.id }.toSet()).isEmpty()) { "备份同时包含行动及其删除标记" }
+            // Actions and follow-up text are independently authored. A missing or deleted
+            // origin is a navigation gap, never grounds for discarding the user's text.
         } catch (failure: IllegalArgumentException) {
             if (failure is InvalidBackupException) throw failure
             throw InvalidBackupException(failure.message ?: "备份资料无效", failure)

@@ -18,10 +18,11 @@ object AnalysisRunCodec {
     const val MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
     private val digest = Regex("[0-9a-f]{64}")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 3)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 4)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
+        require(version >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
         val reserved = responseReservation(state)
         return json(mapOf("formatVersion" to version, "request" to requestMap(state.request), "calls" to state.calls.map {
             val fields = callMap(it)
@@ -89,7 +90,7 @@ object AnalysisRunCodec {
             }
         }
         val root = read(0).obj("formatVersion", "request", "calls")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..3)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..4)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj("question", "scope", "limits", "focusTopics", "expiresAt")
@@ -127,6 +128,7 @@ object AnalysisRunCodec {
                     } }, call["review"]?.let(::parseReview), if (format < 3) 0 else call.int("feedbackVersion"))
             },
         )
+        require(format >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
         validate(state)
         return state to root.int("formatVersion")
     }
@@ -218,7 +220,7 @@ object AnalysisRunCodec {
                 require(ref.id == evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
             }
             require(call.feedbackVersion >= 0)
-            if (call.purpose == CallPurpose.EXTRACTION) {
+            if (call.purpose.producesClaims) {
                 require(call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
             } else {
                 require(call.proposal == null)
@@ -226,16 +228,23 @@ object AnalysisRunCodec {
                 validId(target.batchKey)
                 require(target.claimIndex in 0..19 && digest.matches(target.claimSha256))
                 val extraction = requireNotNull(state.calls.take(index).lastOrNull {
-                    it.batchKey == target.batchKey && it.purpose == CallPurpose.EXTRACTION && it.status == CallStatus.SUCCEEDED
-                }) { "核对缺少成功提取目标" }
+                    it.batchKey == target.batchKey && it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED
+                }) { "核对缺少已成功生成的目标" }
                 val claim = requireNotNull(extraction.proposal?.claims?.getOrNull(target.claimIndex))
                 require(claimSha256(claim) == target.claimSha256) { "核对目标文字或引用已变化" }
-                require(claim.evidenceIds.all { id -> extraction.evidence.single { it.id == id } in call.evidence }) { "核对没有重新提供全部目标原文" }
+                val mandatory = if (extraction.purpose == CallPurpose.SYNTHESIS) extraction.evidence
+                    else claim.evidenceIds.map { id -> extraction.evidence.single { it.id == id } }
+                require(mandatory.all { it in call.evidence }) { "核对没有重新提供全部目标原文及综合上下文" }
             }
             if (call.status == CallStatus.SUCCEEDED) {
                 require(call.finishedAt != null && call.failureCode == null)
-                if (call.purpose == CallPurpose.EXTRACTION) validateProposal(requireNotNull(call.proposal), call.evidence, limits.maxOutputBytes)
-                else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes)
+                if (call.purpose.producesClaims) {
+                    val proposal = requireNotNull(call.proposal)
+                    validateProposal(proposal, call.evidence, limits.maxOutputBytes)
+                    if (call.purpose == CallPurpose.SYNTHESIS) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
+                        "综合判断必须保留为可能解释"
+                    }
+                } else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes)
             } else {
                 require(call.proposal == null && call.review == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)

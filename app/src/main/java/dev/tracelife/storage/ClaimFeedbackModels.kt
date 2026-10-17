@@ -3,7 +3,6 @@ package dev.tracelife.storage
 import android.util.JsonWriter
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
-import dev.tracelife.analysis.CallPurpose
 import dev.tracelife.analysis.CallStatus
 import dev.tracelife.analysis.ClaimRef
 import java.io.StringWriter
@@ -50,7 +49,7 @@ internal object ClaimFeedbackValidation {
 
     fun matchesTarget(value: StoredClaimFeedback, run: StoredAnalysisRun, state: AnalysisRunState): Boolean {
         if (value.runId != run.id || value.source != run.source) return false
-        val call = state.calls.singleOrNull { it.batchKey == value.batchKey && it.status == CallStatus.SUCCEEDED && it.purpose == CallPurpose.EXTRACTION }
+        val call = state.calls.singleOrNull { it.batchKey == value.batchKey && it.status == CallStatus.SUCCEEDED && it.purpose.producesClaims }
         val claim = call?.proposal?.claims?.getOrNull(value.claimIndex)
         return claim != null && AnalysisRunCodec.claimSha256(claim) == value.claimSha256
     }

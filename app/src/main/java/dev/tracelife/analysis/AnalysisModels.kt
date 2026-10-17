@@ -55,7 +55,11 @@ data class ProposedClaim(val text: String, val evidenceIds: List<String>, val ki
 data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<String> = emptyList())
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
-enum class CallPurpose { EXTRACTION, REVIEW }
+enum class CallPurpose {
+    EXTRACTION, SYNTHESIS, REVIEW;
+
+    val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS
+}
 enum class ReviewVerdict { SUPPORTED, UNSUPPORTED, CONTRADICTED, INSUFFICIENT_CONTEXT }
 enum class ReviewIssue { USER_REPORT_AS_FACT, SCOPE_OVERGENERALIZATION, CAUSAL_OVERREACH, COUNTEREVIDENCE_OMISSION, INSUFFICIENT_CONTEXT, OTHER }
 /** A bounded model quality check, never an independent truth or permission to publish. */

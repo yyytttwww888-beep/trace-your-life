@@ -4,8 +4,13 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import dev.tracelife.actions.ActionHead
+import dev.tracelife.actions.ActionValidation
+import dev.tracelife.actions.StoredActionRevision
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.knowledge.KnowledgeCodec
+import dev.tracelife.knowledge.KnowledgeEvidenceState
+import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.ChangeEvent
@@ -657,6 +662,30 @@ class LifeRepository(
         exists(db, "deleted_knowledge", "id = ?", id)
     }
 
+    fun actionRevision(id: String, revision: Int? = null): StoredActionRevision? = access { db ->
+        transaction(db) { ActionStore.revision(db, id, revision) }
+    }
+    fun actionHeads(offset: Int = 0, limit: Int = 100): List<ActionHead> = access { db -> ActionStore.heads(db, offset, limit) }
+    fun actionHistory(id: String, offset: Int = 0, limit: Int = 25): List<StoredActionRevision> = access { db ->
+        transaction(db) { ActionStore.history(db, id, offset, limit) }
+    }
+    internal fun actionOperation(id: String, operationId: String): StoredActionRevision? = access { db ->
+        ActionStore.operation(db, id, operationId)
+    }
+    internal fun saveAction(value: StoredActionRevision, expectedRevision: Int?): StoredActionRevision = access { db ->
+        transaction(db) {
+            ActionStore.save(db, value, expectedRevision) { origin ->
+                val knowledge = KnowledgeLibrary(this, clock).get(origin.knowledgeId, origin.revision)
+                require(knowledge != null && knowledge.isCurrentRevision && knowledge.evidenceState == KnowledgeEvidenceState.CURRENT) {
+                    "行动来源知识已变化或失效，请重新查看后选择"
+                }
+            }
+        }
+    }
+    internal fun deleteAction(id: String, expectedRevision: Int) = access { db ->
+        transaction(db) { ActionStore.delete(db, id, expectedRevision, clock.instant()) }
+    }
+
     fun deleteKnowledge(id: String, expectedRevision: Int) = access { db ->
         validateId(id)
         require(expectedRevision > 0)
@@ -685,7 +714,8 @@ class LifeRepository(
                     records, templates, attachments, deletions(db, "deleted_records"), deletions(db, "deleted_templates"), allChanges(db),
                     analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"),
                     claimFeedback = allClaimFeedback(db), deletedClaimFeedback = deletions(db, "deleted_claim_feedback"),
-                    knowledgeRevisions = allKnowledgeRevisions(db), knowledgeHeads = allKnowledgeHeads(db), deletedKnowledge = deletions(db, "deleted_knowledge"))
+                    knowledgeRevisions = allKnowledgeRevisions(db), knowledgeHeads = allKnowledgeHeads(db), deletedKnowledge = deletions(db, "deleted_knowledge"),
+                    actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"))
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -739,9 +769,18 @@ class LifeRepository(
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
         if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1"))) {
-            throw IllegalStateException("目标已有记录、模板、分析、反馈或知识，须明确允许替换后恢复")
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1"))) {
+            throw IllegalStateException("目标已有记录、模板、分析、反馈、知识或行动，须明确允许替换后恢复")
         }
+        val mergedActionDeletions = mergeDeletions(deletions(db, "deleted_actions"), snapshot.deletedActions)
+        require(mergedActionDeletions.size <= ActionValidation.MAX_DELETIONS) { "行动删除标记超过上限" }
+        val deletedActionIds = mergedActionDeletions.map { it.id }.toSet()
+        // User-owned action plans and review history survive source replacement. The entire local
+        // chain wins, even if an incoming backup carries higher revisions or later timestamps.
+        val actionRevisions = (snapshot.actionRevisions.groupBy { it.id } + ActionStore.allRevisions(db).groupBy { it.id })
+            .filterKeys { it !in deletedActionIds }.toSortedMap().values.flatten()
+        val actionHeads = actionRevisions.groupBy { it.id }.map { (id, values) -> ActionHead(id, values.maxOf { it.revision }) }
+        ActionValidation.validateCollection(actionRevisions, actionHeads)
         val mergedRecords = mergeDeletions(deletions(db, "deleted_records"), snapshot.deletedRecords)
         val mergedTemplates = mergeDeletions(deletions(db, "deleted_templates"), snapshot.deletedTemplates)
         val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns)
@@ -893,6 +932,7 @@ class LifeRepository(
                 retainedKnowledge.forEach { insertKnowledgeRevision(db, it) }
                 retainedKnowledgeHeads.forEach { db.insertOrThrow("knowledge_heads", null, values("id" to it.id, "revision" to it.revision)) }
                 mergedKnowledgeDeletions.forEach { insertDeletion(db, "deleted_knowledge", it) }
+                ActionStore.replace(db, actionRevisions, actionHeads, mergedActionDeletions)
                 // A same-store backup may carry a source generation ahead of the target. Move
                 // beyond every imported stamp, not merely +1, so no restored task becomes current
                 // by numeric coincidence. Even empty→empty restore invalidates publication.
@@ -1199,11 +1239,14 @@ class LifeRepository(
     private fun ensureCaptureBounds(db: SQLiteDatabase) {
         ensureFeedbackBounds(db)
         ensureKnowledgeBounds(db)
+        ActionStore.ensureBounds(db)
         val rowLimits = mapOf("record_revisions" to 100_000, "template_versions" to 10_000,
             "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to 100,
             "deleted_analysis_runs" to 100_000, "claim_feedback" to ClaimFeedbackValidation.MAX_ROWS,
             "deleted_claim_feedback" to ClaimFeedbackValidation.MAX_DELETIONS, "knowledge_revisions" to KnowledgeValidation.MAX_REVISIONS,
-            "knowledge_heads" to KnowledgeValidation.MAX_REVISIONS, "deleted_knowledge" to KnowledgeValidation.MAX_DELETIONS)
+            "knowledge_heads" to KnowledgeValidation.MAX_REVISIONS, "deleted_knowledge" to KnowledgeValidation.MAX_DELETIONS,
+            "action_revisions" to ActionValidation.MAX_REVISIONS, "action_heads" to ActionValidation.MAX_REVISIONS,
+            "deleted_actions" to ActionValidation.MAX_DELETIONS)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }

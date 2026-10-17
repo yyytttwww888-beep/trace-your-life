@@ -33,7 +33,7 @@ data class OrganizationClaim(
     val knowledgeRevision: Int?,
 )
 
-/** Bounded by the task's 100 calls and 20 claims per extraction; contains no source or claim text. */
+/** Bounded by the task's 100 calls and 20 claims per proposal; contains no source or claim text. */
 data class OrganizationProgress(
     val runId: String,
     val status: OrganizationStatus,
@@ -213,7 +213,7 @@ class AutomaticOrganizer(
         val runId = task.stored.id
         val reviews = task.state.calls.filter { it.purpose == CallPurpose.REVIEW && it.status == CallStatus.SUCCEEDED }
             .groupBy { it.reviewTarget }
-        return task.state.calls.filter { it.purpose == CallPurpose.EXTRACTION && it.status == CallStatus.SUCCEEDED }
+        return task.state.calls.filter { it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED }
             .flatMap { extraction ->
                 requireNotNull(extraction.proposal).claims.mapIndexed { index, proposed ->
                     val ref = ClaimRef(extraction.batchKey, index, AnalysisRunCodec.claimSha256(proposed))

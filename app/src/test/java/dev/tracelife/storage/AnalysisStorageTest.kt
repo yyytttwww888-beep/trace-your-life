@@ -294,6 +294,9 @@ class AnalysisStorageTest {
         repository.close()
         LifeDatabase(context, name).use { helper ->
             val db = helper.writableDatabase
+            db.execSQL("DROP TABLE action_heads")
+            db.execSQL("DROP TABLE action_revisions")
+            db.execSQL("DROP TABLE deleted_actions")
             db.execSQL("DROP TABLE knowledge_heads")
             db.execSQL("DROP TABLE knowledge_revisions")
             db.execSQL("DROP TABLE deleted_knowledge")

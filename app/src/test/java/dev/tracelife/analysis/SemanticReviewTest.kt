@@ -235,7 +235,7 @@ class SemanticReviewTest {
         listOf("purpose", "reviewTarget", "review", "feedbackVersion").forEach(legacyCall::remove)
         val v2 = v3.put("formatVersion", 2).toString()
         assertEquals(CallPurpose.EXTRACTION, AnalysisRunCodec.decode(v2).calls.single().purpose)
-        assertEquals(3, JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(v2))).getInt("formatVersion"))
+        assertEquals(4, JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(v2))).getInt("formatVersion"))
         legacyCall.put("purpose", "EXTRACTION")
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(v3.toString()) }
         analysis.reviewClaim("run", "review", ref, provider = reviewer)

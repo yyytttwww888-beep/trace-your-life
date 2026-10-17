@@ -1,6 +1,7 @@
 package dev.tracelife.transfer
 
 import dev.tracelife.knowledge.KnowledgeCodec
+import dev.tracelife.actions.StoredActionRevision
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
@@ -60,6 +61,7 @@ object KnowledgeArchive {
         }
         require(included.size <= MAX_CURRENT_RECORDS) { "阅读包最多支持 10000 条当前记录，请分批导出" }
         val knowledge = PublishedKnowledgeExport.select(snapshot, current, included, options)
+        val actions = ActionExport.select(snapshot, options)
         val unknownEligible = current.count { record ->
             record.draft.occurrence.startDate == null &&
                 (options.scope.includeArchived || !record.archived) &&
@@ -95,6 +97,7 @@ object KnowledgeArchive {
                         relatedKnowledge[record.id]?.let { "notes/sources/${hash(record.id)}/index.md" }))
                 }
                 writeKnowledge(archive, knowledge, knowledgePaths, paths)
+                writeActions(archive, actions)
                 boundTemplates.forEach { template ->
                     val path = templatePaths.getValue(template.id to template.version)
                     archive.text(path, templateText(template))
@@ -111,13 +114,14 @@ object KnowledgeArchive {
                     Nav("所绑定的模板版本", "templates/index.md"), Nav("结构化资料（迁移工具使用）", "data/index.md"),
                 )
                 if (knowledge.entries.isNotEmpty()) rootLinks += Nav("已发布知识（非原始证据）", "notes/index.md")
+                if (actions.entries.isNotEmpty()) rootLinks += Nav("用户选定行动（不是执行证据）", "actions/index.md")
                 archive.pages("indexes/index.md", "分层索引", rootLinks, "先确定任务、时间和主题；分页枚举范围，再按需读取原文。此包没有执行模型读取预算。")
                 archive.recordPages("indexes/evidence/index.md", "当前范围证据目录", included, paths)
                 archive.pages("templates/index.md", "所绑定的模板版本", boundTemplates.map { Nav("${it.draft.name} · 版本 ${it.version}", templatePaths.getValue(it.id to it.version)) })
                 writeTopics(archive, included, paths, knowledge)
                 writeTimeline(archive, included, paths, knowledge.entries.isNotEmpty())
                 writeIdRoutes(archive, included, paths)
-                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options, knowledge.entries.isNotEmpty())
+                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options, knowledge.entries.isNotEmpty(), actions.entries.isNotEmpty())
                 val readme = buildString {
                     append("# Trace Life 阅读资料包\n\n")
                     append("这是 capturedAt 时点的固定历史快照阅读包，不能完整恢复，也不会随时间或应用内纠正自动更新。包含所选范围的记录修订、绑定模板版本及清单明确纳入的已发布知识；历史修订、删除台账、变更任务、凭据和未纳入资料均未包含。\n\n")
@@ -134,6 +138,7 @@ object KnowledgeArchive {
                     append("\n已纳入 ${knowledge.entries.size} 条在 capturedAt 时有效的已发布知识，省略 ${knowledge.omitted} 条当前指针及 ${knowledge.omittedHistoricalRevisions} 份历史知识修订。已发布知识是保存的分析，不是新增原始证据，也不代表用户已掌握或实践；新的判断必须沿引用重新核对原文。\n")
                     if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
                     append("\n完整用户反馈及独立文字未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；知识正文仅显示对应决定与版本，不复制用户文字。请通过完整加密备份保留。\n")
+                    append("\n已纳入 ${actions.entries.size} 项用户选定行动的当前计划，省略 ${actions.omitted} 项和 ${actions.omittedHistoricalRevisions} 份历史行动修订。日期按当前计划的 reviewOn（计划回看日期）筛选，不代表行为发生时间；行动没有主题字段，指定主题时全部省略。执行结果、回看文字和旧计划仅进入完整备份，阅读包不包含。行动不是已执行、已成长或来源判断仍有效的证明；来源知识只保留身份，不复制机器文字。\n")
                     if (options.question != null) append("\n任务问题（用户资料）：\n").append(fenced(options.question))
                 }
                 archive.text("README.md", readme)
@@ -160,17 +165,26 @@ object KnowledgeArchive {
                         .put("claimFeedbackIncluded", false).put("omittedClaimFeedback", snapshot.claimFeedback.size)
                         .put("claimFeedbackGap", "claim_feedback_not_included")
                         .put("knowledgeRevisionsIncluded", knowledge.entries.size).put("omittedHistoricalKnowledgeRevisions", knowledge.omittedHistoricalRevisions)
+                        .put("actionRevisionsIncluded", actions.entries.size).put("omittedHistoricalActionRevisions", actions.omittedHistoricalRevisions)
+                        .put("actionReviewsIncluded", false)
                         .put("analysisGap", "analysis_not_included"))
                     .put("knowledge", JSONObject().put("sourceHeads", knowledge.sourceHeads).put("included", knowledge.entries.size)
                         .put("omitted", knowledge.omitted).put("omittedByReason", JSONObject(knowledge.omittedByReason as Map<*, *>))
                         .put("originalEvidence", false).put("validAt", snapshot.capturedAt.toString()).put("userTextIncluded", false))
+                    .put("actions", JSONObject().put("sourceHeads", actions.sourceHeads).put("included", actions.entries.size)
+                        .put("omitted", actions.omitted).put("omittedByReason", JSONObject(actions.omittedByReason as Map<*, *>))
+                        .put("selectionDate", "current_draft_reviewOn").put("topicSupport", false)
+                        .put("originalEvidence", false).put("executionEvidence", false).put("reviewHistoryIncluded", false))
                     .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json")
                         .put("knowledge", if (knowledge.entries.isNotEmpty()) "notes/index.md" else JSONObject.NULL)
-                        .put("knowledgeIds", if (knowledge.entries.isNotEmpty()) "indexes/note-ids/index.json" else JSONObject.NULL))
+                        .put("knowledgeIds", if (knowledge.entries.isNotEmpty()) "indexes/note-ids/index.json" else JSONObject.NULL)
+                        .put("actions", if (actions.entries.isNotEmpty()) "actions/index.md" else JSONObject.NULL)
+                        .put("actionIds", if (actions.entries.isNotEmpty()) "indexes/action-ids/index.json" else JSONObject.NULL))
                     .put("inventory", JSONObject().put("path", inventoryRoot.path).put("sha256", inventoryRoot.sha256)
                         .put("excludes", JSONArray(listOf("manifest.json", "inventory/"))))
                 listOf("README.md", "indexes/index.md", "indexes/ids/index.json", inventoryRoot.path).forEach { archive.reference("manifest.json", it) }
                 if (knowledge.entries.isNotEmpty()) listOf("notes/index.md", "indexes/note-ids/index.json").forEach { archive.reference("manifest.json", it) }
+                if (actions.entries.isNotEmpty()) listOf("actions/index.md", "indexes/action-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 archive.text("manifest.json", manifest.toString(2), index = true)
                 archive.validateReferences()
             }
@@ -283,6 +297,7 @@ object KnowledgeArchive {
         attachments: List<Attachment>,
         options: ReadingExportOptions,
         hasKnowledge: Boolean,
+        hasActions: Boolean,
     ) {
         val pages = mutableListOf<Nav>()
         val lines = mutableListOf<String>()
@@ -331,7 +346,93 @@ object KnowledgeArchive {
         archive.pages("data/attachments/index.md", "所选记录的附件", attachmentPages, if (options.includeAttachments) "文件已包含，但未被 AI 分析。" else "文件未包含；元数据不能代替图片内容。")
         val dataLinks = mutableListOf(Nav("当前记录 JSONL", "data/records/index.md"), Nav("附件元数据", "data/attachments/index.md"))
         if (hasKnowledge) dataLinks += Nav("已发布知识 JSONL（非原始证据）", "data/knowledge/index.md")
+        if (hasActions) dataLinks += Nav("当前行动计划 JSONL（非执行证据）", "data/actions/index.md")
         archive.pages("data/index.md", "结构化资料入口", dataLinks, "历史修订和恢复所需台账未包含；不可完整恢复。")
+    }
+
+    private fun writeActions(archive: ArchiveWriter, selection: ActionExport.Selection) {
+        if (selection.entries.isEmpty()) return
+        val actions = selection.entries
+        val paths = actions.associate { it.id to "actions/entries/${hash(it.id)}-r${it.revision}.md" }
+        actions.forEach { value ->
+            archive.text(paths.getValue(value.id), buildString {
+                append("# 用户选定的行动计划\n\nID：${escape(value.id)}；修订：${value.revision}；状态：${value.status}。\n\n")
+                append("计划回看日期：${value.draft.reviewOn}；时区：${escape(value.draft.zoneId)}；更新时间：${value.updatedAt}。\n\n")
+                append("这是用户选择并维护的计划，不是已执行、有效或已成长的证据。回看结果、旧计划和执行文字未纳入。\n\n")
+                append("## 目标\n\n").append(fenced(value.draft.title))
+                append("\n## 实施情境\n\n").append(fenced(value.draft.trigger))
+                append("\n## 具体行为\n\n").append(fenced(value.draft.behavior))
+                append("\n## 预期观察信号\n\n").append(fenced(value.draft.expectedSignal))
+                value.draft.origin?.let { origin ->
+                    append("\n来源知识身份：${origin.knowledgeId}；修订：${origin.revision}。仅用于定位，可能已过期、失效或删除；不复制其陈述，不据此声明行动有效。\n")
+                }
+            })
+        }
+        fun actionPages(path: String, title: String, values: List<StoredActionRevision>) = archive.pages(path, title,
+            values.map { Nav("${it.id} · ${it.status} · 计划回看 ${it.draft.reviewOn}", paths.getValue(it.id)) },
+            "按当前计划回看日期定位，不代表实际执行日期或执行情况。")
+        actionPages("actions/all/index.md", "当前行动计划", actions)
+        val dates = actions.groupBy { it.draft.reviewOn }.toSortedMap().map { (date, values) ->
+            val path = "actions/review-dates/$date/index.md"
+            actionPages(path, "$date 计划回看", values)
+            Nav("$date · ${values.size} 项", path)
+        }
+        archive.pages("actions/review-dates/index.md", "按计划回看日期", dates)
+        val statuses = actions.groupBy { it.status }.toSortedMap(compareBy { it.name }).map { (status, values) ->
+            val path = "actions/status/${status.name.lowercase()}/index.md"
+            actionPages(path, "状态：$status", values)
+            Nav("$status · ${values.size} 项", path)
+        }
+        archive.pages("actions/status/index.md", "行动状态", statuses)
+        val shards = actions.groupBy { hash(it.id).take(2) }.toSortedMap().map { (prefix, values) ->
+            val shardPath = "indexes/action-ids/$prefix/index.json"
+            val pages = values.chunked(archive.pageSize).mapIndexed { index, page ->
+                val path = "indexes/action-ids/$prefix/actions-${number(index)}.jsonl"
+                archive.text(path, page.joinToString("\n", postfix = "\n") { action ->
+                    archive.reference(path, paths.getValue(action.id))
+                    JSONObject().put("id", action.id).put("revision", action.revision)
+                        .put("type", "user-action-plan").put("path", paths.getValue(action.id)).toString()
+                }, index = true)
+                JSONObject().put("firstId", page.first().id).put("lastId", page.last().id).put("path", path).put("count", page.size)
+            }
+            archive.jsonPages(shardPath, "action-id-mapping-pages", pages)
+            JSONObject().put("prefix", prefix).put("path", shardPath).put("count", values.size)
+        }
+        archive.jsonPages("indexes/action-ids/index.json", "sha256-utf8-prefix-2-actions", shards)
+
+        val dataPages = mutableListOf<Nav>()
+        val lines = mutableListOf<String>()
+        val targets = mutableSetOf<String>()
+        var bytes = 0
+        fun flush() {
+            if (lines.isEmpty()) return
+            val path = "data/actions/page-${number(dataPages.size)}.jsonl"
+            targets.forEach { archive.reference(path, it) }
+            archive.text(path, lines.joinToString("\n", postfix = "\n"))
+            dataPages += Nav("当前行动计划 · 第 ${dataPages.size + 1} 页 · ${lines.size} 项", path)
+            lines.clear(); targets.clear(); bytes = 0
+        }
+        actions.forEach { action ->
+            val draft = action.draft
+            val json = JSONObject().put("nodeType", "user-action-plan").put("originalEvidence", false).put("executionEvidence", false)
+                .put("id", action.id).put("revision", action.revision).put("status", action.status.name)
+                .put("createdAt", action.createdAt.toString()).put("updatedAt", action.updatedAt.toString())
+                .put("path", paths.getValue(action.id)).put("reviewHistoryIncluded", false)
+                .put("draft", JSONObject().put("title", draft.title).put("trigger", draft.trigger).put("behavior", draft.behavior)
+                    .put("expectedSignal", draft.expectedSignal).put("reviewOn", draft.reviewOn.toString()).put("zoneId", draft.zoneId)
+                    .put("origin", draft.origin?.let { JSONObject().put("knowledgeId", it.knowledgeId).put("revision", it.revision) } ?: JSONObject.NULL))
+                .toString()
+            val size = json.toByteArray(Charsets.UTF_8).size + 1
+            if (lines.isNotEmpty() && (lines.size == archive.pageSize || bytes + size > JSON_PAGE_BYTES)) flush()
+            lines += json; targets += paths.getValue(action.id); bytes += size
+        }
+        flush()
+        archive.pages("data/actions/index.md", "当前行动结构化计划", dataPages,
+            "仅供工具处理，不是执行证据。回看结果、被回看的旧计划和历史修订未包含；仅完整备份可恢复。")
+        archive.pages("actions/index.md", "用户选定行动入口", listOf(
+            Nav("所有当前计划", "actions/all/index.md"), Nav("按计划回看日期", "actions/review-dates/index.md"),
+            Nav("按状态", "actions/status/index.md"), Nav("精确行动 ID", "indexes/action-ids/index.json"),
+        ), "只按当前计划筛选；行动不证明实际执行或成长，也不使其来源知识重新有效。")
     }
 
     private fun writeKnowledge(
