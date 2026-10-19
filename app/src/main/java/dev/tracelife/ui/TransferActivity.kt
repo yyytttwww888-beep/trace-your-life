@@ -3,13 +3,7 @@ package dev.tracelife.ui
 import android.app.AlertDialog
 import android.content.Intent
 import android.provider.OpenableColumns
-import android.text.InputFilter
 import android.text.InputType
-import android.widget.ArrayAdapter
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.Spinner
 import dev.tracelife.transfer.ExportResult
 import dev.tracelife.transfer.ExportScope
 import dev.tracelife.transfer.InvalidBackupException
@@ -32,21 +26,21 @@ class TransferActivity : ScreenActivity() {
 
     override fun showHome() {
         beginScreen("home", "备份与导出")
-        Ui.body(root, "备份、恢复与导出都在本机完成。备份口令与密钥由你持有，应用不保存口令。")
+        Ui.note(root, "资料留在自己手里。备份和导出都在这台手机上完成。")
         card().also { card ->
-            Ui.sectionTitle(card, "创建备份")
-            Ui.note(card, "备份包含本机全部记录、模板、附件、分析任务、用户反馈、正式知识、行动与画像，并使用口令加密。")
+            Ui.sectionTitle(card, "加密备份")
+            Ui.note(card, "保存全部资料，用于以后恢复或换机。")
             addButton(card, "创建备份", "navBackup") { backupResult = null; showBackup() }
         }
         card().also { card ->
             Ui.sectionTitle(card, "恢复备份")
-            Ui.note(card, "恢复将备份内容写入本机资料库。本机已有资料（含内置模板）时，必须明确勾选替换才能继续；替换不等于跨设备双向同步。")
+            Ui.note(card, "先预览备份内容，再决定是否替换本机资料。")
             addButton(card, "恢复备份", "navRestore") { showRestore() }
         }
         card().also { card ->
-            Ui.sectionTitle(card, "导出阅读包／证据包")
-            Ui.note(card, "阅读包是导出时刻的固定历史快照，不随以后的修改、删除或纠正自动更新；不含分析任务与用户反馈，不能用于恢复备份。")
-            addButton(card, "导出阅读包／证据包", "navReading") { readingResult = null; showReading() }
+            Ui.sectionTitle(card, "导出文档")
+            Ui.note(card, "把知识与原始资料带走，方便查阅。导出的文档不能用于恢复。")
+            addButton(card, "选择导出内容", "navReading") { readingResult = null; showReading() }
         }
     }
 
@@ -71,16 +65,18 @@ class TransferActivity : ScreenActivity() {
     private fun showBackup() {
         beginScreen("backup", "创建备份")
         card().also { card ->
-            Ui.sectionTitle(card, "备份说明")
-            Ui.note(card, "备份包含本机全部记录、模板、附件、分析任务、用户反馈、正式知识、行动与画像，并使用口令加密。")
-            Ui.note(card, "口令只用于本次加密，应用不保存；口令丢失后无法恢复备份，设备密钥不能替代。DeepSeek KEY 与设备密钥不进入备份。")
-            Ui.note(card, "文件保存在应用专属外部目录；卸载应用会删除该目录，长期保存请自行复制到其他位置。每份备份使用新文件名，已有文件不会被覆盖。")
+            Ui.sectionTitle(card, "把全部资料备份下来")
+            Ui.note(card, "备份会加密保存全部记录、附件，以及整理和修改历史。DeepSeek 密钥不会进入备份。")
+            Ui.note(card, "请记好口令。应用不会保存口令，丢失后无法恢复。")
+            Ui.disclosure(card, "文件保存说明", "backupStorageDetails") { details ->
+                Ui.note(details, "文件暂存于应用专属目录，卸载应用会一并删除。长期保留请复制到其他位置；每次备份都会创建新文件。")
+            }
         }
         card().also { card ->
-            Ui.sectionTitle(card, "备份口令")
-            val password = fieldIn(card, "备份口令（12 至 1024 个字符）", maxLength = 1024)
+            val password = labeledFieldIn(card, "备份口令", maxLength = 1024)
             password.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            Ui.primary(card, "创建备份", "createBackup") onCreate@{
+            Ui.note(card, "至少 12 个字符，最多 1024 个。")
+            primaryIn(card, "创建备份", "createBackup") onCreate@{
                 if (busy) return@onCreate
                 val value = password.text.toString()
                 if (value.length !in 12..1024) {
@@ -104,9 +100,10 @@ class TransferActivity : ScreenActivity() {
         }
         backupResult?.let { (result, path) ->
             card().also { card ->
-                Ui.sectionTitle(card, "备份结果")
-                Ui.body(card, "备份完成：记录 ${result.records} 条、附件 ${result.attachments} 个、文件 ${result.files} 个，共 ${result.bytes} 字节。")
+                Ui.sectionTitle(card, "备份已创建")
+                Ui.body(card, "${result.records} 条记录 · ${result.attachments} 个附件 · ${result.bytes / 1024} KB")
                 Ui.note(card, "保存位置：$path")
+                Ui.note(card, "请复制到应用之外的位置，避免卸载时丢失。")
             }
         }
     }
@@ -114,10 +111,12 @@ class TransferActivity : ScreenActivity() {
     private fun showRestore() {
         beginScreen("restore", "恢复备份")
         card().also { card ->
-            Ui.sectionTitle(card, "恢复说明")
-            Ui.note(card, "恢复将备份内容写入本机资料库。本机已有资料（含内置模板）时，必须明确勾选替换才能继续；替换不等于跨设备双向同步。")
-            Ui.note(card, "预览之后若本机有任何新写入，预览即失效，须重新预览并确认。口令错误、格式无效或附件缺失不会修改本机资料。")
-            Ui.note(card, "恢复后：后台增量整理须重新启用，DeepSeek KEY 须重新配置（密钥不进入备份）。")
+            Ui.sectionTitle(card, "从备份找回资料")
+            Ui.note(card, "选择文件并输入口令，先查看内容，再确认恢复。恢复可能替换现有资料，不能撤销。")
+            Ui.disclosure(card, "恢复前须知", "restoreDetails") { details ->
+                Ui.note(details, "预览后如果本机资料有变化，需要重新预览。文件或口令有误时，不会修改现有资料。")
+                Ui.note(details, "恢复后请重新填写 DeepSeek 密钥，按需开启自动整理。恢复不提供双向同步。")
+            }
         }
         val source = restoreSource
         if (source == null) {
@@ -130,11 +129,11 @@ class TransferActivity : ScreenActivity() {
         val fileCard = card()
         Ui.sectionTitle(fileCard, "备份文件与口令")
         Ui.note(fileCard, "已选择：${restoreSourceName ?: source.name}")
-        val password = fieldIn(fileCard, "备份口令", restorePassword, maxLength = 1024)
+        val password = labeledFieldIn(fileCard, "备份口令", value = restorePassword, maxLength = 1024)
         password.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
         val preview = restorePreview
         if (preview == null) {
-            Ui.primary(fileCard, "预览备份内容", "previewBackup") onPreview@{
+            primaryIn(fileCard, "预览备份内容", "previewBackup") onPreview@{
                 if (busy) return@onPreview
                 val value = password.text.toString()
                 if (value.isBlank()) {
@@ -154,15 +153,14 @@ class TransferActivity : ScreenActivity() {
         }
         card().also { card ->
             Ui.sectionTitle(card, "备份预览")
-            Ui.body(card, "备份快照：${preview.snapshotId}\n导出时间：${preview.capturedAt}")
-            Ui.body(card, "记录 ${preview.records} 条（共 ${preview.revisions} 个修订）· 模板 ${preview.templates} 个\n" +
-                "附件 ${preview.attachments} 个（${preview.attachmentBytes / 1024} KiB）\n" +
-                "删除标记：记录 ${preview.deletedRecords} 条、模板 ${preview.deletedTemplates} 个\n" +
-                "分析任务 ${preview.analysisRuns} 个 · 用户反馈 ${preview.claimFeedback} 条\n" +
-                "正式知识 ${preview.knowledge} 条 · 行动 ${preview.actions} 条 · 画像 ${preview.profiles} 条")
+            Ui.note(card, "备份于 ${preview.capturedAt}")
+            Ui.body(card, "${preview.records} 条记录 · ${preview.attachments} 个附件\n${preview.knowledge} 条知识 · ${preview.actions} 个行动 · ${preview.profiles} 条画像")
+            Ui.disclosure(card, "查看全部内容", "backupContents") { details ->
+                Ui.note(details, "记录历史 ${preview.revisions} 个版本 · 模板 ${preview.templates} 个\n附件大小 ${preview.attachmentBytes / 1024} KB\n整理 ${preview.analysisRuns} 次 · 反馈 ${preview.claimFeedback} 条\n已删除记录 ${preview.deletedRecords} 条 · 已删除模板 ${preview.deletedTemplates} 个\n备份编号：${preview.snapshotId}")
+            }
             if (preview.targetHasData) {
                 chip(card, "本机已有资料，须明确替换", Ui.Tone.WARN)
-                Ui.note(card, "本机当前已有资料（含内置模板），恢复前必须明确勾选替换。")
+                Ui.note(card, "继续恢复会替换现有资料和模板，请确认后再操作。")
             } else {
                 chip(card, "本机当前没有资料", Ui.Tone.OK)
             }
@@ -170,7 +168,7 @@ class TransferActivity : ScreenActivity() {
         card().also { card ->
             Ui.sectionTitle(card, "确认恢复")
             val replace = checkIn(card, "替换现有资料（含内置模板）", false)
-            Ui.dangerButton(card, "确认恢复", "confirmRestore") onRestore@{
+            dangerIn(card, "确认恢复", "confirmRestore") onRestore@{
                 if (busy) return@onRestore
                 val value = password.text.toString()
                 if (value.isBlank()) {
@@ -183,7 +181,7 @@ class TransferActivity : ScreenActivity() {
                 }
                 val replaceExisting = replace.isChecked
                 confirm("确认恢复备份？",
-                    if (replaceExisting) "本机现有资料（含内置模板）将被备份内容替换；目标库的删除标记与独立用户反馈按规则保留。此操作不能撤销。"
+                    if (replaceExisting) "本机现有资料和模板将被备份内容替换。已删除的内容不会因此找回，你已有的独立反馈会按规则保留。此操作不能撤销。"
                     else "备份内容将写入本机资料库。",
                     "确认恢复") {
                     restorePassword = value
@@ -210,32 +208,38 @@ class TransferActivity : ScreenActivity() {
         card().also { card ->
             Ui.sectionTitle(card, "恢复结果")
             Ui.body(card, "记录 ${result.records} 条（共 ${result.revisions} 个修订）、模板 ${result.templates} 个、附件 ${result.attachments} 个。")
-            Ui.note(card, "按删除规则排除记录 ${result.suppressedRecords} 条；为容量上限保守清理分析任务 ${result.capacityPurgedAnalysisRuns} 个。")
-            Ui.note(card, "请重新配置 DeepSeek KEY，并在「设置」中明确重新启用后台增量整理（恢复后默认停用）。")
+            Ui.note(card, "已排除曾删除的记录 ${result.suppressedRecords} 条；因容量限制未保留的整理任务 ${result.capacityPurgedAnalysisRuns} 个。")
+            Ui.note(card, "请在「设置」中重新填写 DeepSeek 密钥，按需开启自动整理。")
             addButton(card, "返回备份与导出", "restoreDone") { showHome() }
         }
     }
 
     private fun showReading() {
-        beginScreen("reading", "导出阅读包／证据包")
+        beginScreen("reading", "导出文档")
         card().also { card ->
-            Ui.sectionTitle(card, "导出说明")
-            Ui.note(card, "阅读包是导出时刻的固定历史快照，不随以后的修改、删除或纠正自动更新；不含分析任务与用户反馈，不能用于恢复备份。")
-            Ui.note(card, "知识包包含导出时有效的正式知识；证据包只含原始记录，不含知识、行动与画像，须注明任务问题。记录数量只描述资料覆盖，不代表成长、健康评分或生活完整程度。")
+            Ui.sectionTitle(card, "把内容带走")
+            Ui.note(card, "导出一份可阅读的文档。文件不会随以后的修改自动更新，也不能用于恢复备份。")
+            Ui.disclosure(card, "两种导出方式", "readingKinds") { details ->
+                Ui.note(details, "知识包包含当前有效的知识与相关资料。证据包面向一个具体问题，只包含原始记录，不含知识、行动或画像。两者都不含整理任务与个人反馈。")
+            }
         }
         card().also { card ->
             Ui.sectionTitle(card, "导出选项")
-            val kind = spinnerIn(card, listOf("知识包（含有效正式知识）", "证据包（仅原始记录）"), 0, "kind")
-            val from = fieldIn(card, "起始日期（可留空，YYYY-MM-DD）")
-            val through = fieldIn(card, "结束日期（可留空，YYYY-MM-DD）")
-            val topic = fieldIn(card, "主题（填写一个主题，可留空）")
-            val question = fieldIn(card, "任务问题（证据包必填，最多 2000 字）", multiline = true, maxLength = 2000)
-            Ui.primary(card, "导出", "exportReading") onExport@{
+            Ui.fieldLabel(card, "导出类型")
+            val kind = spinnerIn(card, listOf("知识与资料", "原始记录（针对一个问题）"), 0, "kind")
+            val from = labeledFieldIn(card, "起始日期", hint = "YYYY-MM-DD")
+            val through = labeledFieldIn(card, "结束日期", hint = "YYYY-MM-DD")
+            Ui.note(card, "起始与结束日期可留空，表示不限制时间范围。")
+            val topic = labeledFieldIn(card, "主题")
+            Ui.note(card, "填写一个主题，可留空。")
+            val question = labeledFieldIn(card, "这份资料用于什么问题？", multiline = true, maxLength = 2000)
+            Ui.note(card, "只导出原始记录时必填，最多 2000 字。")
+            primaryIn(card, "导出", "exportReading") onExport@{
                 if (busy) return@onExport
                 val kindValue = ReadingPackageKind.entries[kind.selectedItemPosition]
                 val questionValue = question.text.toString().trim()
                 if (kindValue == ReadingPackageKind.EVIDENCE && questionValue.isBlank()) {
-                    showError(IllegalArgumentException("证据包必须填写任务问题"))
+                    showError(IllegalArgumentException("请说明这份原始资料用于什么问题"))
                     return@onExport
                 }
                 val options = try {
@@ -266,46 +270,11 @@ class TransferActivity : ScreenActivity() {
         readingResult?.let { (result, path) ->
             card().also { card ->
                 Ui.sectionTitle(card, "导出结果")
-                Ui.body(card, "导出完成：记录 ${result.records} 条、附件 ${result.attachments} 个、文件 ${result.files} 个，共 ${result.bytes} 字节。")
+                Ui.body(card, "${result.records} 条记录 · ${result.attachments} 个附件 · ${result.bytes / 1024} KB")
                 Ui.note(card, "保存位置：$path")
-                Ui.note(card, "该文件是固定历史快照，不含分析任务与反馈，不能用于恢复备份。")
+                Ui.note(card, "请复制到应用之外的位置保留。文档不会自动更新，不能用于恢复备份。")
             }
         }
-    }
-
-    private fun fieldIn(parent: LinearLayout, hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
-        val input = EditText(this).apply {
-            this.hint = hint
-            inputType = InputType.TYPE_CLASS_TEXT or if (multiline) InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES else 0
-            minLines = if (multiline) 3 else 1
-            gravity = android.view.Gravity.TOP or android.view.Gravity.START
-            setText(value)
-            setFreezesText(false)
-            isSaveEnabled = false
-        }
-        Ui.styleField(this, input)
-        parent.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
-        input.filters = arrayOf(InputFilter.LengthFilter(maxLength))
-        return input
-    }
-
-    private fun checkIn(parent: LinearLayout, label: String, checked: Boolean) = CheckBox(this).apply {
-        text = label
-        isChecked = checked
-        Ui.styleCheck(this@TransferActivity, this)
-        parent.addView(this)
-    }
-
-    private fun spinnerIn(parent: LinearLayout, items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
-        tag = viewTag
-        adapter = ArrayAdapter(this@TransferActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        setSelection(selected)
-        Ui.styleSpinner(this@TransferActivity, this)
-        parent.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
     }
 
     private fun openBackupPicker() {

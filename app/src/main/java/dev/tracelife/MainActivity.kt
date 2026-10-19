@@ -30,6 +30,8 @@ import dev.tracelife.model.TemplateDraft
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.templates.TemplateImporter
+import dev.tracelife.ui.Ui
+import dev.tracelife.ui.AppNavigation
 import dev.tracelife.ui.EditorState
 import dev.tracelife.ui.TemplateEditorState
 import dev.tracelife.ui.parseDate
@@ -157,66 +159,55 @@ class MainActivity : Activity() {
         cadenceSpinner = null
         archivedCheck = null
         unknownCheck = null
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(16))
-        }
-        val scroll = ScrollView(this).apply {
-            addView(root)
-            setBackgroundColor(dev.tracelife.ui.Ui.bg(this@MainActivity))
-        }
-        scroll.setOnApplyWindowInsetsListener { view, insets ->
-            if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            } else {
-                @Suppress("DEPRECATION")
-                view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
-            }
-            insets
-        }
-        setContentView(scroll)
-        scroll.requestApplyInsets()
-        if (name != "records") dev.tracelife.ui.Ui.backRow(root) { navigateBack() }
-        dev.tracelife.ui.Ui.screenTitle(root, title)
+        root = Ui.mount(
+            this, title,
+            onBack = if (name != "records") ({ navigateBack() }) else null,
+            onMenu = if (name == "records") ({
+                if (!busy) AppNavigation.show(this) { captureInputs(); showTemplates() }
+            }) else null,
+        )
     }
 
     private fun showRecords() {
         beginScreen("records", "Trace Life")
-        dev.tracelife.ui.Ui.card(root).also { card ->
-            dev.tracelife.ui.Ui.sectionTitle(card, "记录")
-            dev.tracelife.ui.Ui.primary(card, "新建随记", "newRecord") {
+        Ui.screenTitle(root, "留下一点今天").apply {
+            textSize = 28f
+            setPadding(0, dp(20), 0, dp(8))
+        }
+        Ui.note(root, "一个念头，一件小事，都值得记下。")
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(18), 0, dp(24))
+            root.addView(this)
+        }
+        Ui.primary(actions, "写一条", "newRecord") {
+            if (!busy) { editor = EditorState(); showEditor() }
+        }.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            setMargins(0, 0, dp(10), 0)
+        }
+        Ui.button(actions, "做个复盘", "templates") { if (!busy) showTemplates() }
+            .layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        Ui.sectionTitle(root, "最近记录")
+        val filtered = filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank() || includeArchived || !includeUnknown
+        Ui.disclosure(root, if (filtered) "筛选 · 已设置" else "筛选记录", "recordFilters", expanded = filtered) { filters ->
+            Ui.note(filters, "按事情发生的日期查找，也可以包含日期不确定的记录。")
+            field("filterFrom", "YYYY-MM-DD，可留空", filterFrom, parent = filters, label = "从哪天")
+            field("filterThrough", "YYYY-MM-DD，可留空", filterThrough, parent = filters, label = "到哪天")
+            field("filterTopic", "例如：学习", filterTopic, parent = filters, label = "主题")
+            archivedCheck = check("包含已归档记录", includeArchived, parent = filters)
+            unknownCheck = check("包含日期不确定的记录", includeUnknown, parent = filters)
+            addButton(filters, "应用筛选", "applyFilter") {
+                captureInputs()
+                offset = 0
+                loadRecords()
+            }
+            Ui.textButton(filters, "清除筛选", "clearFilters") {
                 if (!busy) {
-                    editor = EditorState()
-                    showEditor()
+                    filterFrom = ""; filterThrough = ""; filterTopic = ""
+                    includeArchived = false; includeUnknown = true; offset = 0
+                    showRecords()
                 }
             }
-            dev.tracelife.ui.Ui.button(card, "复盘与模板", "templates") { if (!busy) showTemplates() }
-        }
-        dev.tracelife.ui.Ui.card(root).also { card ->
-            dev.tracelife.ui.Ui.sectionTitle(card, "筛选")
-            dev.tracelife.ui.Ui.note(card, "按发生日期筛选；补记使用事情发生的日期。没有记录不等于没有发生。")
-        }
-        field("filterFrom", "起始日期（可留空，YYYY-MM-DD）", filterFrom)
-        field("filterThrough", "结束日期（可留空，YYYY-MM-DD）", filterThrough)
-        field("filterTopic", "主题（填写一个主题，可留空）", filterTopic)
-        archivedCheck = check("包含已归档记录", includeArchived)
-        unknownCheck = check("同时展示发生日期未知的记录", includeUnknown)
-        button("应用筛选", "applyFilter") {
-            captureInputs()
-            offset = 0
-            loadRecords()
-        }
-        dev.tracelife.ui.Ui.card(root).also { card ->
-            dev.tracelife.ui.Ui.sectionTitle(card, "更多功能")
-            dev.tracelife.ui.Ui.button(card, "看板", "navDashboard") { startActivity(Intent(this, dev.tracelife.ui.DashboardActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "核对与整理", "navReview") { startActivity(Intent(this, dev.tracelife.ui.ReviewActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "知识库", "navKnowledge") { startActivity(Intent(this, dev.tracelife.ui.KnowledgeActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "行动实验", "navActions") { startActivity(Intent(this, dev.tracelife.ui.ActionsActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "周期复盘", "navPeriod") { startActivity(Intent(this, dev.tracelife.ui.PeriodActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "个人画像", "navProfile") { startActivity(Intent(this, dev.tracelife.ui.ProfileActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "备份与导出", "navTransfer") { startActivity(Intent(this, dev.tracelife.ui.TransferActivity::class.java)) }
-            dev.tracelife.ui.Ui.button(card, "设置", "navSettings") { startActivity(Intent(this, dev.tracelife.ui.SettingsActivity::class.java)) }
         }
         loadRecords()
     }
@@ -241,12 +232,17 @@ class MainActivity : Activity() {
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "recordResults" }
         root.addView(results)
         runIo({ repository.listRecords(filter) }) { page ->
-            addText(results, "匹配 ${page.total} 条；发生日期未知 ${page.unknownTimeCount} 条。日期未知的资料无法归入所选周期。")
-            if (page.items.isEmpty()) addText(results, "当前范围没有记录。")
+            addText(results, if (page.unknownTimeCount > 0) "${page.total} 条记录 · 发生日期未知 ${page.unknownTimeCount} 条" else "${page.total} 条记录", 13f)
+            if (page.items.isEmpty()) {
+                Ui.emptyState(results, if (filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank())
+                    "没有找到符合条件的记录\n试试调整日期或主题。"
+                else "这里会慢慢留下你的日常。\n从第一条记录开始。")
+            }
             page.items.forEach { record ->
                 val preview = record.draft.body.ifBlank { record.draft.answers.values.firstOrNull().orEmpty().ifBlank { "图片记录" } }
-                addButton(results, "${dateLabel(record)}${if (record.archived) " · 已归档" else ""}\n${preview.take(100)}", "record:${record.id}") {
-                    showDetail(record.id)
+                Ui.recordRow(results, "${dateLabel(record)}${if (record.archived) " · 已归档" else ""}", preview.take(140),
+                    record.draft.topics.joinToString("  "), "record:${record.id}") {
+                    if (!busy) showDetail(record.id)
                 }
             }
             if (offset > 0) addButton(results, "上一页", "previousPage") { offset = (offset - PAGE_SIZE).coerceAtLeast(0); loadRecords() }
@@ -265,21 +261,30 @@ class MainActivity : Activity() {
             RecordDetail(record, record.draft.template?.let { repository.template(it.id, it.version) }, record.draft.attachmentIds.mapNotNull(repository::attachment))
         }) { detail ->
             val record = detail.record
-            text("${dateLabel(record)} · 修订 ${record.revision}${if (record.archived) " · 已归档" else ""}")
-            text("录入：${record.createdAt}\n最近修订：${record.updatedAt}\n时区：${record.draft.occurrence.zoneId}")
-            text("主题：${record.draft.topics.joinToString("、").ifEmpty { "未分类" }}")
-            if (record.draft.body.isNotEmpty()) text(record.draft.body)
+            val contentCard = dev.tracelife.ui.Ui.card(root)
+            dev.tracelife.ui.Ui.cardTitle(contentCard, dateLabel(record))
+            if (record.archived) dev.tracelife.ui.Ui.chip(contentCard, "已归档", dev.tracelife.ui.Ui.Tone.NEUTRAL)
+
+            dev.tracelife.ui.Ui.note(contentCard, "主题：${record.draft.topics.joinToString("、").ifEmpty { "未分类" }}")
+            if (record.draft.body.isNotEmpty()) dev.tracelife.ui.Ui.body(contentCard, record.draft.body)
             detail.template?.let { template ->
-                text("${template.draft.name} · 模板版本 ${template.version}", 18f)
+                val templateCard = dev.tracelife.ui.Ui.card(root)
+                dev.tracelife.ui.Ui.cardTitle(templateCard, "${template.draft.name} · 模板版本 ${template.version}")
                 template.draft.questions.forEach { question ->
-                    text(question.prompt, 16f)
-                    text(record.draft.answers[question.id]?.takeIf { it.isNotBlank() } ?: "未填写")
+                    dev.tracelife.ui.Ui.fieldLabel(templateCard, question.prompt)
+                    dev.tracelife.ui.Ui.body(templateCard, record.draft.answers[question.id]?.takeIf { it.isNotBlank() } ?: "未填写")
                 }
             }
-            detail.attachments.forEach { attachment -> text("图片：${attachment.displayName}（${attachment.sizeBytes / 1024} KiB）") }
+            detail.attachments.forEach { attachment ->
+                dev.tracelife.ui.Ui.card(root).also { card -> dev.tracelife.ui.Ui.note(card, "图片：${attachment.displayName}（${attachment.sizeBytes / 1024} KiB）") }
+            }
+            Ui.disclosure(root, "记录信息", "recordInformation") { details ->
+                Ui.note(details, "录入：${record.createdAt}\n最近修改：${record.updatedAt}\n时区：${record.draft.occurrence.zoneId}")
+            }
             if (revision == null) {
-                button("编辑记录", "editRecord") { editor = EditorState.from(record); showEditor() }
-                button("查看修订历史", "history") {
+                val actionsCard = dev.tracelife.ui.Ui.card(root)
+                dev.tracelife.ui.Ui.primary(actionsCard, "编辑记录", "editRecord") { if (!busy) { editor = EditorState.from(record); showEditor() } }
+                addButton(actionsCard, "修改历史", "history") {
                     runIo({ repository.history(id) }) { history ->
                         AlertDialog.Builder(this).setTitle("修订历史")
                             .setItems(history.map { "修订 ${it.revision} · ${it.updatedAt}${if (it.archived) " · 已归档" else ""}" }.toTypedArray()) { _, index ->
@@ -287,11 +292,11 @@ class MainActivity : Activity() {
                             }.setNegativeButton("关闭", null).show()
                     }
                 }
-                button(if (record.archived) "恢复到活跃记录" else "归档记录", "archiveRecord") {
+                addButton(actionsCard, if (record.archived) "移回记录列表" else "归档记录", "archiveRecord") {
                     runIo({ repository.setArchived(id, record.revision, !record.archived) }) { showDetail(id) }
                 }
-                button("永久删除记录", "deleteRecord") {
-                    confirm("永久删除这条记录？", "正文、回答及所有修订会被删除；没有其他记录引用的图片也会清理。此操作不能撤销。", "永久删除") {
+                dev.tracelife.ui.Ui.dangerButton(actionsCard, "永久删除记录", "deleteRecord") {
+                    if (!busy) confirm("永久删除这条记录？", "正文、回答及所有修订会被删除；没有其他记录引用的图片也会清理。此操作不能撤销。", "永久删除") {
                         runIo({ repository.deleteRecord(id, record.revision) }) { recordId = null; showRecords() }
                     }
                 }
@@ -301,7 +306,7 @@ class MainActivity : Activity() {
 
     private fun showEditor() {
         val state = requireNotNull(editor)
-        beginScreen("editor", if (state.expectedRevision == null) "新增记录" else "编辑记录")
+        beginScreen("editor", if (state.expectedRevision == null) "写一条" else "编辑记录")
         if (state.template == null) renderEditor(null) else runIo({
             requireNotNull(repository.template(state.template.id, state.template.version)) { "这份复盘绑定的模板版本不可用" }
         }) { renderEditor(it) }
@@ -309,11 +314,38 @@ class MainActivity : Activity() {
 
     private fun renderEditor(template: TemplateVersion?) {
         val state = requireNotNull(editor)
-        text("可随手写，也可以只填写部分复盘问题。原文在本机保存。")
-        text("发生时间")
-        dateSpinner = spinner(listOf("某一天", "日期区间", "发生日期未知"), state.dateMode, "dateMode")
-        val start = field("start", "发生／开始日期（YYYY-MM-DD）", state.start)
-        val end = field("end", "结束日期（YYYY-MM-DD）", state.end)
+        Ui.note(root, if (template == null) "不用写完整，先记下此刻想留住的。" else "挑想回答的问题写，其他的可以留空。")
+        val contentCard = Ui.card(root)
+        field("body", if (template == null) "今天发生了什么？" else "想补充些什么？", state.body, true, parent = contentCard).apply {
+            minLines = if (template == null) 6 else 3
+            background = android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT)
+            setPadding(dp(2), dp(10), dp(2), dp(10))
+            textSize = 17f
+            setLineSpacing(0f, 1.35f)
+        }
+        template?.let {
+            val questions = Ui.card(root)
+            Ui.cardTitle(questions, it.draft.name)
+            Ui.note(questions, it.draft.description)
+            it.draft.questions.forEach { question ->
+                Ui.cardTitle(questions, question.prompt)
+                if (question.hint.isNotEmpty()) Ui.note(questions, question.hint)
+                answerFields[question.id] = field("answer:${question.id}", "慢慢想，慢慢写", state.answers[question.id].orEmpty(), true, parent = questions)
+            }
+        }
+        Ui.primary(root, "保存记录", "saveRecord") { if (!busy) saveRecord() }
+        val metadata = Ui.disclosure(root, "日期与主题", "recordMetadata", expanded = state.dateMode != 0 || state.topics.isNotBlank()) { }
+        val dateCard = Ui.card(metadata)
+        dev.tracelife.ui.Ui.sectionTitle(dateCard, "发生时间")
+        dateSpinner = Spinner(this).apply {
+            tag = "dateMode"
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, listOf("某一天", "日期区间", "发生日期未知")).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            setSelection(state.dateMode)
+            dev.tracelife.ui.Ui.styleSpinner(this@MainActivity, this)
+            dateCard.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(4), 0, dp(8)) })
+        }
+        val start = field("start", "发生／开始日期（YYYY-MM-DD）", state.start, parent = dateCard)
+        val end = field("end", "结束日期（YYYY-MM-DD）", state.end, parent = dateCard)
         fun dateVisibility() {
             start.visibility = if (dateSpinner!!.selectedItemPosition == 2) View.GONE else View.VISIBLE
             end.visibility = if (dateSpinner!!.selectedItemPosition == 1) View.VISIBLE else View.GONE
@@ -323,33 +355,22 @@ class MainActivity : Activity() {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
         dateVisibility()
-        text("时区：${state.zoneId}")
-        field("topics", "多个主题用逗号分隔，例如：工作，学习", state.topics)
-        field("body", "随记／补充内容（可选）", state.body, true)
-        template?.let {
-            text("${it.draft.name} · 版本 ${it.version}", 18f)
-            text(it.draft.description)
-            text("所有问题均可跳过；编辑旧复盘仍使用当时的模板。")
-            it.draft.questions.forEach { question ->
-                text(question.prompt, 17f)
-                if (question.hint.isNotEmpty()) text(question.hint)
-                answerFields[question.id] = field("answer:${question.id}", "回答（可选）", state.answers[question.id].orEmpty(), true)
-            }
-        }
-        text("附件图片（本阶段只保存原图）", 17f)
+        dev.tracelife.ui.Ui.note(dateCard, "时区：${state.zoneId}")
+        field("topics", "多个主题用逗号隔开，例如：工作，学习", state.topics, parent = dateCard, label = "主题")
+        val attachmentCard = Ui.disclosure(root, "图片${if (state.attachments.isEmpty()) "" else " · ${state.attachments.size} 张"}", "recordImages", expanded = state.attachments.isNotEmpty()) { }
+        Ui.note(attachmentCard, "图片随记录保存，暂不识别内容。")
         state.attachments.forEach { id ->
-            button("移除图片：${attachmentNames[id] ?: id.take(8)}", "removeAttachment:$id") {
+            addButton(attachmentCard, "移除图片：${attachmentNames[id] ?: id.take(8)}", "removeAttachment:$id") {
                 captureInputs()
                 state.attachments.remove(id)
                 // Old revisions keep their references; only unreferenced imports are reclaimed.
                 runIo({ repository.recoverUnreferencedAttachments(state.attachments.toSet()) }) { showEditor() }
             }
         }
-        button("选择图片附件", "addAttachment") {
+        addButton(attachmentCard, "选择图片附件", "addAttachment") {
             captureInputs()
             openDocument("image/*", IMAGE_REQUEST)
         }
-        button("保存记录", "saveRecord") { saveRecord() }
     }
 
     private fun saveRecord() {
@@ -370,16 +391,19 @@ class MainActivity : Activity() {
     }
 
     private fun showTemplates() {
-        beginScreen("templates", "复盘与模板")
-        button("粘贴／导入个人模板", "importTemplate") { templateEditor = TemplateEditorState(); showTemplateEditor() }
+        beginScreen("templates", "做个复盘")
+        Ui.note(root, "回看一次经历，留下一点经验。")
+        Ui.textButton(root, "添加自己的模板", "importTemplate") { if (!busy) { templateEditor = TemplateEditorState(); showTemplateEditor() } }
         val archived = check("显示已归档模板", showArchivedTemplates)
         archived.setOnCheckedChangeListener { _, checked -> showArchivedTemplates = checked; showTemplates() }
         runIo({ repository.listTemplates(showArchivedTemplates) }) { templates ->
-            if (templates.isEmpty()) text("暂无可用模板。")
+            if (templates.isEmpty()) dev.tracelife.ui.Ui.emptyState(root, "暂无可用模板")
             templates.forEach { template ->
-                text("${template.draft.name} · ${cadenceLabel(template.draft.cadence)} · 版本 ${template.version}${if (template.archived) " · 已归档" else ""}", 18f)
-                text(template.draft.description)
-                if (!template.archived) button("使用「${template.draft.name}」复盘", "useTemplate:${template.id}") {
+                val card = dev.tracelife.ui.Ui.card(root)
+                dev.tracelife.ui.Ui.cardTitle(card, template.draft.name)
+                if (template.archived) dev.tracelife.ui.Ui.chip(card, "已归档", dev.tracelife.ui.Ui.Tone.NEUTRAL)
+                Ui.note(card, "${cadenceLabel(template.draft.cadence)} · ${template.draft.questions.size} 个可选问题")
+                if (!template.archived) addButton(card, "开始复盘", "useTemplate:${template.id}") {
                     editor = EditorState(template = TemplateRef(template.id, template.version)).also { state ->
                         if (template.draft.cadence == Cadence.WEEKLY) {
                             state.dateMode = 1
@@ -388,15 +412,19 @@ class MainActivity : Activity() {
                     }
                     showEditor()
                 }
-                button("编辑模板新版本", "editTemplate:${template.id}") {
+                val management = Ui.disclosure(card, "了解与管理模板", "templateManagement:${template.id}") { details ->
+                    Ui.note(details, template.draft.description)
+                    Ui.note(details, "版本 ${template.version}。修改模板只影响之后的新复盘。")
+                }
+                addButton(management, "编辑模板", "editTemplate:${template.id}") {
                     templateEditor = TemplateEditorState(template.id, template.version, template.draft.name, template.draft.cadence, templateMarkdown(template.draft))
                     showTemplateEditor()
                 }
-                button(if (template.archived) "恢复模板" else "归档模板", "archiveTemplate:${template.id}") {
+                addButton(management, if (template.archived) "恢复模板" else "归档模板", "archiveTemplate:${template.id}") {
                     runIo({ repository.archiveTemplate(template.id, !template.archived) }) { showTemplates() }
                 }
-                button("删除未使用的模板", "deleteTemplate:${template.id}") {
-                    confirm("删除这份模板及全部版本？", "只有未被任何复盘引用的模板才能删除。已使用的模板可以归档。", "删除模板") {
+                dev.tracelife.ui.Ui.dangerButton(management, "删除未使用的模板", "deleteTemplate:${template.id}") {
+                    if (!busy) confirm("删除这份模板及全部版本？", "只有未被任何复盘引用的模板才能删除。已使用的模板可以归档。", "删除模板") {
                         runIo({ repository.deleteTemplate(template.id) }) { showTemplates() }
                     }
                 }
@@ -407,12 +435,21 @@ class MainActivity : Activity() {
     private fun showTemplateEditor() {
         val state = requireNotNull(templateEditor)
         beginScreen("templateEditor", if (state.expectedVersion == null) "导入个人模板" else "编辑模板新版本")
-        text("粘贴文字或导入 UTF-8 文本／Markdown（最多 256 KiB）。二级标题 ## 作为问题；也支持列表或自由说明。可修改原文，预览后再保存。")
-        field("templateName", "模板名称", state.name)
-        cadenceSpinner = spinner(listOf("每日", "每周", "事件"), state.cadence.ordinal, "cadence")
-        field("markdown", "模板原文", state.markdown, true)
-        button("从文件读取模板", "openTemplateFile") { captureInputs(); openDocument("text/*", TEMPLATE_REQUEST) }
-        button("预览问题并确认保存", "previewTemplate") {
+        val card = dev.tracelife.ui.Ui.card(root)
+        dev.tracelife.ui.Ui.note(card, "粘贴文字或导入 UTF-8 文本／Markdown（最多 256 KiB）。二级标题 ## 作为问题；也支持列表或自由说明。可修改原文，预览后再保存。")
+        field("templateName", "例如：我的每周复盘", state.name, parent = card, label = "模板名称")
+        dev.tracelife.ui.Ui.fieldLabel(card, "节奏")
+        cadenceSpinner = Spinner(this).apply {
+            tag = "cadence"
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, listOf("每日", "每周", "事件")).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+            setSelection(state.cadence.ordinal)
+            dev.tracelife.ui.Ui.styleSpinner(this@MainActivity, this)
+            card.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(4), 0, dp(8)) })
+        }
+        field("markdown", "模板原文", state.markdown, true, parent = card, label = "模板原文")
+        addButton(card, "从文件读取模板", "openTemplateFile") { captureInputs(); openDocument("text/*", TEMPLATE_REQUEST) }
+        dev.tracelife.ui.Ui.primary(card, "预览问题并确认保存", "previewTemplate") {
+            if (busy) return@primary
             captureInputs()
             runIo({
                 require(state.name.isNotBlank()) { "请填写模板名称" }
@@ -588,7 +625,8 @@ class MainActivity : Activity() {
     private fun addButton(parent: LinearLayout, label: String, viewTag: String, action: () -> Unit) {
         dev.tracelife.ui.Ui.button(parent, label, viewTag) { if (!busy) action() }
     }
-    private fun field(key: String, hint: String, value: String, multiline: Boolean = false): EditText {
+    private fun field(key: String, hint: String, value: String, multiline: Boolean = false, parent: LinearLayout = root, label: String? = null): EditText {
+        if (label != null) dev.tracelife.ui.Ui.fieldLabel(parent, label)
         val input = EditText(this).apply {
             tag = key
             this.hint = hint
@@ -599,8 +637,8 @@ class MainActivity : Activity() {
             setFreezesText(false)
             isSaveEnabled = false // DraftState owns restoration, including dynamically created questions.
         }
-        root.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
+        parent.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(2), 0, dp(10))
         })
         dev.tracelife.ui.Ui.styleField(this, input)
         editorFields[key] = input
@@ -625,7 +663,7 @@ class MainActivity : Activity() {
         })
         return input
     }
-    private fun check(label: String, checked: Boolean) = CheckBox(this).apply { text = label; isChecked = checked; dev.tracelife.ui.Ui.styleCheck(this@MainActivity, this); root.addView(this) }
+    private fun check(label: String, checked: Boolean, parent: LinearLayout = root) = CheckBox(this).apply { text = label; isChecked = checked; dev.tracelife.ui.Ui.styleCheck(this@MainActivity, this); parent.addView(this) }
     private fun spinner(items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
         tag = viewTag
         adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }

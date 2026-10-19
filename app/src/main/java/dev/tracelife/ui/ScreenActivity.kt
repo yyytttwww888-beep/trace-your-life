@@ -60,28 +60,9 @@ abstract class ScreenActivity : Activity() {
     protected fun beginScreen(name: String, title: String, showBack: Boolean = true) {
         generation++
         screen = name
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(16))
-        }
-        val scroll = ScrollView(this).apply {
-            addView(root)
-            setBackgroundColor(Ui.bg(this@ScreenActivity))
-        }
-        scroll.setOnApplyWindowInsetsListener { view, insets ->
-            if (Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
-            } else {
-                @Suppress("DEPRECATION")
-                view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop, insets.systemWindowInsetRight, insets.systemWindowInsetBottom)
-            }
-            insets
-        }
-        setContentView(scroll)
-        scroll.requestApplyInsets()
-        if (showBack) Ui.backRow(root) { navigateBack() }
-        Ui.screenTitle(root, title)
+        root = Ui.mount(this, title, onBack = {
+            if (showBack) navigateBack() else if (!busy) finish()
+        })
     }
 
     protected fun <T> runIo(work: () -> T, success: (T) -> Unit) {
@@ -146,7 +127,11 @@ abstract class ScreenActivity : Activity() {
     protected fun listRow(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
         Ui.listRow(parent, label, tag) { if (!busy) action() }
     }
-    protected fun field(hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
+    protected fun field(hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText =
+        fieldIn(root, hint, value, multiline, maxLength)
+
+    /** Field inside an arbitrary container (usually a card). */
+    protected fun fieldIn(parent: LinearLayout, hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
         val input = EditText(this).apply {
             this.hint = hint
             inputType = InputType.TYPE_CLASS_TEXT or if (multiline) InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES else 0
@@ -157,21 +142,40 @@ abstract class ScreenActivity : Activity() {
             isSaveEnabled = false
         }
         Ui.styleField(this, input)
-        root.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
+        parent.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(2), 0, dp(10))
         })
         input.filters = arrayOf(InputFilter.LengthFilter(maxLength))
         return input
     }
+
+    /** Codex-style form block: small gray label above the field; placeholder keeps format hints only. */
+    protected fun labeledField(label: String, hint: String = "", value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText =
+        labeledFieldIn(root, label, hint, value, multiline, maxLength)
+
+    protected fun labeledFieldIn(parent: LinearLayout, label: String, hint: String = "", value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
+        Ui.fieldLabel(parent, label)
+        return fieldIn(parent, hint, value, multiline, maxLength)
+    }
     protected fun check(label: String, checked: Boolean) = CheckBox(this).apply { text = label; isChecked = checked; Ui.styleCheck(this@ScreenActivity, this); root.addView(this) }
-    protected fun spinner(items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
+    protected fun checkIn(parent: LinearLayout, label: String, checked: Boolean) = CheckBox(this).apply { text = label; isChecked = checked; Ui.styleCheck(this@ScreenActivity, this); parent.addView(this) }
+    protected fun spinner(items: List<String>, selected: Int, viewTag: String) = spinnerIn(root, items, selected, viewTag)
+    protected fun spinnerIn(parent: LinearLayout, items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
         tag = viewTag
         adapter = ArrayAdapter(this@ScreenActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
         setSelection(selected)
         Ui.styleSpinner(this@ScreenActivity, this)
-        root.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+        parent.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             setMargins(0, dp(4), 0, dp(8))
         })
+    }
+    /** Quiet centered empty-state line. */
+    protected fun emptyState(parent: LinearLayout, value: String) = Ui.emptyState(parent, value)
+    protected fun primaryIn(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
+        Ui.primary(parent, label, tag) { if (!busy) action() }
+    }
+    protected fun dangerIn(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
+        Ui.dangerButton(parent, label, tag) { if (!busy) action() }
     }
     private fun setEnabled(view: View, enabled: Boolean) {
         view.isEnabled = enabled

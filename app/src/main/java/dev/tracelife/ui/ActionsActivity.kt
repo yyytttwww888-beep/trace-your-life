@@ -1,13 +1,9 @@
 package dev.tracelife.ui
 
-import android.text.InputFilter
-import android.text.InputType
 import android.view.View
 import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Spinner
 import dev.tracelife.actions.ActionDecision
 import dev.tracelife.actions.ActionDraft
 import dev.tracelife.actions.ActionExecution
@@ -51,19 +47,19 @@ class ActionsActivity : ScreenActivity() {
     }
 
     private fun showList() {
-        beginScreen("list", "行动实验", showBack = false)
-        val filterCard = card()
-        Ui.sectionTitle(filterCard, "筛选")
-        Ui.note(filterCard, "行动是你明确选择的尝试，不代表原建议正确或已经执行。到期判断绑定列表生成时的评估时间，跨日后请重新打开本页查看最新到期情况。")
-        spinnerIn(filterCard, listOf("全部", "进行中", "仅到期"), filterIndex, "filter").also { filterSpinner ->
-            filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (position != filterIndex) { filterIndex = position; loadFirstPage() }
+        beginScreen("list", "行动", showBack = false)
+        note("从一件小事开始，下次回来看看结果。")
+        primaryButton("新建行动", "newAction") { showCreate() }
+        Ui.disclosure(root, "筛选行动", "actionFilters") { filters ->
+            spinnerIn(filters, listOf("全部", "进行中", "待回看"), filterIndex, "filter").also { filterSpinner ->
+                filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        if (position != filterIndex) { filterIndex = position; loadFirstPage() }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
                 }
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             }
         }
-        primaryButton("新建行动", "newAction") { showCreate() }
         loadFirstPage()
     }
 
@@ -82,7 +78,7 @@ class ActionsActivity : ScreenActivity() {
         }) { (next, fresh) ->
             if (fresh) {
                 pageStack.clear()
-                toast("行动列表已变化，已从首页重新读取")
+                toast("行动有更新，已刷新列表")
             }
             pageStack.addLast(next)
             renderPage(next)
@@ -98,16 +94,13 @@ class ActionsActivity : ScreenActivity() {
         root.findViewWithTag<View>("actionResults")?.let(root::removeView)
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "actionResults" }
         root.addView(results)
-        Ui.note(results, "共 ${page.total} 项 · 评估时间 ${page.evaluatedAt}")
-        if (page.items.isEmpty()) Ui.note(results, "当前筛选下没有行动。")
+        Ui.note(results, "共 ${page.total} 项")
+        if (page.items.isEmpty()) emptyState(Ui.card(results), "这里还没有行动。\n选一件想尝试的小事，给它安排一次回看。")
         page.items.forEach { item ->
-            listRow(results, "${item.title}\n回看日 ${item.reviewOn} · ${originLabel(item.originState)}", "action:${item.id}") {
+            val state = if (item.due) "待回看" else statusLabel(item.status)
+            listRow(results, "${item.title}\n$state · ${item.reviewOn} 回看", "action:${item.id}") {
                 showDetail(item.id)
             }
-            val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            results.addView(chips)
-            chip(chips, statusLabel(item.status), if (item.status == ActionStatus.OPEN) Ui.Tone.ACCENT else Ui.Tone.NEUTRAL)
-            if (item.due) chip(chips, "已到期", Ui.Tone.WARN)
         }
         if (pageStack.size > 1) addButton(results, "上一页", "previousPage") { goPrevious() }
         if (page.nextOffset != null) addButton(results, "下一页", "nextPage") { goNext(page) }
@@ -118,13 +111,16 @@ class ActionsActivity : ScreenActivity() {
         beginScreen("create", "新建行动")
         val form = card()
         Ui.sectionTitle(form, "计划")
-        Ui.note(form, "标题、触发情境、具体做法和期望信号都由你明确填写。")
-        val title = fieldIn(form, "标题（必填，200 字内）", maxLength = 200)
-        val trigger = fieldIn(form, "触发情境：什么时候做（必填）", multiline = true, maxLength = 2_000)
-        val behavior = fieldIn(form, "具体做法（必填）", multiline = true, maxLength = 4_000)
-        val signal = fieldIn(form, "期望信号：观察什么来判断（必填）", multiline = true, maxLength = 2_000)
-        val reviewOn = fieldIn(form, "回看日期（YYYY-MM-DD）")
-        val zone = fieldIn(form, "时区", ZoneId.systemDefault().id)
+        Ui.note(form, "写下想尝试的做法，以及准备如何观察结果。")
+        val title = labeledFieldIn(form, "想尝试什么", maxLength = 200)
+        val trigger = labeledFieldIn(form, "什么时候做", multiline = true, maxLength = 2_000)
+        val behavior = labeledFieldIn(form, "准备怎么做", multiline = true, maxLength = 4_000)
+        val signal = labeledFieldIn(form, "怎样看出效果", multiline = true, maxLength = 2_000)
+        val reviewOn = labeledFieldIn(form, "回看日期", "YYYY-MM-DD")
+        lateinit var zone: EditText
+        Ui.disclosure(form, "时区设置", "actionTimeZone") { settings ->
+            zone = labeledFieldIn(settings, "时区", value = ZoneId.systemDefault().id)
+        }
         primaryIn(form, "保存行动", "saveAction") {
             val draft = try { draftFrom(title, trigger, behavior, signal, reviewOn, zone, null) }
             catch (failure: IllegalArgumentException) { showError(failure); return@primaryIn }
@@ -144,62 +140,57 @@ class ActionsActivity : ScreenActivity() {
             val value = view.value
             val draft = value.draft
             val plan = card()
-            Ui.sectionTitle(plan, "计划")
+            Ui.cardTitle(plan, draft.title)
             val statusChips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             plan.addView(statusChips)
             chip(statusChips, statusLabel(value.status), if (value.status == ActionStatus.OPEN) Ui.Tone.ACCENT else Ui.Tone.NEUTRAL)
-            chip(statusChips, if (view.due) "已到期" else "未到回看日期", if (view.due) Ui.Tone.WARN else Ui.Tone.NEUTRAL)
-            Ui.note(plan, "评估时间 ${view.evaluatedAt} · 修订 ${value.revision}")
-            Ui.note(plan, "创建：${value.createdAt}\n更新：${value.updatedAt}\n时区：${draft.zoneId}")
-            Ui.sectionTitle(plan, "标题")
-            Ui.body(plan, draft.title)
-            Ui.sectionTitle(plan, "触发情境")
+            if (value.status == ActionStatus.OPEN && view.due) chip(statusChips, "待回看", Ui.Tone.WARN)
+            Ui.fieldLabel(plan, "什么时候做")
             Ui.body(plan, draft.trigger)
-            Ui.sectionTitle(plan, "具体做法")
+            Ui.fieldLabel(plan, "准备怎么做")
             Ui.body(plan, draft.behavior)
-            Ui.sectionTitle(plan, "期望信号")
+            Ui.fieldLabel(plan, "怎样看出效果")
             Ui.body(plan, draft.expectedSignal)
             Ui.body(plan, "回看日期：${draft.reviewOn}")
             val reviewCard = card()
-            Ui.sectionTitle(reviewCard, "最近回看")
+            Ui.sectionTitle(reviewCard, "这份计划的回看")
             val review = value.review
             if (review == null) {
-                Ui.note(reviewCard, "尚未提交回看。")
+                emptyState(reviewCard, "这份计划还没有回看记录。过往版本可在历史中查看。")
             } else {
                 Ui.body(reviewCard, "回看日期：${review.reviewedOn} · 决定：${decisionLabel(review.decision)}")
-                Ui.body(reviewCard, "执行情况：${executionLabel(review.execution)}${if (review.execution == ActionExecution.UNKNOWN) "（本次回看说明无法判断执行情况）" else ""}")
+                Ui.body(reviewCard, "执行情况：${executionLabel(review.execution)}")
                 Ui.body(reviewCard, "观察结果：${review.observedText}")
             }
-            val originCard = card()
-            Ui.sectionTitle(originCard, "来源")
-            val originChips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            originCard.addView(originChips)
-            chip(originChips, originLabel(view.originState), when (view.originState) {
-                ActionOriginState.CURRENT -> Ui.Tone.OK
-                ActionOriginState.STALE -> Ui.Tone.WARN
-                else -> Ui.Tone.NEUTRAL
-            })
-            if (view.originState == ActionOriginState.STALE || view.originState == ActionOriginState.UNKNOWN)
-                Ui.note(originCard, "来源状态只影响标注；行动文字与回看结果保留。")
-            draft.origin?.let { Ui.body(originCard, "来源知识：${it.knowledgeId} · 修订 ${it.revision}") }
-            val actions = card()
-            Ui.sectionTitle(actions, "操作")
             if (value.status == ActionStatus.OPEN) {
-                primaryIn(actions, "提交回看", "reviewAction") { showReview() }
-                addButton(actions, "编辑计划", "editAction") { showEdit() }
+                primaryButton("记录这次回看", "reviewAction") { showReview() }
+                button("调整计划", "editAction") { showEdit() }
             }
-            addButton(actions, "查看历史", "actionHistory") { historyOffset = 0; showHistory() }
-            Ui.divider(actions)
-            if (value.status == ActionStatus.OPEN) {
-                dangerIn(actions, "停止行动", "stopAction") { showStop() }
+            button("查看历史", "actionHistory") { historyOffset = 0; showHistory() }
+            Ui.disclosure(root, "来源与版本", "actionMetadata") { metadata ->
+                chip(metadata, originLabel(view.originState), when (view.originState) {
+                    ActionOriginState.CURRENT -> Ui.Tone.OK
+                    ActionOriginState.STALE -> Ui.Tone.WARN
+                    else -> Ui.Tone.NEUTRAL
+                })
+                if (view.originState == ActionOriginState.STALE || view.originState == ActionOriginState.UNKNOWN)
+                    Ui.note(metadata, "来源变化不影响你写下的计划与回看。")
+                draft.origin?.let { Ui.note(metadata, "知识 ${it.knowledgeId} · 第 ${it.revision} 版") }
+                Ui.note(metadata, "第 ${value.revision} 版 · 时区 ${draft.zoneId}")
+                Ui.note(metadata, "创建于 ${value.createdAt}\n更新于 ${value.updatedAt}")
             }
-            dangerIn(actions, "删除行动", "deleteAction") {
-                confirm("永久删除这个行动？", "整个历史（计划、全部修订与回看）都会被永久删除并登记删除标记，此操作不能撤销。", "永久删除") {
-                    runIo({ app.actions.delete(id, value.revision) }) {
-                        toast("行动已删除")
-                        actionId = null
-                        current = null
-                        showList()
+            Ui.disclosure(root, "管理行动", "actionManagement") { management ->
+                if (value.status == ActionStatus.OPEN) {
+                    dangerIn(management, "停止行动", "stopAction") { showStop() }
+                }
+                dangerIn(management, "永久删除", "deleteAction") {
+                    confirm("永久删除这个行动？", "计划及全部历史版本、回看结果都会被删除，无法撤销。", "永久删除") {
+                        runIo({ app.actions.delete(id, value.revision) }) {
+                            toast("行动已删除")
+                            actionId = null
+                            current = null
+                            showList()
+                        }
                     }
                 }
             }
@@ -212,13 +203,16 @@ class ActionsActivity : ScreenActivity() {
         beginScreen("edit", "编辑计划")
         val form = card()
         Ui.sectionTitle(form, "计划")
-        Ui.note(form, "修改计划会保存为新修订，旧计划保留在历史中。")
-        val title = fieldIn(form, "标题（必填，200 字内）", draft.title, maxLength = 200)
-        val trigger = fieldIn(form, "触发情境：什么时候做（必填）", draft.trigger, multiline = true, maxLength = 2_000)
-        val behavior = fieldIn(form, "具体做法（必填）", draft.behavior, multiline = true, maxLength = 4_000)
-        val signal = fieldIn(form, "期望信号：观察什么来判断（必填）", draft.expectedSignal, multiline = true, maxLength = 2_000)
-        val reviewOn = fieldIn(form, "回看日期（YYYY-MM-DD）", draft.reviewOn.toString())
-        val zone = fieldIn(form, "时区", draft.zoneId)
+        Ui.note(form, "旧计划会保留在历史中。")
+        val title = labeledFieldIn(form, "想尝试什么", value = draft.title, maxLength = 200)
+        val trigger = labeledFieldIn(form, "什么时候做", value = draft.trigger, multiline = true, maxLength = 2_000)
+        val behavior = labeledFieldIn(form, "准备怎么做", value = draft.behavior, multiline = true, maxLength = 4_000)
+        val signal = labeledFieldIn(form, "怎样看出效果", value = draft.expectedSignal, multiline = true, maxLength = 2_000)
+        val reviewOn = labeledFieldIn(form, "回看日期", "YYYY-MM-DD", draft.reviewOn.toString())
+        lateinit var zone: EditText
+        Ui.disclosure(form, "时区设置", "actionTimeZone") { settings ->
+            zone = labeledFieldIn(settings, "时区", value = draft.zoneId)
+        }
         primaryIn(form, "保存修改", "saveEdit") {
             val updated = try { draftFrom(title, trigger, behavior, signal, reviewOn, zone, draft.origin) }
             catch (failure: IllegalArgumentException) { showError(failure); return@primaryIn }
@@ -233,25 +227,36 @@ class ActionsActivity : ScreenActivity() {
         val view = current ?: return showList()
         reviewOperationId = UUID.randomUUID().toString()
         val draft = view.value.draft
-        beginScreen("review", "提交回看")
+        beginScreen("review", "记录回看")
         val reviewCard = card()
         Ui.sectionTitle(reviewCard, "回看")
-        Ui.note(reviewCard, "回看针对当前这份计划保存；观察结果必须明确填写，可以表达无法判断。执行或停止与否不等于计划对错。")
-        Ui.sectionTitle(reviewCard, "执行情况")
-        val executionSpinner = spinnerIn(reviewCard, listOf("执行情况未知（无法判断）", "未执行", "已执行"), 0, "execution")
-        val observed = fieldIn(reviewCard, "观察结果（必填）", multiline = true, maxLength = 4_000)
+        Ui.note(reviewCard, "发生了什么，有哪些感受？暂时无法判断也可以如实写下。")
+        Ui.fieldLabel(reviewCard, "执行情况")
+        val executionSpinner = spinnerIn(reviewCard, listOf("还无法确认", "未执行", "已执行"), 0, "execution")
+        val observed = labeledFieldIn(reviewCard, "这次观察到什么", multiline = true, maxLength = 4_000)
         val decisionCard = card()
         Ui.sectionTitle(decisionCard, "决定")
         val decisionSpinner = spinnerIn(decisionCard, listOf("继续原做法", "调整做法", "暂缓（延期回看）", "停止行动"), 0, "decision")
-        val nextReviewOn = fieldIn(decisionCard, "下一次回看日期（继续／调整／暂缓必填，YYYY-MM-DD，须在当地今日之后）")
+        val nextDate = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        decisionCard.addView(nextDate)
+        val nextReviewOn = labeledFieldIn(nextDate, "下一次回看日期", "YYYY-MM-DD")
+        Ui.note(nextDate, "选择今天之后的日期。")
         val nextCard = card()
         Ui.sectionTitle(nextCard, "下一轮计划")
-        Ui.note(nextCard, "仅选择「调整做法」时生效，已预填当前计划")
-        val nextTitle = fieldIn(nextCard, "标题", draft.title, maxLength = 200)
-        val nextTrigger = fieldIn(nextCard, "触发情境", draft.trigger, multiline = true, maxLength = 2_000)
-        val nextBehavior = fieldIn(nextCard, "具体做法", draft.behavior, multiline = true, maxLength = 4_000)
-        val nextSignal = fieldIn(nextCard, "期望信号", draft.expectedSignal, multiline = true, maxLength = 2_000)
-        primaryButton("保存回看", "saveReview") {
+        Ui.note(nextCard, "在原计划上修改想调整的部分。")
+        val nextTitle = labeledFieldIn(nextCard, "标题", value = draft.title, maxLength = 200)
+        val nextTrigger = labeledFieldIn(nextCard, "触发情境", value = draft.trigger, multiline = true, maxLength = 2_000)
+        val nextBehavior = labeledFieldIn(nextCard, "具体做法", value = draft.behavior, multiline = true, maxLength = 4_000)
+        val nextSignal = labeledFieldIn(nextCard, "期望信号", value = draft.expectedSignal, multiline = true, maxLength = 2_000)
+        nextCard.visibility = View.GONE
+        decisionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                nextCard.visibility = if (position == 1) View.VISIBLE else View.GONE
+                nextDate.visibility = if (position == 3) View.GONE else View.VISIBLE
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        primaryIn(root, "保存回看", "saveReview") {
             val execution = ActionExecution.entries[executionSpinner.selectedItemPosition]
             val decision = when (decisionSpinner.selectedItemPosition) {
                 1 -> ActionDecision.ADJUST
@@ -260,7 +265,7 @@ class ActionsActivity : ScreenActivity() {
                 else -> ActionDecision.CONTINUE
             }
             val observedText = observed.text.toString()
-            if (observedText.isBlank()) { showError(IllegalArgumentException("请填写观察结果")); return@primaryButton }
+            if (observedText.isBlank()) { showError(IllegalArgumentException("请填写观察结果")); return@primaryIn }
             val today = LocalDate.now(ZoneId.of(draft.zoneId))
             val work: () -> ActionView = when (decision) {
                 ActionDecision.STOP -> {
@@ -277,8 +282,8 @@ class ActionsActivity : ScreenActivity() {
                             zoneId = draft.zoneId,
                             origin = draft.origin,
                         )
-                    } catch (failure: IllegalArgumentException) { showError(failure); return@primaryButton }
-                    if (!adjusted.reviewOn.isAfter(today)) { showError(IllegalArgumentException("下一次回看日期须在当地今日（$today）之后")); return@primaryButton }
+                    } catch (failure: IllegalArgumentException) { showError(failure); return@primaryIn }
+                    if (!adjusted.reviewOn.isAfter(today)) { showError(IllegalArgumentException("下一次回看日期须在当地今日（$today）之后")); return@primaryIn }
                     {
                         app.actions.review(view.value.id, view.value.revision, requireNotNull(reviewOperationId),
                             ActionReview(execution, observedText, decision, today), adjustedDraft = adjusted)
@@ -286,8 +291,8 @@ class ActionsActivity : ScreenActivity() {
                 }
                 else -> {
                     val next = try { parseDate(nextReviewOn.text.toString(), "下一次回看日期") }
-                    catch (failure: IllegalArgumentException) { showError(failure); return@primaryButton }
-                    if (!next.isAfter(today)) { showError(IllegalArgumentException("下一次回看日期须在当地今日（$today）之后")); return@primaryButton }
+                    catch (failure: IllegalArgumentException) { showError(failure); return@primaryIn }
+                    if (!next.isAfter(today)) { showError(IllegalArgumentException("下一次回看日期须在当地今日（$today）之后")); return@primaryIn }
                     {
                         app.actions.review(view.value.id, view.value.revision, requireNotNull(reviewOperationId),
                             ActionReview(execution, observedText, decision, today), nextReviewOn = next)
@@ -309,9 +314,9 @@ class ActionsActivity : ScreenActivity() {
         val form = card()
         Ui.sectionTitle(form, "停止")
         Ui.note(form, "停止后不再列为到期行动，不能恢复为进行中；计划、历史与本次结果保留。")
-        Ui.sectionTitle(form, "执行情况")
-        val executionSpinner = spinnerIn(form, listOf("执行情况未知（无法判断）", "未执行", "已执行"), 0, "execution")
-        val observed = fieldIn(form, "观察结果（必填）", multiline = true, maxLength = 4_000)
+        Ui.fieldLabel(form, "执行情况")
+        val executionSpinner = spinnerIn(form, listOf("还无法确认", "未执行", "已执行"), 0, "execution")
+        val observed = labeledFieldIn(form, "这次观察到什么", multiline = true, maxLength = 4_000)
         dangerIn(form, "确认停止", "confirmStop") {
             val observedText = observed.text.toString()
             if (observedText.isBlank()) { showError(IllegalArgumentException("请填写观察结果")); return@dangerIn }
@@ -332,11 +337,14 @@ class ActionsActivity : ScreenActivity() {
         val id = actionId ?: return showList()
         beginScreen("history", "行动历史")
         runIo({ app.actions.history(id, historyOffset, PAGE_SIZE) }) { items ->
-            if (items.isEmpty()) note("没有更多修订。")
+            if (items.isEmpty()) {
+                val empty = card()
+                emptyState(empty, "没有更多版本了。")
+            }
             items.forEach { view ->
                 val value = view.value
                 val entry = card()
-                Ui.sectionTitle(entry, "修订 ${value.revision}")
+                Ui.cardTitle(entry, "第 ${value.revision} 版")
                 val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                 entry.addView(chips)
                 chip(chips, statusLabel(value.status), if (value.status == ActionStatus.OPEN) Ui.Tone.ACCENT else Ui.Tone.NEUTRAL)
@@ -385,39 +393,6 @@ class ActionsActivity : ScreenActivity() {
         return draft
     }
 
-    private fun fieldIn(parent: LinearLayout, hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
-        val input = EditText(this).apply {
-            this.hint = hint
-            inputType = InputType.TYPE_CLASS_TEXT or if (multiline) InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES else 0
-            minLines = if (multiline) 3 else 1
-            gravity = android.view.Gravity.TOP or android.view.Gravity.START
-            setText(value)
-            setFreezesText(false)
-            isSaveEnabled = false
-        }
-        Ui.styleField(this, input)
-        parent.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
-        input.filters = arrayOf(InputFilter.LengthFilter(maxLength))
-        return input
-    }
-    private fun spinnerIn(parent: LinearLayout, items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
-        tag = viewTag
-        adapter = ArrayAdapter(this@ActionsActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        setSelection(selected)
-        Ui.styleSpinner(this@ActionsActivity, this)
-        parent.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
-    }
-    private fun primaryIn(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
-        Ui.primary(parent, label, tag) { if (!busy) action() }
-    }
-    private fun dangerIn(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
-        Ui.dangerButton(parent, label, tag) { if (!busy) action() }
-    }
-
     private fun statusLabel(status: ActionStatus) = when (status) {
         ActionStatus.OPEN -> "进行中"
         ActionStatus.STOPPED -> "已停止"
@@ -431,7 +406,7 @@ class ActionsActivity : ScreenActivity() {
     private fun executionLabel(execution: ActionExecution) = when (execution) {
         ActionExecution.EXECUTED -> "已执行"
         ActionExecution.NOT_EXECUTED -> "未执行"
-        ActionExecution.UNKNOWN -> "执行情况未知"
+        ActionExecution.UNKNOWN -> "无法确认执行情况"
     }
     private fun decisionLabel(decision: ActionDecision) = when (decision) {
         ActionDecision.CONTINUE -> "继续原做法"
