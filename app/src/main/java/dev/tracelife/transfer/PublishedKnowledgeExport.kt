@@ -37,7 +37,7 @@ internal object PublishedKnowledgeExport {
         val runs = snapshot.analysisRuns.associateBy { it.id }
         val runStates = mutableMapOf<String, AnalysisRunState>()
         fun reviewCurrent(value: StoredKnowledgeRevision): Boolean {
-            val run = runs[value.runId] ?: return true
+            val run = runs[value.runId] ?: return KnowledgeValidation.reviewMatchesState(value, null)
             if (run.source != value.source) return false
             val state = runStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) }
             return KnowledgeValidation.reviewMatchesState(value, state)
@@ -50,6 +50,14 @@ internal object PublishedKnowledgeExport {
             val response = feedback[feedbackId]
             val deletion = deletedFeedback[feedbackId]
             val token = deletion?.let { it.lastRevision.toLong() + 1 } ?: response?.version?.toLong() ?: 0L
+            val dependencies = KnowledgeValidation.feedbackDependencies(value)
+            val allEvidence = KnowledgeValidation.allEvidence(value)
+            val dependencyDeleted = dependencies.any { AnalysisRunCodec.feedbackId(value.runId, it.claim) in deletedFeedback }
+            val dependencyChanged = dependencies.any { dependency ->
+                val current = feedback[AnalysisRunCodec.feedbackId(value.runId, dependency.claim)]
+                (current?.version ?: 0) != dependency.version || current != null &&
+                    (current.source != value.source || current.decision != ClaimFeedbackDecision.CONFIRMED)
+            }
             val reason = when {
                 options.kind == ReadingPackageKind.EVIDENCE -> "evidence_package"
                 value.id in deleted -> "deleted"
@@ -57,20 +65,22 @@ internal object PublishedKnowledgeExport {
                 value.publishedAt > snapshot.capturedAt -> "not_yet_published"
                 value.expiresAt != null && value.expiresAt <= snapshot.capturedAt -> "expired"
                 deletion != null -> "feedback_deleted"
+                dependencyDeleted -> "parent_feedback_deleted"
                 value.feedbackVersion.toLong() != token || response != null && response.source != value.source -> "feedback_changed"
                 response != null && response.decision != ClaimFeedbackDecision.CONFIRMED -> "feedback_not_accepted"
+                dependencyChanged -> "parent_feedback_changed"
                 value.category == KnowledgeCategory.INSIGHT && response?.decision != ClaimFeedbackDecision.CONFIRMED -> "insight_unconfirmed"
                 !reviewCurrent(value) -> "review_changed"
                 options.scope.topics != null && value.topics.none { it in options.scope.topics } -> "topic"
-                value.evidence.any { records[it.recordId]?.revision != it.revision } -> "evidence_not_current"
-                value.evidence.any { it.recordId !in included } -> "evidence_out_of_scope"
+                allEvidence.any { records[it.recordId]?.revision != it.revision } -> "evidence_not_current"
+                allEvidence.any { it.recordId !in included } -> "evidence_out_of_scope"
                 else -> null
             }
             if (reason != null) {
                 omitted[reason] = omitted.getOrDefault(reason, 0) + 1
                 null
             } else {
-                KnowledgeValidation.validateEvidence(value, value.evidence.map { records.getValue(it.recordId) }.distinctBy { it.id })
+                KnowledgeValidation.validateEvidence(value, allEvidence.map { records.getValue(it.recordId) }.distinctBy { it.id })
                 Entry(value, response?.decision)
             }
         }

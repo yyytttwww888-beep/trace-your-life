@@ -6,6 +6,7 @@ import dev.tracelife.model.Attachment
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.storage.StoredKnowledgeRevision
+import dev.tracelife.storage.KnowledgeValidation
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -89,7 +90,7 @@ object KnowledgeArchive {
                 val paths = included.associate { it.id to recordPath(it) }
                 require(paths.values.distinct().size == paths.size) { "记录路径冲突" }
                 val knowledgePaths = knowledge.entries.associate { it.value.id to knowledgePath(it.value) }
-                val relatedKnowledge = knowledge.entries.flatMap { entry -> entry.value.evidence.map { it.recordId }.distinct().map { it to entry.value } }
+                val relatedKnowledge = knowledge.entries.flatMap { entry -> KnowledgeValidation.allEvidence(entry.value).map { it.recordId }.distinct().map { it to entry.value } }
                     .groupBy({ it.first }, { it.second })
                 val templatePaths = boundTemplates.associate { (it.id to it.version) to templatePath(it) }
                 included.forEach { record ->
@@ -134,7 +135,7 @@ object KnowledgeArchive {
                         .append(archive.link("README.md", "timeline/intervals/index.md", "跨期区间目录"))
                         .append(" 和 ").append(archive.link("README.md", "timeline/unknown/index.md", "未知时间目录")).append("。\n\n")
                     append("主题和索引中的长名称仅作缩短显示；完整文字保留在原始记录或结构化资料中。所有日/周入口只是导航，未生成任何复盘总结、画像或成长判断。\n")
-                    append("\n完整分析任务、完整调用证据台账和待核验提案未纳入本阅读包；跨批周期草稿也未纳入。这些内容仅保留在完整加密备份中。周期草稿是派生分析，不是原始证据。知识条目仅保留对应发布的核对凭据，不代表全部分析历史或事实认证。\n")
+                    append("\n完整分析任务、完整调用证据台账和待核验提案未纳入本阅读包；未发布的跨批周期草稿也未纳入。这些内容仅保留在完整加密备份中。周期草稿是派生分析，不是原始证据。已发布知识保留对应的核对凭据；周期知识区分分批原文筛查与最终核对，不代表全部分析历史或事实认证。\n")
                     append("\n已纳入 ${knowledge.entries.size} 条在 capturedAt 时有效的已发布知识，省略 ${knowledge.omitted} 条当前指针及 ${knowledge.omittedHistoricalRevisions} 份历史知识修订。已发布知识是保存的分析，不是新增原始证据，也不代表用户已掌握或实践；新的判断必须沿引用重新核对原文。\n")
                     if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
                     append("\n完整用户反馈及独立文字未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；知识正文仅显示对应决定与版本，不复制用户文字。请通过完整加密备份保留。\n")
@@ -464,14 +465,23 @@ object KnowledgeArchive {
                 append("\n主题（资料）：\n").append(fenced(value.topics.sorted().joinToString("\n")))
                 append("\n## 核对与用户决定\n\n")
                 append("核对结果：${value.review.verdict.name}；提供方：${escape(value.reviewProviderId)}；核对批次：${escape(value.reviewBatchKey)}；尝试：${value.reviewAttempt}。模型核对不是事实认证。\n\n")
+                value.reductionProof?.let { proof ->
+                    append("该条来自周期归并：${proof.scans.size} 批原文筛查覆盖 ${proof.originalEvidence.size} 个登记片段；最终核对取得 ${value.evidence.size} 个筛选片段。筛查分类与最终支持判断分别保存；未直接送入最终核对的片段不能表述为最终模型逐条读过。\n\n")
+                }
                 append("用户决定：${entry.feedbackDecision?.name ?: "未提供"}；反馈版本：${value.feedbackVersion}。独立用户文字未复制。\n\n")
                 append("适用范围仅限已提供片段；没有穷尽反例搜索，也未分析附件，不能将以下原文目录解释为完整生活记录。\n\n")
                 append("核对未知项（不是新增证据）：\n").append(fenced(value.review.unknowns.joinToString("\n")))
                 append("\n## 原始证据定位\n\n片段位置采用 Unicode 码点，起点包含、终点不包含；链接指向原始修订，片段未在知识正文重复复制。\n\n")
-                value.evidence.forEach { evidence ->
+                val scanFindings = value.reductionProof?.scans?.flatMap { it.result.findings }?.associateBy { it.receiptId }.orEmpty()
+                KnowledgeValidation.allEvidence(value).forEach { evidence ->
                     append("- ").append(archive.link(path, recordPaths.getValue(evidence.recordId), "${evidence.recordId} · 修订 ${evidence.revision}"))
                     append("；字段：${escape(evidence.field)}；片段：[${evidence.start}, ${evidence.end}) / ${evidence.totalCodePoints}；SHA-256：${evidence.sha256}；引用：${evidence.id}")
-                    append("；核对用途：${if (evidence.id in value.review.supportingEvidenceIds) "支持" else "已读上下文"}。\n")
+                    val usage = when {
+                        evidence.id in value.review.supportingEvidenceIds -> "最终核对支持"
+                        value.evidence.any { it.id == evidence.id } -> "最终核对上下文"
+                        else -> "分批原文筛查 ${scanFindings[evidence.id]?.classification?.name ?: "未标注"}"
+                    }
+                    append("；核对用途：$usage。\n")
                 }
             })
         }
@@ -503,7 +513,7 @@ object KnowledgeArchive {
         archive.pages("notes/timeline/index.md", "知识分析范围入口", listOf(Nav("跨日期范围", "notes/timeline/intervals/index.md")) + yearLinks,
             "此处按分析计划定位，不以发布时间代替原始记录发生时间；未知日期仍以原始记录为准。")
 
-        notes.flatMap { note -> note.evidence.map { it.recordId }.distinct().map { it to note } }
+        notes.flatMap { note -> KnowledgeValidation.allEvidence(note).map { it.recordId }.distinct().map { it to note } }
             .groupBy({ it.first }, { it.second }).forEach { (recordId, values) ->
                 val path = "notes/sources/${hash(recordId)}/index.md"
                 notePages(path, "与原始记录相关的已发布知识", values,
@@ -541,7 +551,7 @@ object KnowledgeArchive {
             val value = entry.value
             val json = JSONObject(KnowledgeCodec.encode(value)).put("nodeType", "saved-analysis").put("originalEvidence", false)
                 .put("path", paths.getValue(value.id)).put("feedbackDecision", entry.feedbackDecision?.name ?: JSONObject.NULL)
-                .put("recordPaths", JSONArray(value.evidence.map { it.recordId }.distinct().map { id ->
+                .put("recordPaths", JSONArray(KnowledgeValidation.allEvidence(value).map { it.recordId }.distinct().map { id ->
                     JSONObject().put("id", id).put("path", recordPaths.getValue(id))
                 })).toString()
             val size = json.toByteArray(Charsets.UTF_8).size + 1
@@ -549,7 +559,7 @@ object KnowledgeArchive {
             if (lines.isNotEmpty() && (lines.size == archive.pageSize || bytes + size > JSON_PAGE_BYTES)) flush()
             lines += json
             targets += paths.getValue(value.id)
-            targets += value.evidence.map { recordPaths.getValue(it.recordId) }
+            targets += KnowledgeValidation.allEvidence(value).map { recordPaths.getValue(it.recordId) }
             bytes += size
         }
         flush()

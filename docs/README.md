@@ -26,6 +26,7 @@
 - [M3 第六阶段计划](plans/2026-10-17-synthesis-actions.md)：有界综合及行动实验的实施与验证。
 
 - [分层周期草稿](PERIOD_REDUCTION.md)：跨批归并、依赖失效、草稿读取与原文下钻。
+- [周期原文核对与发布](PERIOD_REVIEW.md)：完整来源扫描、相关原文最终核对、用户确认与依赖维护。
 - [M3 第七阶段计划](plans/2026-10-19-period-reduction.md)：分层草稿的实现与验证。
 
 ## 架构决策

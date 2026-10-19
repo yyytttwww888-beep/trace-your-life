@@ -2,6 +2,7 @@ package dev.tracelife.storage
 
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
+import dev.tracelife.analysis.AnalysisRedactionCapacityException
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
@@ -109,7 +110,11 @@ internal object SnapshotValidation {
             // A backup already carrying a deletion fence must also carry its redaction. Older
             // backups without that fence are sanitized after merging the target's deletions.
             snapshot.analysisRuns.forEach { run ->
-                require(AnalysisRunCodec.redactDeletedFeedback(run, erasedFeedback, snapshot.capturedAt) == run) {
+                val redacted = try { AnalysisRunCodec.redactDeletedFeedback(run, erasedFeedback, snapshot.capturedAt) }
+                    catch (failure: AnalysisRedactionCapacityException) {
+                        throw InvalidBackupException("备份已含反馈删除标记但保留了待清理的模型文字", failure)
+                    }
+                require(redacted == run) {
                     "备份包含已永久删除反馈影响的模型文字"
                 }
             }
@@ -127,7 +132,9 @@ internal object SnapshotValidation {
             require(snapshot.knowledgeHeads.map { it.id }.toSet().intersect(snapshot.deletedKnowledge.map { it.id }.toSet()).isEmpty()) { "备份同时包含知识及其删除标记" }
             val erasedRuns = snapshot.deletedAnalysisRuns.map { it.id }.toSet()
             require(snapshot.knowledgeRevisions.none { value -> value.runId in erasedRuns ||
-                AnalysisRunCodec.feedbackId(value.runId, value.claimRef) in erasedFeedback }) { "备份包含已永久删除任务或反馈的知识副本" }
+                KnowledgeValidation.feedbackDependencies(value).any { dependency ->
+                    AnalysisRunCodec.feedbackId(value.runId, dependency.claim) in erasedFeedback
+                } }) { "备份包含已永久删除任务或自身、祖先反馈的知识副本" }
             // Publications own their immutable claim/review proof; later task edits or feedback
             // redaction must not retroactively change the meaning of historical revisions.
             val knowledgeSources = snapshot.records.associateBy { it.id to it.revision }

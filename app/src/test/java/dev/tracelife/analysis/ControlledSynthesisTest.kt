@@ -73,7 +73,7 @@ class ControlledSynthesisTest {
         assertEquals(CallPurpose.SYNTHESIS, saved.purpose)
         assertEquals(CallStatus.SUCCEEDED, saved.status)
         assertEquals(2, saved.evidence.size)
-        assertEquals(5, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(6, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(0L, AnalysisBatchProcessor(analysis).coverage("run").completedTextCodePoints)
         repository.close()
         repository = LifeRepository(context, clock, database)
@@ -195,7 +195,7 @@ class ControlledSynthesisTest {
             val legacy = legacy(current, version)
             val decoded = AnalysisRunCodec.decode(legacy)
             assertEquals(CallPurpose.EXTRACTION, decoded.calls.single().purpose)
-            assertEquals(5, JSONObject(AnalysisRunCodec.encode(decoded)).getInt("formatVersion"))
+            assertEquals(6, JSONObject(AnalysisRunCodec.encode(decoded)).getInt("formatVersion"))
             AnalysisRunCodec.validateStored(analysis.task("run").stored.copy(payload = legacy))
         }
         analysis.synthesize("run", "synthesis", selected, Synthesizer())
@@ -270,7 +270,7 @@ class ControlledSynthesisTest {
         val calls = getJSONArray("calls")
         repeat(calls.length()) { index ->
             val call = calls.getJSONObject(index)
-            listOf("reductionInputs", "reductionOutput").forEach(call::remove)
+            listOf("reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(call::remove)
             if (version < 3) listOf("purpose", "reviewTarget", "review", "feedbackVersion").forEach(call::remove)
             if (version < 2) listOf("tokenCountKind", "usage").forEach(call::remove)
         }

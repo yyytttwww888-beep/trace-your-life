@@ -246,7 +246,7 @@ class PeriodReductionProcessor(private val analysis: ControlledAnalysis) {
     }
 
     private fun key(manifest: String, children: List<ReductionNodeRef>, dependencies: Map<ReductionNodeRef, ReductionDependencies>) =
-        "period-reduction-v1-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(manifest, children.map { ref ->
+        "period-reduction-v2-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(manifest, children.map { ref ->
             listOf(refValue(ref), dependencies.getValue(ref).feedbackTokens.map { token ->
                 listOf(token.claim.batchKey, token.claim.claimIndex, token.claim.claimSha256, token.version)
             })

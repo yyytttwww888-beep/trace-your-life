@@ -1,6 +1,9 @@
 package dev.tracelife.storage
 
 import android.content.Context
+import dev.tracelife.actions.ActionDraft
+import dev.tracelife.actions.ActionExperiments
+import dev.tracelife.analysis.AnalysisFeedback
 import dev.tracelife.analysis.AnalysisCall
 import dev.tracelife.analysis.AnalysisRequest
 import dev.tracelife.analysis.AnalysisRunCodec
@@ -14,9 +17,16 @@ import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.EvidenceReceipt
 import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.analysis.LegacyRedactionCapacityFixture
+import dev.tracelife.analysis.ControlledAnalysis
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.RevisionConflictException
 import dev.tracelife.transfer.StaleSnapshotException
+import dev.tracelife.transfer.RepositorySnapshot
+import dev.tracelife.transfer.Deletion
+import dev.tracelife.transfer.InvalidBackupException
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -256,6 +266,151 @@ class KnowledgeStorageTest {
         assertEquals(value, repository.claimFeedback(value.id))
         assertTrue(repository.knowledgeHeads().isEmpty())
         assertEquals(6, repository.captureSnapshot(directory()).sourceSchemaVersion)
+    }
+
+    @Test fun `feedback deletion removes an overfull legacy task and all its knowledge without losing independent text`() {
+        val fixture = capacityFixture()
+        val inconsistent = fixture.snapshot.copy(claimFeedback = fixture.snapshot.claimFeedback.filterNot { it.id == fixture.deleted.id },
+            deletedClaimFeedback = listOf(Deletion(fixture.deleted.id, fixture.deleted.version, now)))
+        assertThrows(InvalidBackupException::class.java) { SnapshotValidation.validate(inconsistent) }
+        val result = AnalysisFeedback(repository, clock).delete(fixture.deleted.id, fixture.deleted.version)
+        assertEquals(fixture.full.id, result.purgedAnalysisRunId)
+        assertNull(repository.analysisRun(fixture.full.id))
+        assertNull(repository.claimFeedback(fixture.deleted.id))
+        assertEquals(fixture.independent, repository.claimFeedback(fixture.independent.id))
+        assertTrue(repository.knowledgeHeads().isEmpty())
+        assertTrue(fixture.knowledgeIds.all(repository::knowledgeDeleted))
+        val clean = repository.captureSnapshot(directory())
+        assertEquals(fixture.full.version, clean.deletedAnalysisRuns.single().lastRevision)
+        assertEquals(2, clean.deletedKnowledge.first { it.id == fixture.knowledgeIds.first() }.lastRevision)
+        assertEquals("合成容量边界独立行动", ActionExperiments(repository, clock).get("capacity-action")!!.value.draft.title)
+        val restored = repository.restoreSnapshot(fixture.snapshot, directory(), repository.currentGeneration(), true)
+        assertEquals(0, restored.capacityPurgedAnalysisRuns)
+        assertNull(repository.analysisRun(fixture.full.id))
+        assertTrue(repository.knowledgeHeads().isEmpty())
+        assertEquals(fixture.independent, repository.claimFeedback(fixture.independent.id))
+        assertThrows(IllegalArgumentException::class.java) {
+            ControlledAnalysis(repository, clock).start(AnalysisRunCodec.decode(fixture.small.payload).request, fixture.full.id)
+        }
+    }
+
+    @Test fun `restore merging feedback tombstones reports capacity cleanup and fences the entire legacy task`() {
+        val fixture = capacityFixture()
+        val targetName = "synthetic-capacity-target-${UUID.randomUUID()}.db"
+        try {
+            LifeRepository(context, clock, targetName).use { target ->
+                // The target deleted feedback while its earlier ledger was still small. It has no
+                // task tombstone yet, so restoring the larger backup must exercise redaction.
+                target.restoreSnapshot(fixture.snapshot.copy(analysisRuns = listOf(fixture.small)), directory(), target.currentGeneration())
+                assertNull(target.deleteClaimFeedback(fixture.deleted.id, fixture.deleted.version).purgedAnalysisRunId)
+                assertNotNull(target.analysisRun(fixture.full.id))
+                assertEquals(1, target.knowledgeHeads().size)
+                val result = target.restoreSnapshot(fixture.snapshot, directory(), target.currentGeneration(), true)
+                assertEquals(1, result.capacityPurgedAnalysisRuns)
+                assertNull(target.analysisRun(fixture.full.id))
+                assertTrue(target.knowledgeHeads().isEmpty())
+                assertTrue(fixture.knowledgeIds.all(target::knowledgeDeleted))
+                assertEquals(fixture.independent, target.claimFeedback(fixture.independent.id))
+                assertEquals("合成容量边界独立行动", ActionExperiments(target, clock).get("capacity-action")!!.value.draft.title)
+                val clean = target.captureSnapshot(directory())
+                assertEquals(fixture.full.version, clean.deletedAnalysisRuns.single().lastRevision)
+                assertEquals(0, target.restoreSnapshot(fixture.snapshot, directory(), target.currentGeneration(), true).capacityPurgedAnalysisRuns)
+                assertNull(target.analysisRun(fixture.full.id))
+                assertThrows(IllegalArgumentException::class.java) {
+                    ControlledAnalysis(target, clock).start(AnalysisRunCodec.decode(fixture.small.payload).request, fixture.full.id)
+                }
+            }
+        } finally { context.deleteDatabase(targetName) }
+    }
+
+    @Test fun `restore excludes feedback-incompatible later tasks before deciding aggregate redaction capacity`() {
+        val fixture = capacityFixture()
+        fun bytes(run: StoredAnalysisRun) = run.payload.toByteArray(Charsets.UTF_8).size.toLong()
+        val growingJson = JSONObject(fixture.full.payload)
+        // Removing one filler output leaves enough room for the v6 envelope in this individual
+        // task. The full snapshot below still leaves less room than that envelope's growth.
+        growingJson.getJSONArray("calls").getJSONObject(5).getJSONObject("proposal").put("unknowns", JSONArray())
+        val growing = fixture.full.copy(payload = growingJson.toString())
+        val erased = AnalysisRunCodec.redactDeletedFeedback(growing, setOf(fixture.deleted.id), now)
+        assertTrue(bytes(erased) > bytes(growing) + 128)
+        val incompatibleId = "z-incompatible-capacity"
+        val companions = (1..7).map { index -> fixture.full.copy(
+            id = if (index == 7) incompatibleId else "synthetic-capacity-other-$index", version = 1) }
+        val remaining = 16L * 1024 * 1024 - bytes(growing) - companions.sumOf(::bytes) - 64
+        val reserveJson = JSONObject(fixture.small.payload)
+        val unknowns = JSONArray()
+        reserveJson.getJSONArray("calls").getJSONObject(0).getJSONObject("proposal").put("unknowns", unknowns)
+        repeat(20) {
+            val gap = remaining - reserveJson.toString().toByteArray(Charsets.UTF_8).size
+            val overhead = if (unknowns.length() == 0) 2 else 3
+            if (gap > overhead) unknowns.put("x".repeat(minOf(2_000L, gap - overhead).toInt()))
+        }
+        val reserve = fixture.small.copy(id = "synthetic-capacity-reserve", version = 1, payload = reserveJson.toString())
+        val incoming = fixture.snapshot.copy(analysisRuns = listOf(growing) + companions + reserve)
+        val incomingBytes = incoming.analysisRuns.sumOf(::bytes)
+        assertTrue(incomingBytes <= 16L * 1024 * 1024)
+        assertTrue(incomingBytes + bytes(erased) - bytes(growing) > 16L * 1024 * 1024)
+        SnapshotValidation.validate(incoming)
+
+        val smallState = AnalysisRunCodec.decode(fixture.small.payload)
+        val localOnlyClaim = smallState.calls.first().copy(batchKey = "synthetic-later-only-claim")
+        val localRef = ClaimRef(localOnlyClaim.batchKey, 0, AnalysisRunCodec.claimSha256(localOnlyClaim.proposal!!.claims.single()))
+        val localRun = fixture.small.copy(id = incompatibleId, version = 1,
+            payload = AnalysisRunCodec.encode(smallState.copy(calls = smallState.calls + localOnlyClaim)))
+        val localFeedback = StoredClaimFeedback(AnalysisRunCodec.feedbackId(incompatibleId, localRef), 1, incompatibleId,
+            localRef.batchKey, localRef.claimIndex, localRef.claimSha256, localRun.source,
+            ClaimFeedbackDecision.CONFIRMED, "合成旧备份不存在的独立反馈仍须保留", now, now)
+        val initial = fixture.snapshot.copy(analysisRuns = listOf(fixture.small, localRun),
+            claimFeedback = fixture.snapshot.claimFeedback + localFeedback)
+        val targetName = "synthetic-aggregate-capacity-${UUID.randomUUID()}.db"
+        try {
+            LifeRepository(context, clock, targetName).use { target ->
+                target.restoreSnapshot(initial, directory(), target.currentGeneration())
+                assertNull(target.deleteClaimFeedback(fixture.deleted.id, fixture.deleted.version).purgedAnalysisRunId)
+                val result = target.restoreSnapshot(incoming, directory(), target.currentGeneration(), true)
+                assertEquals(0, result.capacityPurgedAnalysisRuns)
+                assertNotNull(target.analysisRun(growing.id))
+                assertNull(target.analysisRun(incompatibleId))
+                assertEquals(localFeedback, target.claimFeedback(localFeedback.id))
+                val after = target.captureSnapshot(directory())
+                assertFalse(after.deletedAnalysisRuns.any { it.id == growing.id })
+                assertTrue(after.analysisRuns.sumOf(::bytes) <= 16L * 1024 * 1024)
+                assertEquals("FEEDBACK_DELETED", AnalysisRunCodec.decode(target.analysisRun(growing.id)!!.payload)
+                    .calls.single { it.batchKey == "synthetic-review-1" }.failureCode)
+            }
+        } finally { context.deleteDatabase(targetName) }
+    }
+
+    private data class CapacityFixture(val small: StoredAnalysisRun, val full: StoredAnalysisRun,
+        val deleted: StoredClaimFeedback, val independent: StoredClaimFeedback,
+        val knowledgeIds: List<String>, val snapshot: RepositorySnapshot)
+
+    private fun capacityFixture(): CapacityFixture {
+        val original = run()
+        val deleted = feedback(original, ClaimFeedbackDecision.CONFIRMED).copy(userText = "合成即将删除的用户文字")
+        repository.saveClaimFeedback(deleted, null, original.version)
+        val reviewed = addReview(repository.analysisRun(original.id)!!, 1)
+        val note = proof(reviewed, "synthetic-review-1")
+        repository.publishKnowledge(note, null, reviewed.version)
+        repository.publishKnowledge(note.copy(revision = 2, topics = setOf("合成容量测试")), 1, reviewed.version)
+        val state = AnalysisRunCodec.decode(reviewed.payload)
+        val extra = state.calls.first().copy(batchKey = "synthetic-independent")
+        val extraRef = ClaimRef(extra.batchKey, 0, AnalysisRunCodec.claimSha256(extra.proposal!!.claims.single()))
+        val extraReview = state.calls[1].copy(batchKey = "synthetic-independent-review", reviewTarget = extraRef)
+        val withExtra = repository.saveAnalysisRun(reviewed.copy(version = reviewed.version + 1,
+            payload = AnalysisRunCodec.encode(state.copy(calls = state.calls + extra + extraReview))), reviewed.version)
+        val extraNote = KnowledgeValidation.fromRun(withExtra, extraRef, extraReview.batchKey, KnowledgeCategory.OBSERVATION,
+            emptySet(), 1, now, now)
+        repository.publishKnowledge(extraNote, null, withExtra.version)
+        val independent = StoredClaimFeedback(AnalysisRunCodec.feedbackId(withExtra.id, extraRef), 1, withExtra.id,
+            extraRef.batchKey, extraRef.claimIndex, extraRef.claimSha256, withExtra.source,
+            ClaimFeedbackDecision.CONFIRMED, "合成容量边界仍须保留的独立文字", now, now)
+        repository.saveClaimFeedback(independent, null, withExtra.version)
+        ActionExperiments(repository, clock).create(ActionDraft("合成容量边界独立行动", "合成触发", "合成做法", "合成信号",
+            LocalDate.parse("2026-10-18"), "Asia/Shanghai"), "capacity-action")
+        val small = repository.analysisRun(original.id)!!
+        val full = repository.saveAnalysisRun(LegacyRedactionCapacityFixture.fill(small).copy(version = small.version + 1), small.version)
+        return CapacityFixture(small, full, deleted, independent, listOf(note.id, extraNote.id), repository.captureSnapshot(directory()))
     }
 
     private fun run(id: String = "synthetic-run", kind: ClaimKind = ClaimKind.REPORTED_EXPERIENCE, expiresAt: Instant? = null): StoredAnalysisRun {

@@ -8,6 +8,7 @@ import dev.tracelife.analysis.ClaimRef
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.EvidenceReceipt
 import dev.tracelife.analysis.ProposedClaim
+import dev.tracelife.analysis.ReductionReviewProtocol
 import dev.tracelife.analysis.ReviewIssue
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.storage.AnalysisQuery
@@ -21,7 +22,7 @@ import java.time.LocalDate
 
 /** A self-contained immutable publication, independent of the mutable analysis task ledger. */
 object KnowledgeCodec {
-    const val FORMAT_VERSION = 1
+    const val FORMAT_VERSION = 2
 
     fun encode(value: StoredKnowledgeRevision): String {
         KnowledgeValidation.validate(value)
@@ -37,7 +38,8 @@ object KnowledgeCodec {
             "reviewRequestSha256" to value.reviewRequestSha256, "review" to AnalysisRunCodec.reviewMap(value.review),
             "evidence" to value.evidence.map(AnalysisRunCodec::receiptMap), "feedbackVersion" to value.feedbackVersion,
             "topics" to value.topics.sorted(), "createdAt" to value.createdAt.toString(), "publishedAt" to value.publishedAt.toString(),
-        )).also { require(it.toByteArray(Charsets.UTF_8).size <= KnowledgeValidation.MAX_REVISION_BYTES) { "知识修订超过 256 KiB" } }
+            "reductionProof" to value.reductionProof?.let(ReductionReviewProtocol::proofMap),
+        ), nodeLimit = 20_000).also { require(it.toByteArray(Charsets.UTF_8).size <= KnowledgeValidation.MAX_REVISION_BYTES) { "知识修订超过 256 KiB" } }
     }
 
     fun decode(payload: String): StoredKnowledgeRevision {
@@ -72,10 +74,13 @@ object KnowledgeCodec {
                 else -> throw IllegalArgumentException("知识 JSON 无效")
             }
         }
-        val root = read(0).obj("formatVersion", "id", "revision", "runId", "claimRef", "source", "scope", "expiresAt", "category", "claim",
+        val raw = read(0)
+        val format = (raw as? Map<*, *>)?.get("formatVersion") as? Long
+        require(reader.peek() == JsonToken.END_DOCUMENT && format != null && format in 1L..FORMAT_VERSION.toLong()) { "知识 JSON 版本无效或含额外内容" }
+        val fields = arrayOf("formatVersion", "id", "revision", "runId", "claimRef", "source", "scope", "expiresAt", "category", "claim",
             "reviewBatchKey", "reviewAttempt", "reviewProviderId", "reviewRequestSha256", "review", "evidence",
             "feedbackVersion", "topics", "createdAt", "publishedAt")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") == FORMAT_VERSION) { "知识 JSON 版本无效或含额外内容" }
+        val root = raw.obj(*(if (format == 1L) fields else fields + "reductionProof"))
         val claimRef = root["claimRef"].obj("batchKey", "claimIndex", "claimSha256")
         val source = root["source"].obj("storeId", "generation")
         val scope = root["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
@@ -98,6 +103,7 @@ object KnowledgeCodec {
                 EvidenceReceipt(ref.string("id"), ref.string("recordId"), ref.int("revision"), ref.string("field"),
                     ref.int("start"), ref.int("end"), ref.int("totalCodePoints"), ref.string("sha256"))
             }, root.int("feedbackVersion"), root.strings("topics").uniqueSet(), root.instant("createdAt"), root.instant("publishedAt"),
+            root["reductionProof"]?.let(ReductionReviewProtocol::parseProof),
         ).also(KnowledgeValidation::validate)
     }
 

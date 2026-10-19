@@ -44,7 +44,7 @@ val progress = app.periodReduction.inspect(task.stored.id)
 
 低层入口为 `analysis.reduce(runId, batchKey, children, provider)`，其中 `children` 是 2–4 个 `ReductionNodeRef`。低层允许归并一个明确子集，不替调用方宣称全周期完成；完整范围判断由上述处理器完成。
 
-新增调用目的 `REDUCTION`。每个输入固定父批次键、尝试号、完整输出摘要、请求摘要及全部祖先原文陈述的反馈版本。父节点只能来自同一任务中此前成功的 `SYNTHESIS` 或 `REDUCTION` 调用；拒绝缺父、失败父节点、循环、前向引用、同组重复节点及祖先重叠。
+新增调用目的 `REDUCTION`。每个输入固定父批次键、尝试号、完整输出摘要、请求摘要及全部祖先综合与归并陈述的反馈版本（含无反馈的版本 0）。父节点只能来自同一任务中此前成功的 `SYNTHESIS` 或 `REDUCTION` 调用；拒绝缺父、失败父节点、循环、前向引用、同组重复节点及祖先重叠。
 
 模型每次只接收所选子节点的完整成果和未知项、依赖身份及有限来源计数／清单摘要。完整原文引用及反馈 token 留在本地台账，通过依赖图回查；高层不会再次携带全部祖先正文或引用清单。所有父节点都是依赖，不仅是最终文字选作支持的节点。范围计数由程序计算，仅说明材料覆盖，不作为成长或健康指标。
 
@@ -73,8 +73,8 @@ if (progress.status == ReductionProcessingStatus.TREE_INTEGRATED) {
 
 ## 保存、导出与后续边界
 
-分析任务载荷写入 v5，兼容 v1–v4；数据库仍为 v6，完整加密备份仍为 v5。完整备份保存依赖图与草稿，恢复后按原来源身份作为失效历史保存。资源上限见[数据转移接口](DATA_TRANSFER.md)，达到上限明确失败，不丢弃批次。
+分析任务载荷写入 v6，兼容 v1–v5；数据库仍为 v6，完整加密备份仍为 v5。完整备份保存依赖图与草稿，恢复后按原来源身份作为失效历史保存。资源上限见[数据转移接口](DATA_TRANSFER.md)，达到上限明确失败，不丢弃批次。
 
 普通知识阅读包、原文证据包和已有周期材料 ZIP 标记 `reductionDraftsIncluded=false`。本阶段通过草稿接口读取，尚无专用草稿文件导出；不能把已有材料包误认为包含归并草稿。
 
-草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；分层草稿整体的原文核对与发布需要独立协议，尤其不能把多个局部 `SUPPORTED` 直接合并为整体支持。模型可引用指标、自动反例检索、跨任务反馈合并、草稿直接反馈、自动重建和前端均未在本阶段实现。
+草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；归并陈述通过专用目标身份、原文扫描、最终独立核对和明确确认进入 `publishReduction`，见[周期原文核对与发布](PERIOD_REVIEW.md)。不能把多个局部 `SUPPORTED` 直接合并为整体支持。模型可引用指标、自动检索来源链外反例、跨任务反馈合并、自动重建和前端仍待实现。

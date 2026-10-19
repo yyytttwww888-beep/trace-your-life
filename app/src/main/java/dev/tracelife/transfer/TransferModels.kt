@@ -48,6 +48,7 @@ data class RestoreResult(
     val attachments: Int,
     val suppressedRecords: Int,
     val generation: Long,
+    val capacityPurgedAnalysisRuns: Int = 0,
 )
 
 /** Null topics means every topic, including unclassified records. */

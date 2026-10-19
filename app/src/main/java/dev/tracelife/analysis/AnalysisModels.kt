@@ -56,7 +56,7 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION;
+    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW;
 
     val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS
 }
@@ -65,7 +65,21 @@ enum class CallPurpose {
 data class ReductionNodeRef(val batchKey: String, val attempt: Int, val outputSha256: String)
 data class ReductionFeedbackToken(val claim: ClaimRef, val version: Int)
 data class ReductionInput(val id: String, val node: ReductionNodeRef, val requestSha256: String,
-    val feedbackTokens: List<ReductionFeedbackToken>)
+    val feedbackTokens: List<ReductionFeedbackToken>, val includeDerivedFeedback: Boolean = false)
+data class ReductionStatementRef(val root: ReductionNodeRef, val index: Int, val statementSha256: String)
+data class RedactedReductionIdentity(val outputSha256: String, val statements: List<ClaimRef>)
+enum class ReductionRelevance { SUPPORT, COUNTEREVIDENCE, CONTEXT, IRRELEVANT, NEEDS_CONTEXT }
+data class ReductionFinding(val receiptId: String, val classification: ReductionRelevance, val reason: String,
+    val issues: List<ReviewIssue> = emptyList())
+data class ReductionScanResult(val findings: List<ReductionFinding>, val unknowns: List<String> = emptyList())
+data class ReductionScanRef(val batchKey: String, val attempt: Int, val requestSha256: String, val outputSha256: String)
+data class ReductionScanProof(val ref: ReductionScanRef, val providerId: String, val evidence: List<EvidenceReceipt>, val result: ReductionScanResult)
+data class ReductionReviewProof(val target: ReductionStatementRef, val statement: ReductionStatement,
+    val dependencyTokens: List<ReductionFeedbackToken>, val originalEvidence: List<EvidenceReceipt>,
+    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>)
+data class ReductionReviewContext(val target: ReductionStatementRef, val feedbackVersion: Int,
+    val dependencyTokens: List<ReductionFeedbackToken>, val originalEvidence: List<EvidenceReceipt>,
+    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>, val latestReview: AnalysisCall?)
 data class ReductionStatement(val text: String, val inputIds: List<String>)
 data class ReductionDigest(val statements: List<ReductionStatement>, val unknowns: List<String> = emptyList())
 data class ReductionDependencies(val ref: ReductionNodeRef, val leafRefs: List<ReductionNodeRef>,
@@ -105,6 +119,11 @@ data class AnalysisCall(
     val feedbackVersion: Int = 0,
     val reductionInputs: List<ReductionInput> = emptyList(),
     val reductionOutput: ReductionDigest? = null,
+    val redactedReductionIdentity: RedactedReductionIdentity? = null,
+    val reductionTarget: ReductionStatementRef? = null,
+    val reductionReviewTokens: List<ReductionFeedbackToken> = emptyList(),
+    val reductionScan: ReductionScanResult? = null,
+    val reductionScans: List<ReductionScanRef> = emptyList(),
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList())
@@ -155,6 +174,14 @@ data class PreparedModelRequest(val original: ModelRequest, val payloadJson: Str
 data class ModelCompletion(val proposal: BatchProposal, val usage: ModelUsage? = null)
 data class ReviewCompletion(val review: ClaimReview, val usage: ModelUsage? = null)
 
+data class ReductionScanCompletion(val result: ReductionScanResult, val usage: ModelUsage? = null)
+interface SemanticReductionScanProvider {
+    val id: String
+    val contextWindowTokens: Int
+    fun prepareScan(request: ModelRequest): PreparedModelRequest
+    fun scanPrepared(request: PreparedModelRequest): ReductionScanCompletion
+}
+
 interface SemanticReviewProvider {
     val id: String
     val contextWindowTokens: Int
@@ -173,6 +200,9 @@ interface AnalysisProvider {
     fun completePrepared(request: PreparedModelRequest): ModelCompletion = ModelCompletion(complete(request.original))
 }
 
+/** Deletion must fall back to a permanent task tombstone, never partially erase a full ledger. */
+class AnalysisRedactionCapacityException : IllegalStateException("反馈清理后的身份台账超过保存上限，须永久清理关联任务")
+internal class AnalysisPayloadCapacityException(message: String) : IllegalArgumentException(message)
 class AnalysisBudgetException(message: String) : IllegalStateException(message)
 class AnalysisConflictException(message: String) : IllegalStateException(message)
 class AnalysisDependencyBlockedException(message: String) : IllegalStateException(message)

@@ -7,6 +7,11 @@ import dev.tracelife.analysis.CallPurpose
 import dev.tracelife.analysis.CallStatus
 import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.ClaimRef
+import dev.tracelife.analysis.EvidenceReceipt
+import dev.tracelife.analysis.ProposedClaim
+import dev.tracelife.analysis.ReductionFeedbackToken
+import dev.tracelife.analysis.ReductionGraph
+import dev.tracelife.analysis.ReductionReviewProtocol
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.model.RecordRevision
@@ -30,19 +35,32 @@ object KnowledgeValidation {
     ): StoredKnowledgeRevision {
         AnalysisRunCodec.validateStored(run)
         val state = AnalysisRunCodec.decode(run.payload)
-        val extraction = requireNotNull(state.calls.singleOrNull {
-            it.batchKey == claimRef.batchKey && it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED
-        }) { "知识条目缺少已成功生成的提案" }
-        val claim = requireNotNull(extraction.proposal?.claims?.getOrNull(claimRef.claimIndex)) { "知识目标不存在" }
-        require(AnalysisRunCodec.claimSha256(claim) == claimRef.claimSha256) { "知识目标已变化" }
         val call = requireNotNull(state.calls.singleOrNull {
-            it.batchKey == reviewKey && it.purpose == CallPurpose.REVIEW && it.status == CallStatus.SUCCEEDED && it.reviewTarget == claimRef
+            it.batchKey == reviewKey && it.status == CallStatus.SUCCEEDED &&
+                (it.purpose == CallPurpose.REVIEW && it.reviewTarget == claimRef ||
+                    it.purpose == CallPurpose.REDUCTION_REVIEW && it.reductionTarget?.let(ReductionGraph::feedbackRef) == claimRef)
         }) { "知识条目缺少对应成功核对" }
+        val reductionProof = if (call.purpose == CallPurpose.REDUCTION_REVIEW) {
+            require(category == KnowledgeCategory.INSIGHT) { "周期归并陈述只能发布为洞察" }
+            ReductionReviewProtocol.proof(state, call)
+        } else null
+        val claim = if (reductionProof != null) {
+            // Derived input IDs stay in the proof. The published statement cites only original
+            // evidence actually supporting the final review, and keeps the exact draft wording.
+            ProposedClaim(reductionProof.statement.text, requireNotNull(call.review).supportingEvidenceIds, ClaimKind.POSSIBLE_INTERPRETATION)
+        } else {
+            val extraction = requireNotNull(state.calls.singleOrNull {
+                it.batchKey == claimRef.batchKey && it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED
+            }) { "知识条目缺少已成功生成的提案" }
+            requireNotNull(extraction.proposal?.claims?.getOrNull(claimRef.claimIndex)).also {
+                require(AnalysisRunCodec.claimSha256(it) == claimRef.claimSha256) { "知识目标已变化" }
+            }
+        }
         require(publishedAt >= requireNotNull(call.finishedAt) && createdAt >= run.createdAt) { "知识发布早于来源分析" }
         val value = StoredKnowledgeRevision(idFor(run.id, claimRef), revision, run.id, claimRef, run.source,
             state.request.scope, run.expiresAt, category, claim,
             call.batchKey, call.attempt, call.providerId, call.requestSha256, requireNotNull(call.review), call.evidence,
-            call.feedbackVersion, topics, createdAt, publishedAt)
+            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof)
         validate(value)
         return value
     }
@@ -52,8 +70,16 @@ object KnowledgeValidation {
         SnapshotValidation.id(value.claimRef.batchKey); SnapshotValidation.id(value.reviewBatchKey)
         SnapshotValidation.id(value.reviewProviderId)
         require(value.id == idFor(value.runId, value.claimRef) && value.revision in 1 until Int.MAX_VALUE) { "知识身份或修订无效" }
-        require(value.claimRef.claimIndex in 0..19 && digest.matches(value.claimRef.claimSha256) &&
-            AnalysisRunCodec.claimSha256(value.claim) == value.claimRef.claimSha256) { "知识陈述摘要不一致" }
+        require(value.claimRef.claimIndex in 0..19 && digest.matches(value.claimRef.claimSha256)) { "知识陈述身份无效" }
+        val proof = value.reductionProof
+        if (proof == null) {
+            require(AnalysisRunCodec.claimSha256(value.claim) == value.claimRef.claimSha256) { "知识陈述摘要不一致" }
+        } else {
+            require(value.category == KnowledgeCategory.INSIGHT && value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)
+            require(ReductionGraph.feedbackRef(proof.target) == value.claimRef && value.claim.text == proof.statement.text &&
+                value.claim.evidenceIds == value.review.supportingEvidenceIds) { "周期洞察与归并陈述或最终原文支持不一致" }
+            ReductionReviewProtocol.validateProof(proof, value.evidence, value.review)
+        }
         require(value.source.generation >= 0 && value.feedbackVersion >= 0 && value.reviewAttempt in 1..100 &&
             digest.matches(value.reviewRequestSha256)) { "知识核对身份无效" }
         require(value.publishedAt >= value.createdAt && (value.expiresAt == null || value.expiresAt > value.publishedAt)) { "知识时间范围无效" }
@@ -64,7 +90,7 @@ object KnowledgeValidation {
         require(value.category != KnowledgeCategory.INSIGHT || value.feedbackVersion > 0) { "洞察缺少用户确认依赖" }
         require((value.category == KnowledgeCategory.INSIGHT) == (value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)) { "知识类别与来源性质不一致" }
         require(value.evidence.size in 1..32 && value.evidence.map { it.id }.distinct().size == value.evidence.size) { "知识证据数量或身份无效" }
-        value.evidence.forEach { ref ->
+        allEvidence(value).forEach { ref ->
             SnapshotValidation.id(ref.recordId)
             require(digest.matches(ref.id) && digest.matches(ref.sha256) && ref.revision > 0)
             require(ref.field == "body" || ref.field.startsWith("answer:") && ref.field.length in 8..207)
@@ -74,26 +100,52 @@ object KnowledgeValidation {
         AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES)
         AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES)
         require(value.review.verdict == ReviewVerdict.SUPPORTED) { "只有获得支持的核对可以发布" }
+        feedbackDependencies(value).forEach { token ->
+            SnapshotValidation.id(token.claim.batchKey)
+            require(token.claim.claimIndex in 0..19 && digest.matches(token.claim.claimSha256) && token.version >= 0)
+        }
     }
 
-    /** The immutable proof survives an absent historical task. A retained task may add a newer
-     * successful opinion, which must be used before the same claim can be current again. */
+    /** Direct proofs survive an absent task. Reduction publications retain their historical proof,
+     * but need the graph to establish that all ancestor feedback dependencies are still present. */
     fun reviewStillCurrent(value: StoredKnowledgeRevision, run: StoredAnalysisRun?): Boolean {
-        if (run == null) return true
+        if (run == null) return value.reductionProof == null
         if (run.id != value.runId || run.source != value.source) return false
         return reviewMatchesState(value, AnalysisRunCodec.decode(run.payload))
     }
 
     /** Callers examining a page can decode each retained task once. Null means no retained task. */
     fun reviewMatchesState(value: StoredKnowledgeRevision, state: AnalysisRunState?): Boolean {
-        if (state == null) return true
+        if (state == null) return value.reductionProof == null
+        val proof = value.reductionProof
         val latest = state.calls.lastOrNull {
-            it.purpose == CallPurpose.REVIEW && it.status == CallStatus.SUCCEEDED &&
-                it.reviewTarget == value.claimRef && it.feedbackVersion == value.feedbackVersion
+            it.status == CallStatus.SUCCEEDED && it.feedbackVersion == value.feedbackVersion &&
+                if (proof == null) it.purpose == CallPurpose.REVIEW && it.reviewTarget == value.claimRef
+                else it.purpose == CallPurpose.REDUCTION_REVIEW && it.reductionTarget == proof.target
         } ?: return false
-        return latest.batchKey == value.reviewBatchKey && latest.attempt == value.reviewAttempt &&
-            latest.providerId == value.reviewProviderId && latest.requestSha256 == value.reviewRequestSha256 &&
-            latest.review == value.review && latest.evidence == value.evidence
+        if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
+            latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
+            latest.review != value.review || latest.evidence != value.evidence) return false
+        return proof == null || try {
+            ReductionReviewProtocol.proof(state, latest) == proof
+        } catch (_: IllegalArgumentException) { false }
+    }
+
+    /** All feedback fences, including zero versions and the independent publication confirmation. */
+    fun feedbackDependencies(value: StoredKnowledgeRevision): List<ReductionFeedbackToken> {
+        val tokens = listOf(ReductionFeedbackToken(value.claimRef, value.feedbackVersion)) +
+            value.reductionProof?.dependencyTokens.orEmpty()
+        require(tokens.groupBy { it.claim }.values.all { group -> group.map { it.version }.distinct().size == 1 }) {
+            "知识反馈依赖版本不一致"
+        }
+        return tokens.distinctBy { it.claim }
+    }
+
+    /** Every scanned original is retained, even those classified irrelevant to the final statement. */
+    fun allEvidence(value: StoredKnowledgeRevision): List<EvidenceReceipt> {
+        val receipts = value.reductionProof?.originalEvidence.orEmpty() + value.evidence
+        require(receipts.groupBy { it.id }.values.all { group -> group.distinct().size == 1 }) { "知识原文引用身份冲突" }
+        return receipts.distinctBy { it.id }
     }
 
     fun encodedBytes(value: StoredKnowledgeRevision): Int = KnowledgeCodec.encode(value).toByteArray(Charsets.UTF_8).size
@@ -124,7 +176,7 @@ object KnowledgeValidation {
         validateEvidence(value, records.associateBy { it.id to it.revision })
 
     fun validateEvidence(value: StoredKnowledgeRevision, sources: Map<Pair<String, Int>, RecordRevision>) {
-        value.evidence.forEach { ref ->
+        allEvidence(value).forEach { ref ->
             val record = requireNotNull(sources[ref.recordId to ref.revision]) { "知识证据缺少原始修订" }
             val text = if (ref.field == "body") record.draft.body else requireNotNull(record.draft.answers[ref.field.removePrefix("answer:")]) { "知识证据字段缺失" }
             require(text.codePointCount(0, text.length) == ref.totalCodePoints && AnalysisRunCodec.sha256(AnalysisRunCodec.slice(text, ref.start, ref.end)) == ref.sha256) { "知识证据内容不一致" }
