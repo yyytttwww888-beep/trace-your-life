@@ -9,12 +9,17 @@ internal class TextAnalysisInventory(private val analysis: ControlledAnalysis) {
     private data class Span(val start: Int, val end: Int)
 
     /** Keep only one metadata page, bounded receipt ranges and at most maxBatches selections. */
-    fun build(task: AnalysisTask, purpose: CallPurpose, candidateLimit: Int): TextInventory {
-        require(purpose in setOf(CallPurpose.EXTRACTION, CallPurpose.SYNTHESIS) && candidateLimit in 0..100)
+    fun build(task: AnalysisTask, purpose: CallPurpose, candidateLimit: Int,
+        completedEvidence: List<EvidenceReceipt>? = null): TextInventory {
+        require(purpose in setOf(CallPurpose.EXTRACTION, CallPurpose.SYNTHESIS, CallPurpose.PROFILE_SCAN) && candidateLimit in 0..100)
+        // Maintenance scans belong to one exact claim and plan. The caller must supply only the
+        // validated context's receipts; scans for another claim never satisfy this coverage.
+        require(purpose != CallPurpose.PROFILE_SCAN || completedEvidence != null)
+        require(purpose == CallPurpose.PROFILE_SCAN || completedEvidence == null)
         val runId = task.stored.id
         val route = analysis.route(runId)
         val fragmentSize = task.state.request.limits.fragmentCodePoints
-        val successful = task.state.calls.filter { it.status == CallStatus.SUCCEEDED && it.purpose == purpose }.flatMap { it.evidence }
+        val successful = (completedEvidence ?: task.state.calls.filter { it.status == CallStatus.SUCCEEDED && it.purpose == purpose }.flatMap { it.evidence })
             .groupBy { Triple(it.recordId, it.revision, it.field) }
         val selections = mutableListOf<EvidenceSelection>()
         var textLength = 0L

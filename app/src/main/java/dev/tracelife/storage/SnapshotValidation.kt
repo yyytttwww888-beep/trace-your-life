@@ -123,6 +123,24 @@ internal object SnapshotValidation {
                 }
             }
             val runs = snapshot.analysisRuns.associateBy { it.id }
+            snapshot.knowledgeRevisions.mapNotNull { it.profileMaintenanceProof }.forEach { proof ->
+                proof.plan.references.forEach { ref ->
+                    require(ref.feedbackVersions.keys.none { it in erasedFeedback }) { "维护知识仍含已删除反馈的派生副本" }
+                    when (ref.kind) {
+                        dev.tracelife.profile.ProfileMaintenanceReferenceKind.PROFILE -> {
+                            val profile = requireNotNull(snapshot.profileRevisions.singleOrNull { it.id == ref.id && it.revision == ref.version }) { "维护知识缺少固定画像参照" }
+                            require(snapshot.knowledgeRevisions.any { it.id == profile.draft.knowledge.knowledgeId && it.revision == profile.draft.knowledge.revision }) { "维护知识参照的原判断已不存在" }
+                        }
+                        dev.tracelife.profile.ProfileMaintenanceReferenceKind.FEEDBACK -> {
+                            val response = requireNotNull(snapshot.claimFeedback.singleOrNull { it.id == ref.id }) { "维护知识缺少独立反馈" }
+                            val sourceRun = requireNotNull(runs[response.runId]) { "维护知识的旧陈述来源已不存在" }
+                            val sourceState = AnalysisRunCodec.decode(sourceRun.payload)
+                            val claim = sourceState.calls.lastOrNull { it.batchKey == response.batchKey }?.proposal?.claims?.getOrNull(response.claimIndex)
+                            require(claim != null && AnalysisRunCodec.claimSha256(claim) == response.claimSha256) { "维护知识的旧陈述已被清理" }
+                        }
+                    }
+                }
+            }
             val feedbackStates = mutableMapOf<String, AnalysisRunState>()
             snapshot.claimFeedback.forEach { value -> runs[value.runId]?.let { run ->
                 ClaimFeedbackValidation.validateTarget(value, run, feedbackStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) })
@@ -162,6 +180,19 @@ internal object SnapshotValidation {
             snapshot.deletedProfiles.forEach { id(it.id); require(it.lastRevision in 1 until Int.MAX_VALUE) { "画像删除版本无效" } }
             require(snapshot.profileHeads.map { it.id }.toSet().intersect(snapshot.deletedProfiles.map { it.id }.toSet()).isEmpty()) { "备份同时包含画像及其删除标记" }
             validateProfileReferences(snapshot.profileRevisions, snapshot.knowledgeRevisions)
+            require(ProfileMaintenanceDeletion.affectedRuns(snapshot.analysisRuns, snapshot.profileRevisions,
+                snapshot.knowledgeRevisions, snapshot.claimFeedback, snapshot.deletedProfiles.map { it.id }.toSet(),
+                snapshot.deletedClaimFeedback.map { it.id }.toSet(), snapshot.deletedKnowledge.map { it.id }.toSet(),
+                snapshot.deletedAnalysisRuns.map { it.id }.toSet()).isEmpty()) { "备份保留了永久删除参照派生的画像维护内容" }
+            snapshot.analysisRuns.forEach { run ->
+                AnalysisRunCodec.decode(run.payload).profileMaintenancePlans.flatMap { it.references }.forEach { ref ->
+                    when (ref.kind) {
+                        dev.tracelife.profile.ProfileMaintenanceReferenceKind.PROFILE -> require(snapshot.profileRevisions.any { it.id == ref.id && it.revision == ref.version }) { "画像维护缺少固定参照身份" }
+                        dev.tracelife.profile.ProfileMaintenanceReferenceKind.FEEDBACK -> require(snapshot.claimFeedback.any { it.id == ref.id }) { "画像维护缺少独立反馈身份" }
+                    }
+                    require(ref.feedbackVersions.keys.none { it in erasedFeedback }) { "画像维护仍引用已删除反馈" }
+                }
+            }
             // Fixed references can outlive knowledge deletion or a restore that retains a different
             // local knowledge chain. Missing revisions stay unavailable; independent user text stays.
         } catch (failure: IllegalArgumentException) {

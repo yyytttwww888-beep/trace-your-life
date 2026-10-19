@@ -3,6 +3,7 @@ package dev.tracelife.profile
 import dev.tracelife.storage.AnalysisQuery
 import org.junit.Assert.*
 import org.junit.Test
+import org.json.JSONObject
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -24,13 +25,26 @@ class ProfileCodecTest {
         assertFalse(ProfileCodec.encode(first).contains("evidence"))
     }
 
+    @Test fun `legacy profile payloads remain readable and explicit reconsideration stays independent`() {
+        val legacy = JSONObject(ProfileCodec.encode(first)).apply { put("formatVersion", 1); remove("maintenanceApplication") }
+        assertEquals(first, ProfileCodec.decode(legacy.toString()))
+        legacy.put("maintenanceApplication", JSONObject.NULL)
+        assertThrows(IllegalArgumentException::class.java) { ProfileCodec.decode(legacy.toString()) }
+        val selected = first.copy(maintenanceApplication = ProfileMaintenanceApplicationRecord("b".repeat(64),
+            ProfileMaintenanceAction.NEW, "合成用户明确重考虑理由。"))
+        assertEquals(selected, ProfileCodec.decode(ProfileCodec.encode(selected)))
+        assertEquals("合成独立文字", selected.userText)
+        assertThrows(IllegalArgumentException::class.java) { ProfileCodec.encode(first.copy(maintenanceApplication =
+            ProfileMaintenanceApplicationRecord("b".repeat(64), ProfileMaintenanceAction.REPLACE))) }
+    }
+
     @Test fun `duplicate unknown missing fractional and unsupported format fields are rejected`() {
         val valid = ProfileCodec.encode(first)
         listOf(
-            valid.replace("\"formatVersion\":1", "\"formatVersion\":1,\"formatVersion\":1"),
-            valid.replace("\"formatVersion\":1", "\"formatVersion\":2"),
-            valid.replace("\"formatVersion\":1", "\"formatVersion\":1.0"),
-            valid.replace("\"formatVersion\":1,", ""),
+            valid.replace("\"formatVersion\":2", "\"formatVersion\":2,\"formatVersion\":2"),
+            valid.replace("\"formatVersion\":2", "\"formatVersion\":3"),
+            valid.replace("\"formatVersion\":2", "\"formatVersion\":2.0"),
+            valid.replace("\"formatVersion\":2,", ""),
             valid.dropLast(1) + ",\"extra\":null}",
             valid + "{}",
         ).forEach { payload -> assertThrows("$payload", Exception::class.java) { ProfileCodec.decode(payload) } }

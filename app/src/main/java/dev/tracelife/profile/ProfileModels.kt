@@ -17,6 +17,9 @@ enum class ProfileAdoption { CANDIDATE, ADOPTED, DECLINED, SUPERSEDED }
 enum class ProfileChange { CREATED, ORGANIZED, ADOPTED, DECLINED, SUPERSEDED, FEEDBACK }
 data class ProfileKnowledgeRef(val knowledgeId: String, val revision: Int)
 data class ProfileDraft(val knowledge: ProfileKnowledgeRef, val dimension: ProfileDimension, val layer: ProfileLayer)
+/** An explicit user's reconsideration, never a new original observation. */
+data class ProfileMaintenanceApplicationRecord(val planSha256: String, val action: ProfileMaintenanceAction,
+    val overrideReason: String? = null)
 data class StoredProfileRevision(
     val id: String,
     val revision: Int,
@@ -28,6 +31,7 @@ data class StoredProfileRevision(
     val change: ProfileChange = ProfileChange.CREATED,
     /** Independent user text, never filled by copying a machine claim. */
     val userText: String? = null,
+    val maintenanceApplication: ProfileMaintenanceApplicationRecord? = null,
 )
 data class ProfileHead(val id: String, val revision: Int)
 enum class ProfileRecentState { NOT_APPLICABLE, IN_WINDOW, OUTSIDE_WINDOW, UNKNOWN }
@@ -65,6 +69,11 @@ object ProfileValidation {
         require(value.revision in 1 until Int.MAX_VALUE && value.updatedAt >= value.createdAt)
         draft(value.draft)
         require(value.userText == null || value.userText.isNotBlank() && value.userText.length <= 2_000)
+        value.maintenanceApplication?.let {
+            require(it.planSha256.matches(Regex("[0-9a-f]{64}")) && it.action != ProfileMaintenanceAction.KEEP)
+            require(it.overrideReason == null || it.overrideReason.isNotBlank() && it.overrideReason.length <= 2_000)
+            if (value.change == ProfileChange.CREATED) require(it.action == ProfileMaintenanceAction.NEW)
+        }
         if (value.revision == 1) {
             require(value.change == ProfileChange.CREATED && value.operationId == null &&
                 value.adoption == ProfileAdoption.CANDIDATE && value.createdAt == value.updatedAt)
@@ -89,9 +98,11 @@ object ProfileValidation {
             ProfileChange.ORGANIZED -> {
                 require(next.userText == previous.userText)
                 require(next.adoption == if (next.draft == previous.draft) previous.adoption else ProfileAdoption.CANDIDATE)
+                if (next.maintenanceApplication != previous.maintenanceApplication)
+                    require(next.maintenanceApplication?.action in setOf(ProfileMaintenanceAction.NARROW, ProfileMaintenanceAction.REPLACE))
             }
-            ProfileChange.FEEDBACK -> require(next.draft == previous.draft && next.adoption == previous.adoption)
-            else -> require(next.draft == previous.draft && next.userText == previous.userText)
+            ProfileChange.FEEDBACK -> require(next.draft == previous.draft && next.adoption == previous.adoption && next.maintenanceApplication == previous.maintenanceApplication)
+            else -> require(next.draft == previous.draft && next.userText == previous.userText && next.maintenanceApplication == previous.maintenanceApplication)
         }
     }
 

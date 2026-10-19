@@ -37,6 +37,13 @@ import dev.tracelife.profile.ProfileKnowledgeRef
 import dev.tracelife.profile.profileCandidateId
 import dev.tracelife.profile.ProfileValidation
 import dev.tracelife.profile.StoredProfileRevision
+import dev.tracelife.profile.ProfileMaintenanceAction
+import dev.tracelife.profile.ProfileMaintenanceApplication
+import dev.tracelife.profile.ProfileMaintenanceApplicationRecord
+import dev.tracelife.profile.ProfileMaintenanceProtocol
+import dev.tracelife.profile.ProfileMaintenanceReferenceKind
+import dev.tracelife.profile.ProfileRelation
+import dev.tracelife.profile.ProfileChange
 import dev.tracelife.transfer.Deletion
 import dev.tracelife.transfer.InvalidBackupException
 import dev.tracelife.transfer.RepositorySnapshot
@@ -489,6 +496,18 @@ class LifeRepository(
             if (current != null) {
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
             }
+            val state = AnalysisRunCodec.decode(run.payload)
+            val prior = current?.let { AnalysisRunCodec.decode(it.payload) }
+            val changedPlans = state.profileMaintenancePlans.filter { it !in prior?.profileMaintenancePlans.orEmpty() }
+            val changedCalls = state.calls.filter { it !in prior?.calls.orEmpty() && it.profileMaintenancePlanSha256 != null &&
+                it.status in setOf(dev.tracelife.analysis.CallStatus.IN_FLIGHT, dev.tracelife.analysis.CallStatus.SUCCEEDED) }
+            val checkedPlans = changedPlans + changedCalls.map { call -> requireNotNull(state.profileMaintenancePlans.singleOrNull {
+                ProfileMaintenanceProtocol.planSha256(it) == call.profileMaintenancePlanSha256
+            }) }
+            checkedPlans.distinct().forEach { plan ->
+                if (!profileMaintenanceCatalogCurrent(plan.profileTarget, run.id, plan.target, plan.references))
+                    throw dev.tracelife.analysis.AnalysisDependencyBlockedException("画像维护目录在条件保存前发生变化")
+            }
             db.rawQuery("SELECT COUNT(*), COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE id <> ?", arrayOf(run.id)).use {
                 it.moveToFirst()
                 require(it.getInt(0) < 100 && it.getLong(1) + run.payload.toByteArray(Charsets.UTF_8).size + AnalysisRunCodec.reservedResponseBytes(run) <= 16L * 1024 * 1024) { "分析任务超出本地保存上限" }
@@ -506,6 +525,7 @@ class LifeRepository(
         transaction(db) {
             val current = readAnalysisRun(db, id)
             if (current?.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
+            purgeProfileMaintenanceRuns(db, deletedRunId = id)
             purgeKnowledge(db, strings(db, "SELECT DISTINCT id FROM knowledge_revisions WHERE run_id = ?", id))
             db.delete("analysis_runs", "id = ?", arrayOf(id))
             insertDeletion(db, "deleted_analysis_runs", Deletion(id, expectedVersion, clock.instant()))
@@ -591,6 +611,7 @@ class LifeRepository(
             val current = readClaimFeedback(db, id)
             if (current?.version != expectedVersion) throw RevisionConflictException("反馈已有新版本或不存在")
             require(count(db, "SELECT COUNT(*) FROM deleted_claim_feedback", emptyList()) < ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记达到保存上限" }
+            val purgedMaintenance = purgeProfileMaintenanceRuns(db, deletedFeedbackId = id)
             // Every retained revision can contain wording derived from a parent decision.
             // Deleting only the current head or its own feedback would leave historical copies.
             ensureKnowledgeBounds(db)
@@ -624,7 +645,7 @@ class LifeRepository(
                     run.id
                 }
             } else null
-            FeedbackDeletionResult(purgedRun)
+            FeedbackDeletionResult(purgedRun ?: current.runId.takeIf { it in purgedMaintenance })
         }
     }
 
@@ -668,6 +689,11 @@ class LifeRepository(
                 value.category, value.topics, value.revision, value.createdAt, value.publishedAt)
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
+            value.profileMaintenanceProof?.let { maintenance ->
+                require(profileMaintenanceCatalogCurrent(maintenance.plan.profileTarget, value.runId, value.claimRef,
+                    maintenance.plan.references)) { "画像维护历史目录已变化" }
+                require(ProfileMaintenanceCatalog(this).publicationDependenciesCurrent(maintenance)) { "画像维护依据或历史反馈已变化" }
+            }
             KnowledgeValidation.feedbackDependencies(value).forEach { dependency ->
                 val dependencyId = AnalysisRunCodec.feedbackId(value.runId, dependency.claim)
                 require(!exists(db, "deleted_claim_feedback", "id = ?", dependencyId)) { "已删除的自身或祖先反馈阻止发布" }
@@ -688,6 +714,11 @@ class LifeRepository(
                 value.revision in current.revision..(current.revision + 1) && value.publishedAt >= current.publishedAt &&
                 (expectedRevision == current.revision || expectedRevision == current.revision - 1 || expectedRevision == null && current.revision == 1)) {
                 return@transaction current
+            }
+            AnalysisRunCodec.decode(run.payload).request.profileTarget?.let { target ->
+                require(value.profileMaintenanceProof != null || profileMaintenanceCatalog(target, value.runId, value.claimRef).isEmpty()) {
+                    "画像定向知识发布需要先完成历史关联与反例维护"
+                }
             }
             if (current?.revision != expectedRevision) throw RevisionConflictException("知识已有新修订或不存在")
             require(value.revision == (expectedRevision?.plus(1) ?: 1)) { "知识新修订无效" }
@@ -763,7 +794,10 @@ class LifeRepository(
         }
     }
     internal fun deleteProfile(id: String, expectedRevision: Int) = access { db ->
-        transaction(db) { ProfileStore.delete(db, id, expectedRevision, clock.instant()) }
+        transaction(db) {
+            purgeProfileMaintenanceRuns(db, deletedProfileId = id)
+            ProfileStore.delete(db, id, expectedRevision, clock.instant())
+        }
     }
 
     internal fun profileForSlot(knowledgeId: String, target: ProfileAnalysisTarget): StoredProfileRevision? = access { db ->
@@ -771,6 +805,105 @@ class LifeRepository(
     }
 
     internal fun profileDeleted(id: String): Boolean = access { db -> ProfileStore.deleted(db, id) }
+
+    internal fun profileMaintenanceCatalog(target: ProfileAnalysisTarget, excludeRunId: String,
+        excludeClaim: ClaimRef): List<dev.tracelife.profile.ProfileMaintenanceReference> = access { db ->
+        transaction(db) { ProfileMaintenanceCatalog(this).catalog(target, excludeRunId, excludeClaim) }
+    }
+
+    internal fun profileMaintenanceReference(reference: dev.tracelife.profile.ProfileMaintenanceReference):
+        dev.tracelife.profile.ProfileMaintenanceReferenceContent = access { db ->
+        transaction(db) { ProfileMaintenanceCatalog(this).resolve(reference) }
+    }
+
+    internal fun profileMaintenanceCatalogCurrent(target: ProfileAnalysisTarget, excludeRunId: String,
+        excludeClaim: ClaimRef, references: List<dev.tracelife.profile.ProfileMaintenanceReference>): Boolean = access { db ->
+        transaction(db) { ProfileMaintenanceCatalog(this).catalog(target, excludeRunId, excludeClaim) == references }
+    }
+
+    internal fun profileMaintenanceDependenciesCurrent(proof: dev.tracelife.profile.ProfileMaintenanceProof): Boolean = access { db ->
+        transaction(db) { ProfileMaintenanceCatalog(this).publicationDependenciesCurrent(proof) }
+    }
+
+    internal fun applyProfileMaintenance(runId: String, claim: ClaimRef, expectedRunVersion: Int, planId: String,
+        action: ProfileMaintenanceAction, targetProfileId: String? = null, expectedProfileRevision: Int? = null,
+        operationId: String, overrideReason: String? = null): ProfileMaintenanceApplication = access { db -> transaction(db) {
+        SnapshotValidation.id(operationId)
+        require(overrideReason == null || overrideReason.isNotBlank() && overrideReason.length <= 2_000)
+        val run = readAnalysisRun(db, runId) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
+        if (run.version != expectedRunVersion) throw RevisionConflictException("画像维护任务版本已变化")
+        requireAnalysisSource(db, run.source)
+        val now = clock.instant()
+        require(now >= run.updatedAt && now >= run.createdAt && (run.expiresAt == null || now < run.expiresAt)) { "画像维护任务已到期或时钟回拨" }
+        fun finish(value: ProfileMaintenanceApplication): ProfileMaintenanceApplication {
+            val end = clock.instant()
+            require(end >= now && (run.expiresAt == null || end < run.expiresAt)) { "画像维护应用期间有效时间已变化" }
+            requireAnalysisSource(db, run.source)
+            if (readAnalysisRun(db, runId)?.version != expectedRunVersion) throw RevisionConflictException("画像维护应用期间任务已变化")
+            return value
+        }
+        val state = AnalysisRunCodec.decode(run.payload)
+        val plan = requireNotNull(state.profileMaintenancePlans.singleOrNull { ProfileMaintenanceProtocol.planSha256(it) == planId && it.target == claim })
+        val feedback = requireNotNull(readClaimFeedback(db, AnalysisRunCodec.feedbackId(runId, claim))) { "维护候选需要明确确认" }
+        require(feedback.decision == ClaimFeedbackDecision.CONFIRMED && feedback.source == run.source)
+        val review = requireNotNull(state.calls.lastOrNull { it.purpose == dev.tracelife.analysis.CallPurpose.REVIEW &&
+            it.status == dev.tracelife.analysis.CallStatus.SUCCEEDED && it.reviewTarget == claim && it.feedbackVersion == feedback.version })
+        val proof = requireNotNull(review.profileMaintenanceProof) { "当前核对缺少完整画像维护证明" }
+        require(proof.plan == plan && review.review?.verdict == dev.tracelife.analysis.ReviewVerdict.SUPPORTED)
+        ProfileMaintenanceProtocol.validateProof(proof, review.evidence, review.review)
+        require(profileMaintenanceDependenciesCurrent(proof)) { "历史反馈或参照已变化" }
+        val knowledgeId = KnowledgeValidation.idFor(runId, claim)
+        val application = ProfileMaintenanceApplicationRecord(planId, action, overrideReason)
+        val generatedId = profileCandidateId(knowledgeId, plan.profileTarget)
+        val selectedId = if (action == ProfileMaintenanceAction.NEW) generatedId else requireNotNull(targetProfileId)
+        if (action == ProfileMaintenanceAction.NEW) require(targetProfileId == null && expectedProfileRevision == null)
+        val selected = ProfileStore.revision(db, selectedId)
+        selected?.let { profile ->
+            require(profile.updatedAt <= now) { "画像维护应用遇到未来的采用决定，请校正时间后重试" }
+            val linked = readKnowledgeRevision(db, profile.draft.knowledge.knowledgeId, profile.draft.knowledge.revision)
+            require(linked == null || linked.publishedAt <= now) { "画像维护应用遇到未来的知识发布" }
+        }
+        val replay = if (action == ProfileMaintenanceAction.NEW) selected?.takeIf { it.maintenanceApplication == application && it.draft.knowledge.knowledgeId == knowledgeId }
+            else ProfileStore.operation(db, selectedId, operationId)
+        if (replay != null && action != ProfileMaintenanceAction.KEEP) {
+            require(replay.maintenanceApplication == application && replay.draft.knowledge.knowledgeId == knowledgeId &&
+                (action == ProfileMaintenanceAction.NEW || replay.revision == requireNotNull(expectedProfileRevision) + 1)) { "维护操作 ID 已绑定其他选择" }
+            val head = requireNotNull(selected)
+            return@transaction finish(ProfileMaintenanceApplication(action, head.draft.knowledge, ProfileHead(head.id, head.revision), head.adoption, true))
+        }
+        require(profileMaintenanceCatalogCurrent(plan.profileTarget, runId, claim, plan.references)) { "画像维护目录已变化，请重新核对" }
+        val related = proof.relations.filter { it.result.relation != ProfileRelation.UNRELATED }
+        require(related.none { it.result.relation == ProfileRelation.UNCERTAIN })
+        val profiles = related.filter { it.reference.kind == ProfileMaintenanceReferenceKind.PROFILE }
+        val targetRelation = profiles.singleOrNull { it.reference.id == targetProfileId }
+        if (action == ProfileMaintenanceAction.NEW) require(profiles.isEmpty()) { "已有相关画像，须维护原条目" }
+        else {
+            require(selected != null && selected.revision == expectedProfileRevision && targetRelation != null) { "目标画像或关联已变化" }
+            require(targetRelation.reference.version == selected.revision)
+            if (action == ProfileMaintenanceAction.KEEP)
+                return@transaction finish(ProfileMaintenanceApplication(action, selected.draft.knowledge, ProfileHead(selected.id, selected.revision), selected.adoption))
+            require(profiles.size == 1) { "多个相关画像须先明确整理，不能覆盖其中一个" }
+            require(targetRelation.result.relation in if (action == ProfileMaintenanceAction.NARROW) setOf(ProfileRelation.SUPPLEMENT)
+                else setOf(ProfileRelation.SUPPLEMENT, ProfileRelation.CONFLICT)) { "此关联没有可采用的收窄或替换建议" }
+        }
+        val blocked = related.any { relation ->
+            val content = profileMaintenanceReference(relation.reference)
+            relation.reference.kind == ProfileMaintenanceReferenceKind.FEEDBACK || content.adoption in setOf(ProfileAdoption.DECLINED, ProfileAdoption.SUPERSEDED) ||
+                content.feedbackDecision in setOf(ClaimFeedbackDecision.CORRECTED, ClaimFeedbackDecision.REJECTED, ClaimFeedbackDecision.WITHDRAWN)
+        }
+        require(!blocked || overrideReason != null) { "历史否定或限定需要独立说明重新考虑的理由" }
+        require(!ProfileStore.deleted(db, selectedId)) { "已删除的画像 ID 不可复用" }
+        val previousKnowledge = readKnowledgeRevision(db, knowledgeId, null)
+        val published = KnowledgeLibrary(this, Clock.fixed(now, clock.zone)).publish(runId, claim, review.batchKey,
+            KnowledgeCategory.INSIGHT, expectedRunVersion, previousKnowledge?.revision, previousKnowledge?.topics ?: emptySet())
+        val draft = ProfileDraft(ProfileKnowledgeRef(published.id, published.revision), plan.profileTarget.dimension, plan.profileTarget.layer)
+        val updated = if (action == ProfileMaintenanceAction.NEW) StoredProfileRevision(selectedId, 1, draft, ProfileAdoption.CANDIDATE,
+            now, now, maintenanceApplication = application)
+        else requireNotNull(selected).copy(revision = selected.revision + 1, draft = draft, adoption = ProfileAdoption.CANDIDATE,
+            updatedAt = now, operationId = operationId, change = ProfileChange.ORGANIZED, maintenanceApplication = application)
+        val saved = saveProfile(updated, selected?.revision)
+        finish(ProfileMaintenanceApplication(action, saved.draft.knowledge, ProfileHead(saved.id, saved.revision), saved.adoption))
+    } }
 
     /** User-selected publication and candidate creation commit together. No model, confirmation,
      * adoption, rebinding or independent user text is synthesized by this bridge. */
@@ -824,6 +957,7 @@ class LifeRepository(
                     if (matches) ProfileCandidateMaterializationStatus.EXISTING else ProfileCandidateMaterializationStatus.CONFLICT,
                     existing.draft.knowledge, ProfileHead(existing.id, existing.revision), existing.adoption))
             }
+            require(profileMaintenanceCatalog(target, runId, claim).isEmpty()) { "已有画像或历史纠正，请完成跨任务维护并明确应用" }
             val previous = readKnowledgeRevision(db, knowledgeId, null)
             require(previous == null || previous.category == KnowledgeCategory.INSIGHT) { "现有知识类别不同，须明确维护原知识" }
             val published = library.publish(runId, claim, review.batchKey, KnowledgeCategory.INSIGHT, expectedRunVersion,
@@ -840,6 +974,7 @@ class LifeRepository(
         require(expectedRevision > 0)
         transaction(db) {
             if (readKnowledgeRevision(db, id, null)?.revision != expectedRevision) throw RevisionConflictException("知识已有新修订或不存在")
+            purgeProfileMaintenanceRuns(db, deletedKnowledgeId = id)
             purgeKnowledge(db, listOf(id))
         }
     }
@@ -974,6 +1109,15 @@ class LifeRepository(
         val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
             mergedTemplates.any { importedTemplateDeletions[it.id] != it }
         val deletedAnalysisIds = mergedAnalyses.map { it.id }.toMutableSet()
+        val maintenanceDeleted = ProfileMaintenanceDeletion.affectedRuns(snapshot.analysisRuns,
+            snapshot.profileRevisions + ProfileStore.allRevisions(db), snapshot.knowledgeRevisions + allKnowledgeRevisions(db),
+            snapshot.claimFeedback + allClaimFeedback(db), deletedProfileIds, deletedFeedbackIds,
+            (snapshot.deletedKnowledge + deletions(db, "deleted_knowledge")).map { it.id }.toSet(), deletedAnalysisIds)
+        snapshot.analysisRuns.filter { it.id in maintenanceDeleted }.forEach { run ->
+            require(mergedAnalyses.size < 100_000) { "维护依赖清理超过任务删除上限" }
+            mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+            deletedAnalysisIds += run.id
+        }
         val feedbackByRun = feedback.groupBy { it.runId }
         var capacityPurgedAnalysisRuns = 0
         val analysisCandidates = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
@@ -1014,7 +1158,7 @@ class LifeRepository(
                 }
         }
         require(analysisBytes <= 16L * 1024 * 1024) { "分析任务超过本地保存上限" }
-        val analyses = redactedAnalyses.filterNot { it.id in deletedAnalysisIds }
+        var analyses = redactedAnalyses.filterNot { it.id in deletedAnalysisIds }
         // Present heads are never rolled back by an older backup. Their entire immutable chain
         // wins; if replacement sources cannot support it, retain a deletion fence instead.
         ensureKnowledgeBounds(db)
@@ -1039,6 +1183,33 @@ class LifeRepository(
                 else mergedKnowledgeDeletions += Deletion(id, revisions.maxOf { it.revision }, clock.instant())
             }
         }
+        // Capacity redaction and source validation can introduce further deletions after the
+        // first pass. Close the cross-task graph over those final fences as well.
+        val retainedProfileIdentities = profileRevisions.map { it.id to it.revision }.toSet()
+        val missingReferenceRuns = analyses.filter { run ->
+            AnalysisRunCodec.decode(run.payload).profileMaintenancePlans.flatMap { it.references }.any { ref ->
+                ref.kind == ProfileMaintenanceReferenceKind.PROFILE && (ref.id to ref.version) !in retainedProfileIdentities
+            }
+        }.map { it.id }.toSet()
+        analyses.filter { it.id in missingReferenceRuns }.forEach { run ->
+            require(mergedAnalyses.size < 100_000) { "维护依赖缺口清理超过任务删除上限" }
+            mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+            deletedAnalysisIds += run.id
+        }
+        val finalMaintenanceDeletions = ProfileMaintenanceDeletion.affectedRuns(analyses,
+            snapshot.profileRevisions + ProfileStore.allRevisions(db), candidateKnowledge.values.flatten(),
+            snapshot.claimFeedback + allClaimFeedback(db), deletedProfileIds, deletedFeedbackIds,
+            mergedKnowledgeDeletions.map { it.id }.toSet(), deletedAnalysisIds) + missingReferenceRuns
+        analyses.filter { it.id in finalMaintenanceDeletions && it.id !in deletedAnalysisIds }.forEach { run ->
+            require(mergedAnalyses.size < 100_000) { "维护依赖清理超过任务删除上限" }
+            mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+            deletedAnalysisIds += run.id
+        }
+        analyses = analyses.filterNot { it.id in finalMaintenanceDeletions }
+        retainedKnowledge.filter { it.runId in finalMaintenanceDeletions }.groupBy { it.id }.forEach { (id, revisions) ->
+            mergedKnowledgeDeletions += Deletion(id, revisions.maxOf { it.revision }, clock.instant())
+        }
+        retainedKnowledge.removeAll { it.runId in finalMaintenanceDeletions }
         require(mergedKnowledgeDeletions.size <= KnowledgeValidation.MAX_DELETIONS) { "知识删除标记超过上限" }
         val retainedKnowledgeHeads = retainedKnowledge.groupBy { it.id }.map { (id, versions) -> KnowledgeHead(id, versions.maxOf { it.revision }) }
         KnowledgeValidation.validateCollection(retainedKnowledge, retainedKnowledgeHeads)
@@ -1365,6 +1536,26 @@ class LifeRepository(
 
     private fun sameKnowledgePublication(a: StoredKnowledgeRevision, b: StoredKnowledgeRevision): Boolean =
         a == b.copy(revision = a.revision, createdAt = a.createdAt, publishedAt = a.publishedAt)
+
+    /** Pure identity references let us erase complete affected tasks without retaining or
+     * searching deleted prose. Follow the closure because another task may quote their knowledge. */
+    private fun purgeProfileMaintenanceRuns(db: SQLiteDatabase, deletedProfileId: String? = null,
+        deletedFeedbackId: String? = null, deletedKnowledgeId: String? = null, deletedRunId: String? = null): Set<String> {
+        val runs = db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ORDER BY id", null).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
+        }
+        val affected = ProfileMaintenanceDeletion.affectedRuns(runs, ProfileStore.allRevisions(db),
+            allKnowledgeRevisions(db), allClaimFeedback(db), listOfNotNull(deletedProfileId).toSet(),
+            listOfNotNull(deletedFeedbackId).toSet(), listOfNotNull(deletedKnowledgeId).toSet(), listOfNotNull(deletedRunId).toSet())
+        val purged = runs.filter { it.id in affected }
+        require(count(db, "SELECT COUNT(*) FROM deleted_analysis_runs", emptyList()) + purged.size <= 100_000) { "分析任务删除标记达到上限" }
+        purged.forEach { run ->
+            purgeKnowledge(db, strings(db, "SELECT DISTINCT id FROM knowledge_revisions WHERE run_id = ?", run.id))
+            db.delete("analysis_runs", "id = ?", arrayOf(run.id))
+            insertDeletion(db, "deleted_analysis_runs", Deletion(run.id, run.version, clock.instant()))
+        }
+        return purged.map { it.id }.toSet()
+    }
 
     private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
         val dependencies = try {

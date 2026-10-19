@@ -200,6 +200,7 @@ class ControlledReductionReviewTest {
         }
         val old = JSONObject(AnalysisRunCodec.encode(task.state.copy(calls = calls))).apply {
             put("formatVersion", 5)
+            withoutProfileMaintenance()
             getJSONObject("request").remove("profileTarget")
             val array = getJSONArray("calls")
             repeat(array.length()) { index -> array.getJSONObject(index).apply {
@@ -299,6 +300,7 @@ class ControlledReductionReviewTest {
 
     private fun asV5(state: AnalysisRunState): String = JSONObject(AnalysisRunCodec.encode(state)).apply {
         put("formatVersion", 5)
+        withoutProfileMaintenance()
         getJSONObject("request").remove("profileTarget")
         val calls = getJSONArray("calls")
         repeat(calls.length()) { index -> calls.getJSONObject(index).apply {

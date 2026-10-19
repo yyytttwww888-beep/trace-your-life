@@ -36,7 +36,7 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 | `recoverInterrupted(id)` | 工作者重启后，把遗留在途调用转为可重试；不自动重复派发 |
 | `delete(id, expectedVersion)` | 按版本删除任务与提案；保存删除标记，旧的受管备份不能恢复该任务 |
 
-可空的 `AnalysisRequest.profileTarget` 固定画像维度与近期／情境层次；此类任务只允许 `SYNTHESIS`、`REVIEW`，详见[画像候选](PROFILE_CANDIDATES.md)。普通任务保持原有行为。
+可空的 `AnalysisRequest.profileTarget` 固定画像维度与近期／情境层次；此类任务允许 `SYNTHESIS`、`REVIEW` 及维护专用 `PROFILE_RELATION`／`PROFILE_SCAN`，详见[画像候选](PROFILE_CANDIDATES.md)和[跨任务维护](PROFILE_MAINTENANCE.md)。维护计划只保存目录身份与摘要，模型比较按需读取单条参照；最终核对受完整扫描和当前历史依赖约束。普通任务保持原有行为。
 
 计划日期均为包含端点的绝对发生日期，不用录入时间替代。完整周期的主题仅为关注提示，不排除误分类和未分类记录。`recordIds = null` 表示全部；非空 ID 集合是用户明确指定的子范围，缺失、归档排除或不在期间的 ID 由 `missingExactIds` 报告，空集合拒绝。
 
@@ -74,4 +74,4 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 后续验收
 
-M3 已实现语义核对、独立纠正、条件发布和记录覆盖指标；后两者见[知识接口](KNOWLEDGE.md)。核对只检查明确提供的原文，自动反例查找、跨任务同义陈述与反馈合并仍待实现。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。提取和综合输出均保留候选状态，必须经独立发布检查才能进入正式知识；[自动整理器](PERIOD_REFLECTION.md)可串起提取、核对和发布。有界综合的独立输入覆盖与多批未整合状态见[综合接口](SYNTHESIS_ACTIONS.md)。[模型可引用的记录指标](METRIC_ANALYSIS.md)使用独立调用，健康指标和自动更新后置。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
+M3 已实现语义核对、独立纠正、条件发布和记录覆盖指标；后两者见[知识接口](KNOWLEDGE.md)。普通核对只检查明确提供的原文；画像维护已增加固定范围内逐片反例扫描及跨任务关系与反馈约束，范围外资料和语义漏判仍是明确限制。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。提取和综合输出均保留候选状态，必须经独立发布检查才能进入正式知识；[自动整理器](PERIOD_REFLECTION.md)可串起提取、核对和发布。有界综合的独立输入覆盖与多批未整合状态见[综合接口](SYNTHESIS_ACTIONS.md)。[模型可引用的记录指标](METRIC_ANALYSIS.md)使用独立调用，健康指标和自动更新后置。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。

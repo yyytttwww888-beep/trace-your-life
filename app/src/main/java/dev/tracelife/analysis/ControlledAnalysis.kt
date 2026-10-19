@@ -10,7 +10,7 @@ import dev.tracelife.storage.UnreadableSourceException
 import dev.tracelife.transfer.StaleSnapshotException
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.metrics.RecordMetricReceipt
-import dev.tracelife.profile.ProfileAnalysisProtocol
+import dev.tracelife.profile.*
 import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -517,7 +517,186 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         return requireNotNull(call.review)
     }
 
-    private data class Completion(val proposal: BatchProposal? = null, val review: ClaimReview? = null, val usage: ModelUsage? = null, val scan: ReductionScanResult? = null)
+    /** Freeze the complete metadata catalog; old descriptions are routing constraints, never evidence. */
+    fun planProfileMaintenance(runId: String, claim: ClaimRef): ProfileMaintenancePlan = locked(runId) {
+        val task = current(runId)
+        val (generated, _) = target(task.state, claim)
+        require(generated.purpose == CallPurpose.SYNTHESIS)
+        val profileTarget = requireNotNull(task.state.request.profileTarget)
+        task.state.profileMaintenancePlans.singleOrNull { it.target == claim }?.let { plan ->
+            ensureMaintenancePlan(task, plan)
+            return@locked plan
+        }
+        require(task.state.calls.none { it.status == CallStatus.IN_FLIGHT })
+        val plan = ProfileMaintenancePlan(claim, profileTarget,
+            repository.profileMaintenanceCatalog(profileTarget, runId, claim), clock.instant())
+        require(plan.createdAt >= task.stored.updatedAt) { "时钟回拨，不能建立画像维护计划" }
+        ProfileMaintenanceProtocol.validatePlan(plan)
+        ensureMaintenancePlan(task, plan)
+        val saved = task(save(task.stored, task.state.copy(profileMaintenancePlans = task.state.profileMaintenancePlans + plan)))
+        ensureMaintenancePlan(saved, plan)
+        plan
+    }
+
+    fun profileMaintenanceContext(runId: String, claim: ClaimRef): ProfileMaintenanceContext {
+        val task = current(runId)
+        target(task.state, claim)
+        val plan = requireNotNull(task.state.profileMaintenancePlans.singleOrNull { it.target == claim }) { "尚未建立画像维护计划" }
+        ensureMaintenancePlan(task, plan)
+        val hash = ProfileMaintenanceProtocol.planSha256(plan)
+        val calls = task.state.calls.filter { it.status == CallStatus.SUCCEEDED && it.reviewTarget == claim && it.profileMaintenancePlanSha256 == hash }
+        val relations = plan.references.mapNotNull { ref -> calls.lastOrNull { it.purpose == CallPurpose.PROFILE_RELATION && it.profileReference == ref } }
+        val scans = calls.filter { it.purpose == CallPurpose.PROFILE_SCAN }
+        val feedbackVersion = repository.claimFeedbackVersion(AnalysisRunCodec.feedbackId(runId, claim))
+        val latestReview = task.state.calls.lastOrNull { it.purpose == CallPurpose.REVIEW && it.status == CallStatus.SUCCEEDED &&
+            it.reviewTarget == claim && it.feedbackVersion == feedbackVersion }?.takeIf {
+            it.profileMaintenancePlanSha256 == hash && it.profileMaintenanceProof != null &&
+                it.profileMaintenanceProof.relations.map { relation -> relation.ref } == relations.map(ProfileMaintenanceProtocol::relationRef) &&
+                it.profileMaintenanceProof.scans.map { scan -> scan.ref } == scans.map(ProfileMaintenanceProtocol::scanRef)
+        }
+        ensureMaintenancePlan(task, plan)
+        return ProfileMaintenanceContext(plan, relations, scans, latestReview)
+    }
+
+    fun profileMaintenanceProof(runId: String, claim: ClaimRef): ProfileMaintenanceProof? =
+        profileMaintenanceContext(runId, claim).latestReview?.profileMaintenanceProof
+
+    fun relateProfile(runId: String, key: String, claim: ClaimRef, referenceId: String,
+        provider: SemanticProfileRelationProvider): ProfileRelationResult {
+        val plan = profileMaintenanceContext(runId, claim).plan
+        val ref = requireNotNull(plan.references.singleOrNull { it.id == referenceId }) { "参照 ID 不唯一或不在维护目录" }
+        return relateProfile(runId, key, claim, ref, provider)
+    }
+
+    fun relateProfile(runId: String, key: String, claim: ClaimRef, reference: ProfileMaintenanceReference,
+        provider: SemanticProfileRelationProvider): ProfileRelationResult = locked(runId) {
+        AnalysisRunCodec.validId(key)
+        AnalysisRunCodec.validId(provider.id)
+        val task = current(runId)
+        val context = profileMaintenanceContext(runId, claim)
+        require(reference in context.plan.references)
+        require(context.relations.none { it.profileReference == reference && it.batchKey != key }) { "同一参照已有成功判断，不能换键重复抽取" }
+        val leaf = repository.profileMaintenanceReference(reference)
+        val (_, proposed) = target(task.state, claim)
+        val payload = AnalysisRunCodec.json(maintenanceEnvelope(task, context.plan, "PROFILE_RELATION", ProfileMaintenanceProtocol.RELATION_INSTRUCTIONS) + mapOf(
+            "candidate" to AnalysisRunCodec.claimRefMap(claim) + AnalysisRunCodec.claimMap(proposed),
+            "reference" to ProfileMaintenanceProtocol.contentMap(leaf), "originalEvidence" to false,
+        ))
+        val request = modelRequest(runId, key, payload, task.state.request.limits)
+        val call = execute(task, key, emptyList(), provider.id, provider.contextWindowTokens, request, provider.prepareRelation(request),
+            purpose = CallPurpose.PROFILE_RELATION, reviewTarget = claim,
+            maintenancePlan = context.plan, profileReference = reference, profileReferenceAvailable = leaf.sourceAvailable && leaf.claim != null) { prepared ->
+            provider.relatePrepared(prepared).let {
+                Completion(profileRelation = it.result, usage = it.usage)
+            }
+        }
+        requireNotNull(call.profileRelation)
+    }
+
+    /** Scan only bounded original fragments; unlike ordinary review this cannot establish support. */
+    fun scanProfile(runId: String, key: String, claim: ClaimRef, selections: List<EvidenceSelection>,
+        provider: SemanticReductionScanProvider): ReductionScanResult = locked(runId) {
+        AnalysisRunCodec.validId(key)
+        AnalysisRunCodec.validId(provider.id)
+        val task = current(runId)
+        val context = profileMaintenanceContext(runId, claim)
+        require(context.relations.map { it.profileReference } == context.plan.references) { "先完成完整历史目录的关系核对" }
+        require(selections.size in 1..32 && selections.distinct().size == selections.size)
+        val fragments = selections.map { repository.analysisSourceFragment(task.stored.source, task.state.request.scope,
+            it.recordId, it.field, it.start, task.state.request.limits.fragmentCodePoints) }
+        val receipts = fragments.map(::receipt)
+        val occupied = context.scans.filter { it.batchKey != key }.flatMap { it.evidence }.map { it.id }.toSet()
+        require(receipts.none { it.id in occupied }) { "已成功扫描的片段不能换键重复扫描" }
+        val (_, proposed) = target(task.state, claim)
+        val payload = AnalysisRunCodec.json(maintenanceEnvelope(task, context.plan, "PROFILE_SCAN", ProfileMaintenanceProtocol.SCAN_INSTRUCTIONS) + mapOf(
+            "candidate" to AnalysisRunCodec.claimRefMap(claim) + AnalysisRunCodec.claimMap(proposed),
+            "evidence" to fragments.zip(receipts).map { (fragment, ref) -> evidenceMap(task, fragment, ref) },
+            "coverage" to mapOf("scannedFragments" to receipts.size, "wholeScopeScanned" to false, "counterevidenceSearchExhaustive" to false),
+        ))
+        val request = modelRequest(runId, key, payload, task.state.request.limits)
+        val call = execute(task, key, receipts, provider.id, provider.contextWindowTokens, request, provider.prepareScan(request),
+            purpose = CallPurpose.PROFILE_SCAN, reviewTarget = claim, maintenancePlan = context.plan) { prepared ->
+            provider.scanPrepared(prepared).let { Completion(profileScan = it.result, usage = it.usage) }
+        }
+        requireNotNull(call.profileScan)
+    }
+
+    /** Re-read every relevant scan result and the complete generating batch before a maintenance verdict. */
+    fun reviewProfileMaintenance(runId: String, key: String, claim: ClaimRef,
+        provider: SemanticReviewProvider): ClaimReview = locked(runId) {
+        AnalysisRunCodec.validId(key)
+        AnalysisRunCodec.validId(provider.id)
+        val task = current(runId)
+        val context = profileMaintenanceContext(runId, claim)
+        require(context.relations.map { it.profileReference } == context.plan.references) { "历史约束核对尚未完整" }
+        val scanned = context.scans.flatMap { it.evidence }.distinctBy { it.id }
+        val coverage = TextAnalysisInventory(this).build(task, CallPurpose.PROFILE_SCAN, 0, scanned).coverage
+        require(coverage.remainingTextFragments == 0L && coverage.unreadableRecords == 0 && scanned.isNotEmpty()) { "维护原文扫描尚未完整" }
+        val (generated, proposed) = target(task.state, claim)
+        val relevant = context.scans.flatMap { scan ->
+            val ids = requireNotNull(scan.profileScan).findings.filter { it.classification != ReductionRelevance.IRRELEVANT }.map { it.receiptId }.toSet()
+            scan.evidence.filter { it.id in ids }
+        }
+        val mandatory = (relevant + generated.evidence).distinctBy { it.id }
+        if (mandatory.size > 32) throw AnalysisBudgetException("相关原文与生成批次超过单次核对上限，不能截断反例")
+        val fragments = mandatory.map { repository.analysisSourceFragment(task.stored.source, task.state.request.scope,
+            it.recordId, it.field, it.start, task.state.request.limits.fragmentCodePoints) }
+        val receipts = fragments.map(::receipt)
+        require(receipts == mandatory) { "维护核对原文已变化" }
+        val proof = ProfileMaintenanceProtocol.proof(context.plan, context.relations, context.scans, (scanned + generated.evidence).distinctBy { it.id })
+        ProfileMaintenanceProtocol.validateProof(proof, receipts)
+        val constraints = context.relations.filter { it.profileRelation?.relation != ProfileRelation.UNRELATED }.map {
+            mapOf("reference" to ProfileMaintenanceProtocol.contentMap(repository.profileMaintenanceReference(requireNotNull(it.profileReference))),
+                "comparison" to ProfileMaintenanceProtocol.relationMap(requireNotNull(it.profileRelation)))
+        }
+        val feedbackId = AnalysisRunCodec.feedbackId(runId, claim)
+        val feedback = repository.claimFeedback(feedbackId)
+        val feedbackVersion = repository.claimFeedbackVersion(feedbackId)
+        val counts = context.scans.flatMap { requireNotNull(it.profileScan).findings }.groupingBy { it.classification.name }.eachCount()
+        val payload = AnalysisRunCodec.json(maintenanceEnvelope(task, context.plan, "REVIEW", ProfileAnalysisProtocol.REVIEW_INSTRUCTIONS + ProfileMaintenanceProtocol.REVIEW_INSTRUCTIONS) + mapOf(
+            "profileMaintenance" to true,
+            "target" to AnalysisRunCodec.claimRefMap(claim) + AnalysisRunCodec.claimMap(proposed),
+            "feedback" to mapOf("version" to feedbackVersion, "decision" to feedback?.decision?.name, "userText" to feedback?.userText),
+            "historicalConstraints" to constraints,
+            "scanOpinions" to context.scans.mapNotNull { scan ->
+                val result = requireNotNull(scan.profileScan)
+                val retained = result.findings.filter { it.classification != ReductionRelevance.IRRELEVANT || it.issues.isNotEmpty() }
+                if (retained.isEmpty() && result.unknowns.isEmpty()) null else mapOf("batchKey" to scan.batchKey,
+                    "originalEvidence" to false, "result" to ReductionReviewProtocol.scanMap(ReductionScanResult(retained, result.unknowns)))
+            },
+            "scanSummary" to mapOf("fragments" to scanned.size, "classifications" to counts, "entireTextScopeScanned" to true,
+                "unreadAttachments" to coverage.unreadAttachments, "unknownTimeRecords" to coverage.unknownTimeRecords,
+                "overlappingRecords" to coverage.overlappingRecords, "missingExactIds" to coverage.missingExactIds.sorted(),
+                "fragmentCountsAreNotIndependentEvents" to true, "counterevidenceSearchExhaustive" to false),
+            "evidence" to fragments.zip(receipts).map { (fragment, ref) -> evidenceMap(task, fragment, ref) },
+        ))
+        val request = modelRequest(runId, key, payload, task.state.request.limits)
+        val call = execute(task, key, receipts, provider.id, provider.contextWindowTokens, request, provider.prepareReview(request),
+            purpose = CallPurpose.REVIEW, reviewTarget = claim, feedbackVersion = feedbackVersion,
+            maintenancePlan = context.plan, profileMaintenanceProof = proof) { prepared ->
+            provider.reviewPrepared(prepared).let { Completion(review = it.review, usage = it.usage) }
+        }
+        requireNotNull(call.review)
+    }
+
+    private fun maintenanceEnvelope(task: AnalysisTask, plan: ProfileMaintenancePlan, purpose: String, instructions: String): Map<String, Any?> = mapOf(
+        "protocolVersion" to 8, "purpose" to purpose, "system" to instructions, "question" to task.state.request.question,
+        "scope" to AnalysisRunCodec.scopeMap(task.state.request.scope), "profileTarget" to AnalysisRunCodec.profileTargetMap(plan.profileTarget),
+        "maintenancePlanSha256" to ProfileMaintenanceProtocol.planSha256(plan),
+        "source" to mapOf("storeId" to task.stored.source.storeId, "generation" to task.stored.source.generation),
+    )
+
+    private fun ensureMaintenancePlan(task: AnalysisTask, plan: ProfileMaintenancePlan) {
+        ensureRegistered(task.stored)
+        if (clock.instant() < maxOf(task.stored.updatedAt, plan.createdAt)) throw AnalysisDependencyBlockedException("时钟回拨，画像维护已停止")
+        if (!repository.profileMaintenanceCatalogCurrent(plan.profileTarget, task.stored.id, plan.target, plan.references)) {
+            throw AnalysisDependencyBlockedException("画像目录、历史反馈或参照内容已变化，请建立新任务")
+        }
+        ensureRegistered(task.stored)
+    }
+
+    private data class Completion(val proposal: BatchProposal? = null, val review: ClaimReview? = null, val usage: ModelUsage? = null, val scan: ReductionScanResult? = null,
+        val profileRelation: ProfileRelationResult? = null, val profileScan: ReductionScanResult? = null)
 
     private fun modelRequest(id: String, batchKey: String, payload: String, limits: AnalysisLimits): ModelRequest {
         if (payload.toByteArray(Charsets.UTF_8).size > limits.maxInputBytes) throw AnalysisBudgetException("完整模型输入超过字节预算，请减少片段或历史")
@@ -541,12 +720,17 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         reductionReviewTokens: List<ReductionFeedbackToken> = emptyList(),
         reductionScans: List<ReductionScanRef> = emptyList(),
         metricEvidence: List<RecordMetricReceipt> = emptyList(),
+        maintenancePlan: ProfileMaintenancePlan? = null,
+        profileReference: ProfileMaintenanceReference? = null,
+        profileReferenceAvailable: Boolean = true,
+        profileMaintenanceProof: ProfileMaintenanceProof? = null,
         dispatch: (PreparedModelRequest) -> Completion,
     ): AnalysisCall {
         val state = task.state
         val limits = state.request.limits
         requirePurpose(task, purpose)
         ensureRegistered(task.stored)
+        maintenancePlan?.let { ensureMaintenancePlan(task, it) }
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
         require(prepared.original == request) { "模型适配器改变了原始请求" }
@@ -564,11 +748,13 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             if (previous.providerId != providerId || previous.requestSha256 != requestHash || previous.purpose != purpose ||
                 previous.reviewTarget != reviewTarget || previous.feedbackVersion != feedbackVersion || previous.reductionInputs != reductionInputs || previous.reductionTarget != reductionTarget ||
                 previous.reductionReviewTokens != reductionReviewTokens || previous.reductionScans != reductionScans ||
-                previous.metricEvidence != metricEvidence) {
+                previous.metricEvidence != metricEvidence || previous.profileMaintenancePlanSha256 != maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256) ||
+                previous.profileReference != profileReference || previous.profileMaintenanceProof != profileMaintenanceProof) {
                 throw AnalysisConflictException("同一批次不能更换请求、模型、核对目标或反馈")
             }
             if (previous.status == CallStatus.SUCCEEDED) {
                 ensureRegistered(task.stored)
+                maintenancePlan?.let { ensureMaintenancePlan(task, it) }
                 return previous
             }
             if (previous.status == CallStatus.IN_FLIGHT) throw AnalysisConflictException("批次仍在运行或等待中断恢复")
@@ -579,9 +765,12 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
         val call = AnalysisCall(batchKey, (previous?.attempt ?: 0) + 1, providerId, requestHash, inputBytes, inputTokens, receipts, clock.instant(), CallStatus.IN_FLIGHT,
             tokenCountKind = prepared.tokenCountKind, purpose = purpose, reviewTarget = reviewTarget, feedbackVersion = feedbackVersion, reductionInputs = reductionInputs, reductionTarget = reductionTarget,
-            reductionReviewTokens = reductionReviewTokens, reductionScans = reductionScans, metricEvidence = metricEvidence)
+            reductionReviewTokens = reductionReviewTokens, reductionScans = reductionScans, metricEvidence = metricEvidence,
+            profileMaintenancePlanSha256 = maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256), profileReference = profileReference,
+            profileMaintenanceProof = profileMaintenanceProof)
         val registered = save(task.stored, state.copy(calls = state.calls + call))
         ensureRegistered(registered)
+        maintenancePlan?.let { ensureMaintenancePlan(task(registered), it) }
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
         val completion = try {
@@ -600,11 +789,18 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 if (purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.METRIC_ANALYSIS)) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
                     "综合判断必须保留为待确认的可能解释"
                 }
-            } else if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes)
+            } else if (purpose == CallPurpose.PROFILE_RELATION) {
+                val result = requireNotNull(completion.profileRelation)
+                ProfileMaintenanceProtocol.validateRelation(result, limits.maxOutputBytes)
+                require(profileReferenceAvailable || result.relation == ProfileRelation.UNCERTAIN) { "旧描述缺失，不能推断无关" }
+            }
+            else if (purpose == CallPurpose.PROFILE_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.profileScan), receipts, limits.maxOutputBytes)
+            else if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes)
             else if (purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.scan), receipts, limits.maxOutputBytes)
             else {
                 AnalysisRunCodec.validateReview(requireNotNull(completion.review), receipts, limits.maxOutputBytes, metricEvidence)
                 if (purpose == CallPurpose.REDUCTION_REVIEW) ReductionReviewProtocol.proof(state, call.copy(review = completion.review))
+                profileMaintenanceProof?.let { ProfileMaintenanceProtocol.validateProof(it, receipts, completion.review) }
             }
         } catch (_: IllegalArgumentException) {
             finishFailure(registered, state, call, "INVALID_RESPONSE")
@@ -615,15 +811,17 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
             ensureRegistered(registered)
         }
+        maintenancePlan?.let { ensureMaintenancePlan(task(registered), it) }
         val completed = call.copy(status = CallStatus.SUCCEEDED, finishedAt = clock.instant(),
             proposal = if (purpose == CallPurpose.REDUCTION) null else completion.proposal, review = completion.review, usage = completion.usage,
-            reductionOutput = if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes) else null, reductionScan = completion.scan)
+            reductionOutput = if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes) else null, reductionScan = completion.scan,
+            profileRelation = completion.profileRelation, profileScan = completion.profileScan)
         save(registered, state.copy(calls = state.calls + completed))
         return completed
     }
 
     private fun requirePurpose(task: AnalysisTask, purpose: CallPurpose) {
-        require(task.state.request.profileTarget == null || purpose == CallPurpose.SYNTHESIS || purpose == CallPurpose.REVIEW) {
+        require(task.state.request.profileTarget == null || purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)) {
             "画像任务只允许原文候选综合与核对"
         }
     }

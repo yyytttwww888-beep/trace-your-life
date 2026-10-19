@@ -73,7 +73,7 @@ class ControlledReductionTest {
         assertNull(call.proposal)
         assertTrue(call.evidence.isEmpty())
         assertEquals(output, call.reductionOutput)
-        assertEquals(8, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(9, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(listOf(first, second), analysis.reductionNode("run", "root").leafRefs)
         assertEquals(3, analysis.reductionNode("run", "root").originalEvidence.size)
         assertThrows(IllegalArgumentException::class.java) { analysis.claimRef("run", "root", 0) }
@@ -247,6 +247,7 @@ class ControlledReductionTest {
             reductionInputs = listOf(ReductionGraph.input(input.node, input.requestSha256, emptyList())) + root.reductionInputs.drop(1)))) }
         val old = JSONObject(AnalysisRunCodec.encode(state)).apply {
             put("formatVersion", 4)
+            withoutProfileMaintenance()
             getJSONObject("request").remove("profileTarget")
             val calls = getJSONArray("calls")
             repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("metricEvidence", "reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
@@ -254,6 +255,7 @@ class ControlledReductionTest {
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(old.toString()) }
         val oldLeaves = JSONObject(AnalysisRunCodec.encode(state.copy(calls = state.calls.dropLast(1)))).apply {
             put("formatVersion", 4)
+            withoutProfileMaintenance()
             getJSONObject("request").remove("profileTarget")
             val calls = getJSONArray("calls")
             repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("metricEvidence", "reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }

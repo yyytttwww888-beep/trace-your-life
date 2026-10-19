@@ -192,28 +192,28 @@ class ReductionKnowledgeTest {
         assertTrue(KnowledgeValidation.reviewMatchesState(direct, null))
     }
 
-    @Test fun `version three is strict and earlier versions retain their original proof shapes`() {
+    @Test fun `version four is strict and earlier versions retain their original proof shapes`() {
         prepare(); review()
         val saved = publish()
         val payload = KnowledgeCodec.encode(saved)
-        assertEquals(3, JSONObject(payload).getInt("formatVersion"))
+        assertEquals(4, JSONObject(payload).getInt("formatVersion"))
         assertEquals(saved, KnowledgeCodec.decode(payload))
-        val versionTwo = JSONObject(payload).apply { put("formatVersion", 2); remove("metricEvidence") }
+        val versionTwo = JSONObject(payload).apply { put("formatVersion", 2); remove("metricEvidence"); remove("profileMaintenanceProof") }
         assertEquals(saved, KnowledgeCodec.decode(versionTwo.toString()))
         val direct = asDirect(saved)
         val legacy = JSONObject(KnowledgeCodec.encode(direct)).apply {
-            put("formatVersion", 1); remove("reductionProof"); remove("metricEvidence")
+            put("formatVersion", 1); remove("reductionProof"); remove("metricEvidence"); remove("profileMaintenanceProof")
         }
         assertEquals(direct, KnowledgeCodec.decode(legacy.toString()))
         val invalid = listOf(
             JSONObject(payload).apply { remove("reductionProof") }.toString(),
             JSONObject(payload).put("formatVersion", 1).toString(),
-            JSONObject(payload).apply { put("formatVersion", 1); remove("reductionProof"); remove("metricEvidence") }.toString(),
+            JSONObject(payload).apply { put("formatVersion", 1); remove("reductionProof"); remove("metricEvidence"); remove("profileMaintenanceProof") }.toString(),
             JSONObject(payload).put("formatVersion", 2).toString(),
             JSONObject(payload).apply { remove("metricEvidence") }.toString(),
             JSONObject(payload).apply { getJSONObject("reductionProof").put("unregistered", true) }.toString(),
             JSONObject(payload).put("reductionProof", JSONObject.NULL).toString(),
-            payload.replace("\"formatVersion\":3", "\"formatVersion\":3,\"formatVersion\":3"),
+            payload.replace("\"formatVersion\":4", "\"formatVersion\":4,\"formatVersion\":4"),
         )
         invalid.forEach { assertThrows(Exception::class.java) { KnowledgeCodec.decode(it) } }
     }
