@@ -1,6 +1,6 @@
 # 看板数据、趋势下钻与行动回看
 
-M4 第一阶段提供看板后端和独立导出，沿用[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md#8-数据看板关键趋势与行动回看)。看板是现有主存的可重建视图，不新增数据库、持久偏好或模型调用。页面、图表渲染、偏好保存与实体手机验收尚未完成；实现与验证记录见[阶段计划](plans/2026-10-19-dashboard-data.md)。
+M4 第一阶段提供看板后端和独立导出，沿用[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md#8-数据看板关键趋势与行动回看)。看板是现有主存的可重建视图，不产生模型调用。[偏好持久化](DASHBOARD_PREFERENCES.md)现已提供；页面、图表渲染与实体手机验收尚未完成；实现与验证记录见[阶段计划](plans/2026-10-19-dashboard-data.md)。
 
 ## 建立看板
 

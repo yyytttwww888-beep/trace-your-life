@@ -252,6 +252,8 @@ class KnowledgeStorageTest {
         val source = repository.analysisSourceStamp()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            execSQL("DROP TABLE dashboard_preferences")
+            execSQL("ALTER TABLE store_state DROP COLUMN restore_epoch")
             execSQL("DROP TABLE profile_heads")
             execSQL("DROP TABLE profile_revisions")
             execSQL("DROP TABLE deleted_profiles")
@@ -268,7 +270,7 @@ class KnowledgeStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(value, repository.claimFeedback(value.id))
         assertTrue(repository.knowledgeHeads().isEmpty())
-        assertEquals(7, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(8, repository.captureSnapshot(directory()).sourceSchemaVersion)
     }
 
     @Test fun `feedback deletion removes an overfull legacy task and all its knowledge without losing independent text`() {

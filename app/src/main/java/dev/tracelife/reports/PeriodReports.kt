@@ -56,6 +56,7 @@ class PeriodReport internal constructor(
     val knowledgeCount: Int,
     val omittedInvalidKnowledge: Int,
     val omittedOutOfScopeKnowledge: Int,
+    val omittedActionEvidenceKnowledge: Int,
     val unreadAttachments: Int,
     val unreadableRecords: Int,
     internal val recordIndex: List<SourceDescriptor>,
@@ -120,6 +121,7 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
         val included = mutableListOf<KnowledgeRef>()
         var invalid = 0
         var outside = 0
+        var actionEvidenceOmitted = 0
         var validUntil: Instant? = null
         var candidates = 0
         // The library shares decoded task state across this one consistent scan.
@@ -130,6 +132,7 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
                 invalid++
                 return@scanCurrent
             }
+            if (view.value.actionPlan != null) { actionEvidenceOmitted++; return@scanCurrent }
             val evidenceSources = KnowledgeValidation.allSourceRevisions(view.value).map { (id, revision) ->
                 sources[id]?.takeIf { record -> record.revision == revision }
             }
@@ -143,7 +146,7 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
 
         return PeriodReport(calculated, generation, evaluatedAt, validUntil,
             ReportSection.entries.associateWith { selected -> answers.count { it.section == selected } },
-            included.size, invalid, outside, unreadAttachments, unreadableRecords,
+            included.size, invalid, outside, actionEvidenceOmitted, unreadAttachments, unreadableRecords,
             records.toList(), answers.toList(), included.toList()).also(::assertCurrent)
     }
 

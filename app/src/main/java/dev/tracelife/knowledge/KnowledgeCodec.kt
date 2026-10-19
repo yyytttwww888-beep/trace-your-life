@@ -1,5 +1,6 @@
 package dev.tracelife.knowledge
 
+import dev.tracelife.actions.ActionEvidenceProtocol
 import android.util.JsonReader
 import android.util.JsonToken
 import dev.tracelife.analysis.AnalysisRunCodec
@@ -23,7 +24,7 @@ import java.time.LocalDate
 
 /** A self-contained immutable publication, independent of the mutable analysis task ledger. */
 object KnowledgeCodec {
-    const val FORMAT_VERSION = 4
+    const val FORMAT_VERSION = 5
 
     fun encode(value: StoredKnowledgeRevision): String {
         KnowledgeValidation.validate(value)
@@ -42,6 +43,8 @@ object KnowledgeCodec {
             "reductionProof" to value.reductionProof?.let(ReductionReviewProtocol::proofMap),
             "metricEvidence" to value.metricEvidence.map(RecordMetricProtocol::map),
             "profileMaintenanceProof" to value.profileMaintenanceProof?.let(dev.tracelife.profile.ProfileMaintenanceProtocol::proofMap),
+            "actionPlan" to value.actionPlan?.let(ActionEvidenceProtocol::planMap),
+            "actionEvidence" to value.actionEvidence.map(ActionEvidenceProtocol::receiptMap),
         ), nodeLimit = 20_000).also { require(it.toByteArray(Charsets.UTF_8).size <= KnowledgeValidation.MAX_REVISION_BYTES) { "知识修订超过 256 KiB" } }
     }
 
@@ -87,7 +90,8 @@ object KnowledgeCodec {
             1L -> fields
             2L -> fields + "reductionProof"
             3L -> fields + arrayOf("reductionProof", "metricEvidence")
-            else -> fields + arrayOf("reductionProof", "metricEvidence", "profileMaintenanceProof")
+            4L -> fields + arrayOf("reductionProof", "metricEvidence", "profileMaintenanceProof")
+            else -> fields + arrayOf("reductionProof", "metricEvidence", "profileMaintenanceProof", "actionPlan", "actionEvidence")
         }))
         val claimRef = root["claimRef"].obj("batchKey", "claimIndex", "claimSha256")
         val source = root["source"].obj("storeId", "generation")
@@ -114,7 +118,14 @@ object KnowledgeCodec {
             root["reductionProof"]?.let(ReductionReviewProtocol::parseProof),
             if (format >= 3L) root.list("metricEvidence").map(RecordMetricProtocol::parse) else emptyList(),
             root["profileMaintenanceProof"]?.let(dev.tracelife.profile.ProfileMaintenanceProtocol::parseProof),
-        ).also(KnowledgeValidation::validate)
+            root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
+            if (format >= 5L) root.list("actionEvidence").map(ActionEvidenceProtocol::parseReceipt) else emptyList(),
+        ).also { value ->
+            require(format >= 5L || value.profileMaintenanceProof?.plan?.profileTarget?.layer != dev.tracelife.profile.ProfileLayer.LONG_TERM) {
+                "旧知识格式不支持纵向画像凭据"
+            }
+            KnowledgeValidation.validate(value)
+        }
     }
 
     @Suppress("UNCHECKED_CAST")

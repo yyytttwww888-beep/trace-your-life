@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 M1 记录、M2 数据转移、M3 受控整理与核对，以及 M4 [看板数据与行动回看](plans/2026-10-19-dashboard-data.md)、[画像采用与维护](plans/2026-10-19-personal-profile.md)、[受控画像候选生成](plans/2026-10-19-profile-candidates.md)、[跨任务画像维护](plans/2026-10-19-profile-maintenance.md)。各阶段实现与验证见[路线进度](ROADMAP.md#本轮进度)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 M1 记录、M2 数据转移、M3 受控整理与核对，以及 M4 [看板数据与行动回看](plans/2026-10-19-dashboard-data.md)、[画像采用与维护](plans/2026-10-19-personal-profile.md)、[受控画像候选生成](plans/2026-10-19-profile-candidates.md)、[跨任务画像维护](plans/2026-10-19-profile-maintenance.md)。新增[四项后端闭环](plans/2026-10-19-backend-completion.md)，使用固定 WorkManager 2.11.2。各阶段实现与验证见[路线进度](ROADMAP.md#本轮进度)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
 
 ## 环境
 
@@ -44,6 +44,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/templates/` | 内置复盘模板、导入预览及输入限制 |
 | `app/src/main/java/dev/tracelife/transfer/` | 备份加密、预览恢复、阅读包与证据包；用法见[接口文档](DATA_TRANSFER.md) |
 | `app/src/main/java/dev/tracelife/analysis/` | 受控取证、完整请求预算、调用证据台账与待核对提案；见[分析接口](CONTROLLED_ANALYSIS.md)和[核对／反馈接口](CLAIM_REVIEW.md) |
+| `app/src/main/java/dev/tracelife/background/` | 默认关闭的增量任务、持久配额、调度及失败恢复；见[后台分析](BACKGROUND_ANALYSIS.md) |
 | `app/src/main/java/dev/tracelife/providers/` | DeepSeek HTTPS、严格响应解析、凭据加密；配置和显式测试见[接入说明](DEEPSEEK.md) |
 | `app/src/main/java/dev/tracelife/knowledge/`、`metrics/` | 正式知识发布／分页查阅、严格审核副本编码与确定性记录指标；见[接口](KNOWLEDGE.md) |
 | `app/src/main/java/dev/tracelife/reports/` | 固定快照的周期复盘材料、原模板答案和引用下钻；分层草稿正文与原文查看见[草稿接口](PERIOD_REDUCTION.md)；自动编排与指标证据见[接口](PERIOD_REFLECTION.md) |
@@ -53,7 +54,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；当前为 v7，可从 v1–v6 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询、行动／画像写入或备份快照直接开放给模型。DeepSeek 真实提取、核对、综合、归并、周期原文核对、指标分析、画像候选和画像维护使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过八项，不读取真实 KEY。
+新数据库格式通过明确的版本迁移升级；当前为 v8，可从 v1–v7 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询、行动／画像写入或备份快照直接开放给模型。DeepSeek 真实提取、核对、综合、归并、周期原文核对、指标分析、画像候选、画像维护和行动周期联动使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过九项，不读取真实 KEY。
 
 ## 设备验证与阶段边界
 
@@ -61,6 +62,6 @@ Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于�
 
 M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
 
-M3 任务创建、分批执行、核对、反馈、正式知识发布、自动整理、记录指标、周期材料、有界综合、分层周期草稿、周期原文核对与发布、受控指标分析及行动实验同样只有后端接口。自动调度、健康指标与长期倾向自动推断尚未实现；模型指标引用见[受控指标分析](METRIC_ANALYSIS.md)。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。当前 `File` 导出需要目标文件系统支持同目录硬链接创建，详情见[发布限制](DATA_TRANSFER.md#一致性与中断)；系统文档 provider 的发布机制仍待接入。
+M3 任务创建、分批执行、核对、反馈、正式知识发布、自动整理、记录指标、周期材料、有界综合、分层周期草稿、周期原文核对与发布、受控指标分析及行动实验同样只有后端接口。[后台调度](BACKGROUND_ANALYSIS.md)、[跨周期长期候选](LONGITUDINAL_PROFILE.md)已实现，健康指标仍待数据源；模型指标引用见[受控指标分析](METRIC_ANALYSIS.md)。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。当前 `File` 导出需要目标文件系统支持同目录硬链接创建，详情见[发布限制](DATA_TRANSFER.md#一致性与中断)；系统文档 provider 的发布机制仍待接入。
 
-M4 已有看板数据、独立导出、画像采用／维护、受控候选生成及跨任务维护接口，图表渲染、页面导航及关注项偏好持久化仍后置。健康卡片不返回推测数值；可立即验证的是记录覆盖趋势、已有指标洞察、行动回看，以及固定知识版本的画像组织、失效传播和迁移。画像生成复用受控原文综合与核对；普通自动化验证不需要 DeepSeek KEY，显式真实测试有独立开关。餐食照片分析按用户要求暂缓。
+M4 已有看板数据、独立导出、画像采用／维护、受控候选生成及跨任务维护接口，图表渲染与页面导航后置，关注项偏好已持久化。健康卡片不返回推测数值；可立即验证的是记录覆盖趋势、已有指标洞察、行动回看，以及固定知识版本的画像组织、失效传播和迁移。画像生成复用受控原文综合与核对；普通自动化验证不需要 DeepSeek KEY，显式真实测试有独立开关。餐食照片分析按用户要求暂缓。

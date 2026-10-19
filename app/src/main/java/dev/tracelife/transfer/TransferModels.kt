@@ -1,5 +1,6 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.dashboard.StoredDashboardPreferences
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.ChangeEvent
 import dev.tracelife.model.RecordRevision
@@ -28,7 +29,7 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 7,
+    val sourceSchemaVersion: Int = 8,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
@@ -43,6 +44,7 @@ data class RepositorySnapshot(
     val profileRevisions: List<StoredProfileRevision> = emptyList(),
     val profileHeads: List<ProfileHead> = emptyList(),
     val deletedProfiles: List<Deletion> = emptyList(),
+    val dashboardPreferences: StoredDashboardPreferences? = null,
 )
 
 data class Deletion(val id: String, val lastRevision: Int, val deletedAt: Instant)

@@ -68,14 +68,14 @@ class ReductionPublicationTransferTest {
     @Test fun `publication proof survives both backup codecs without changing outer format or becoming current on restore`() {
         val fixture = fixture()
         val note = fixture.note
-        assertEquals(4, JSONObject(KnowledgeCodec.encode(note)).getInt("formatVersion"))
+        assertEquals(5, JSONObject(KnowledgeCodec.encode(note)).getInt("formatVersion"))
         assertEquals(note, KnowledgeCodec.decode(KnowledgeCodec.encode(note)))
         assertEquals(3, KnowledgeValidation.allEvidence(note).size)
         assertEquals(2, note.evidence.size)
         val snapshot = repository.captureSnapshot(directory())
         val bytes = ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toByteArray()
-        assertEquals(6, JSONObject(bytes.toString(Charsets.UTF_8)).getInt("formatVersion"))
-        assertEquals(7, snapshot.sourceSchemaVersion)
+        assertEquals(7, JSONObject(bytes.toString(Charsets.UTF_8)).getInt("formatVersion"))
+        assertEquals(8, snapshot.sourceSchemaVersion)
         assertEquals(snapshot, SnapshotJsonCodec.read(bytes.inputStream()))
         val archive = File(workspace, "proof.tlb")
         val password = "synthetic-period-proof-passphrase".toCharArray()

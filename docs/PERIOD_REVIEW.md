@@ -76,4 +76,4 @@ if (result.status == ReductionReviewStatus.SUPPORTED) {
 
 新分析载荷 v6 兼容 v1–v5；新知识载荷 v2 兼容 v1。旧归并图保留原身份计算；若旧图未登记的派生祖先后来出现反馈，旧图失效。数据库仍为 schema v6、完整备份仍为逻辑 v5；资源上限及导出范围见[数据转移接口](DATA_TRANSFER.md)。阅读包和周期材料包包含当前正式洞察及完整扫描来源，草稿依旧不自动混入这些包。
 
-真实调用及自动测试范围见[第八阶段计划](plans/2026-10-19-period-review-publication.md)。模型指标、自动查找来源链之外的反例、后台调度和长期画像仍待实现。
+真实调用及自动测试范围见[第八阶段计划](plans/2026-10-19-period-review-publication.md)。[模型指标](METRIC_ANALYSIS.md)、[画像范围反例扫描](PROFILE_MAINTENANCE.md)、[后台记录整理](BACKGROUND_ANALYSIS.md)和[跨周期画像](LONGITUDINAL_PROFILE.md)已有独立接口；本周期归并核对仍只承诺扫描已登记来源链。

@@ -213,8 +213,8 @@ class BackupArchiveTest {
         listOf(
             metadata.replace("\"generation\":41", "\"generation\":41,\"generation\":42"),
             metadata.replace("\"generation\":41", "\"generation\":\"41\""),
-            metadata.replace("\"formatVersion\":6", "\"formatVersion\":999"),
-            metadata.replace("\"sourceSchemaVersion\":7", "\"sourceSchemaVersion\":999"),
+            metadata.replace("\"formatVersion\":7", "\"formatVersion\":999"),
+            metadata.replace("\"sourceSchemaVersion\":8", "\"sourceSchemaVersion\":999"),
             metadata.dropLast(1) + ",\"unknown\":true}",
             metadata + "{}",
         ).forEach { invalid -> assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(invalid.byteInputStream()) } }
@@ -223,7 +223,7 @@ class BackupArchiveTest {
     @Test fun `version one backup remains readable and cannot smuggle analysis fields`() {
         val current = fixture()
         val legacy = JSONObject(metadata(current).toString(Charsets.UTF_8)).apply {
-            put("formatVersion", 1); put("sourceSchemaVersion", 2)
+            put("formatVersion", 1); put("sourceSchemaVersion", 2); remove("dashboardPreferences")
             remove("analysisRuns"); remove("analysisGeneration"); remove("deletedAnalysisRuns")
             remove("claimFeedback"); remove("deletedClaimFeedback")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")

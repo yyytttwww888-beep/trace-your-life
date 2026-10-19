@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 7) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 8) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -21,16 +21,27 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionFive(db)
         upgradeToVersionSix(db)
         upgradeToVersionSeven(db)
+        upgradeToVersionEight(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..6 && newVersion == 7) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..7 && newVersion == 8) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
         if (oldVersion < 5) upgradeToVersionFive(db)
         if (oldVersion < 6) upgradeToVersionSix(db)
-        upgradeToVersionSeven(db)
+        if (oldVersion < 7) upgradeToVersionSeven(db)
+        upgradeToVersionEight(db)
+    }
+
+    private fun upgradeToVersionEight(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE store_state ADD COLUMN restore_epoch INTEGER NOT NULL DEFAULT 0 CHECK(restore_epoch >= 0)")
+        db.execSQL("CREATE TABLE dashboard_preferences (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), payload TEXT NOT NULL)")
+        listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+            db.execSQL("""CREATE TRIGGER analysis_generation_dashboard_preferences_${operation.lowercase()} AFTER $operation ON dashboard_preferences
+                BEGIN UPDATE store_state SET analysis_generation = analysis_generation + 1 WHERE singleton = 1; END""")
+        }
     }
 
     private fun upgradeToVersionSeven(db: SQLiteDatabase) {

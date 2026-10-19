@@ -170,6 +170,8 @@ class ActionStorageTest {
         val generation = repository.currentAnalysisGeneration()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            execSQL("DROP TABLE dashboard_preferences")
+            execSQL("ALTER TABLE store_state DROP COLUMN restore_epoch")
             execSQL("DROP TABLE profile_heads")
             execSQL("DROP TABLE profile_revisions")
             execSQL("DROP TABLE deleted_profiles")
@@ -184,7 +186,7 @@ class ActionStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(record, repository.record(record.id))
         assertEquals(run.stored, repository.analysisRun("run"))
-        assertEquals(7, snapshot().sourceSchemaVersion)
+        assertEquals(8, snapshot().sourceSchemaVersion)
         assertTrue(repository.actionHeads().isEmpty())
         actions.create(draft(), "after-upgrade")
         assertEquals(source, repository.analysisSourceStamp())

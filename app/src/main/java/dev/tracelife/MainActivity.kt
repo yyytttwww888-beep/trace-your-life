@@ -341,6 +341,7 @@ class MainActivity : Activity() {
             else repository.updateRecord(state.id, state.expectedRevision, draft)
         }) { saved ->
             editor = null
+            (application as TraceLifeApplication).let { app -> app.io.execute { app.backgroundScheduler.wake() } }
             Toast.makeText(this, "记录已保存", Toast.LENGTH_SHORT).show()
             showDetail(saved.id)
         }

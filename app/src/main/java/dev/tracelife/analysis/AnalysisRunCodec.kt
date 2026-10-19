@@ -1,5 +1,8 @@
 package dev.tracelife.analysis
 
+import dev.tracelife.actions.ActionEvidenceProtocol
+import dev.tracelife.actions.ActionEvidenceReceipt
+import dev.tracelife.profile.LongitudinalProfileProtocol
 import android.util.JsonReader
 import android.util.JsonToken
 import android.util.JsonWriter
@@ -27,7 +30,7 @@ object AnalysisRunCodec {
 
     private val PROFILE_FIELDS = setOf("profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 9)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 10)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -38,10 +41,17 @@ object AnalysisRunCodec {
         require(version >= 7 || state.calls.none { it.purpose == CallPurpose.METRIC_ANALYSIS || it.metricEvidence.isNotEmpty() })
         require(version >= 8 || state.request.profileTarget == null) { "旧分析格式不支持画像目标" }
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
+        require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
         val reserved = responseReservation(state)
-        val request = requestMap(state.request).let { if (version < 8) it - "profileTarget" else it }
+        val request = requestMap(state.request).let { raw ->
+            var value = if (version < 10) raw - "actionPeriod" else raw
+            if (version < 8) value = value - "profileTarget"
+            else if (version < 10) value = value + ("profileTarget" to state.request.profileTarget?.let { mapOf("dimension" to it.dimension.name, "layer" to it.layer.name) })
+            value
+        }
         return json(mapOf("formatVersion" to version, "request" to request, "calls" to state.calls.map {
             var fields = callMap(it)
+            if (version < 10) fields = fields - "actionEvidence"
             if (version < 9) fields = fields - PROFILE_FIELDS
             if (version < 7) fields = fields - "metricEvidence"
             if (version < 6) fields = (fields - NEW_FIELDS) + mapOf("reductionInputs" to it.reductionInputs.map { input -> ReductionGraph.inputMap(input) - "includeDerivedFeedback" })
@@ -51,7 +61,8 @@ object AnalysisRunCodec {
                 2 -> fields - setOf("purpose", "reviewTarget", "review", "feedbackVersion")
                 else -> fields
             }
-        }) + if (version >= 9) mapOf("profileMaintenancePlans" to state.profileMaintenancePlans.map(ProfileMaintenanceProtocol::planMap)) else emptyMap(),
+        }) + (if (version >= 9) mapOf("profileMaintenancePlans" to state.profileMaintenancePlans.map(ProfileMaintenanceProtocol::planMap)) else emptyMap()) +
+            (if (version >= 10) mapOf("actionPlan" to state.actionPlan?.let(ActionEvidenceProtocol::planMap)) else emptyMap()),
             nodeLimit = if (reserved > 0) 59_000 else 60_000)
             .also { if (it.toByteArray(Charsets.UTF_8).size + reserved > MAX_PAYLOAD_BYTES) throw AnalysisPayloadCapacityException("分析任务及输出预留超过保存上限") }
     }
@@ -123,15 +134,15 @@ object AnalysisRunCodec {
         @Suppress("UNCHECKED_CAST")
         val rawRoot = read(0) as? Map<String, Any?> ?: error("分析 JSON 需要对象")
         val root = rawRoot.obj(*(arrayOf("formatVersion", "request", "calls") +
-            if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..9)
+            (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
+            (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray())))
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..10)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
-            if (format >= 8) arrayOf("profileTarget") else emptyArray()))
+            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray())))
         val profileTarget = request["profileTarget"]?.let { raw ->
-            val target = raw.obj("dimension", "layer")
-            ProfileAnalysisTarget(ProfileDimension.valueOf(target.string("dimension")), ProfileLayer.valueOf(target.string("layer")))
+            LongitudinalProfileProtocol.parseTarget(raw, allowLongTerm = format >= 10)
         }
         val scope = request["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
         val limits = request["limits"].obj("pageSize", "fragmentCodePoints", "maxInputBytes", "inputTokenLimit", "outputTokenReserve", "maxCalls", "totalInputBytes", "maxOutputBytes")
@@ -143,7 +154,8 @@ object AnalysisRunCodec {
             ), AnalysisLimits(limits.int("pageSize"), limits.int("fragmentCodePoints"), limits.int("maxInputBytes"),
                 limits.int("inputTokenLimit"), limits.int("outputTokenReserve"), limits.int("maxCalls"),
                 limits.long("totalInputBytes"), limits.int("maxOutputBytes")),
-                request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget),
+                request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget,
+                if (format >= 10) request["actionPeriod"] as? Boolean ?: error("行动复盘标记无效") else false),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
@@ -155,7 +167,8 @@ object AnalysisRunCodec {
                     5 -> reviewed + arrayOf("reductionInputs", "reductionOutput")
                     6 -> reviewed + arrayOf("reductionInputs", "reductionOutput") + NEW_FIELDS.toTypedArray()
                     7, 8 -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray()
-                    else -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray() + PROFILE_FIELDS.toTypedArray()
+                    else -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray() + PROFILE_FIELDS.toTypedArray() +
+                        if (format >= 10) arrayOf("actionEvidence") else emptyArray()
                 })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
@@ -182,10 +195,13 @@ object AnalysisRunCodec {
                     call["profileReference"]?.let(ProfileMaintenanceProtocol::parseReference),
                     call["profileRelation"]?.let(ProfileMaintenanceProtocol::parseRelation),
                     call["profileScan"]?.let(ReductionReviewProtocol::parseScan),
-                    call["profileMaintenanceProof"]?.let(ProfileMaintenanceProtocol::parseProof))
+                    call["profileMaintenanceProof"]?.let(ProfileMaintenanceProtocol::parseProof),
+                    if (format >= 10) call.list("actionEvidence").map(ActionEvidenceProtocol::parseReceipt) else emptyList())
             },
             if (format < 9) emptyList() else root.list("profileMaintenancePlans").map(ProfileMaintenanceProtocol::parsePlan),
+            root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
         )
+        require(format >= 10 || state.calls.none { it.purpose == CallPurpose.ACTION_SYNTHESIS })
         require(format >= 9 || state.calls.none { it.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN) })
         require(format >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
         require(format >= 5 || state.calls.none { it.purpose == CallPurpose.REDUCTION }) { "旧分析格式不支持归并调用" }
@@ -220,6 +236,17 @@ object AnalysisRunCodec {
                 val occurrence = record.draft.occurrence
                 require(occurrence.startDate == null || occurrence.startDate <= state.request.scope.through && occurrence.endDate!! >= state.request.scope.from)
             }
+            state.request.profileTarget?.let { target ->
+                state.calls.forEach { call ->
+                    val metadata = call.evidence.map { ref -> requireNotNull(byRevision[ref.recordId to ref.revision]) }.distinctBy { it.id to it.revision }.map {
+                        dev.tracelife.storage.SourceDescriptor(it.id, it.revision, it.draft.occurrence, it.archived, it.draft.topics,
+                            dev.tracelife.storage.SourceTimeClass.WITHIN)
+                    }
+                    if (call.purpose == CallPurpose.SYNTHESIS) LongitudinalProfileProtocol.validateInputs(target, call.evidence, metadata)
+                    call.proposal?.let { LongitudinalProfileProtocol.validateProposal(target, it, call.evidence, metadata) }
+                    call.review?.let { LongitudinalProfileProtocol.validateReview(target, it, call.evidence, metadata) }
+                }
+            }
         }
     }
 
@@ -228,9 +255,9 @@ object AnalysisRunCodec {
         if (state.calls.any { it.status == CallStatus.IN_FLIGHT }) state.request.limits.maxOutputBytes + 256 else 0
 
     internal fun validateProposal(proposal: BatchProposal, evidence: List<EvidenceReceipt>, maxBytes: Int,
-        metricEvidence: List<RecordMetricReceipt> = emptyList()) {
+        metricEvidence: List<RecordMetricReceipt> = emptyList(), actionEvidence: List<ActionEvidenceReceipt> = emptyList()) {
         require(proposal.claims.size <= 20 && proposal.unknowns.size <= 20) { "提案条目过多" }
-        val ids = (evidence.map { it.id } + metricEvidence.map { it.id }).toSet()
+        val ids = (evidence.map { it.id } + metricEvidence.map { it.id } + actionEvidence.map { it.id }).toSet()
         proposal.claims.forEach { claim ->
             require(claim.text.isNotBlank() && claim.text.length <= 2_000) { "提案文字无效" }
             require(claim.evidenceIds.size in 1..32 && claim.evidenceIds.distinct().size == claim.evidenceIds.size && claim.evidenceIds.all { it in ids }) {
@@ -263,8 +290,8 @@ object AnalysisRunCodec {
     }
 
     internal fun validateReview(review: ClaimReview, evidence: List<EvidenceReceipt>, maxBytes: Int,
-        metricEvidence: List<RecordMetricReceipt> = emptyList()) {
-        val ids = (evidence.map { it.id } + metricEvidence.map { it.id }).toSet()
+        metricEvidence: List<RecordMetricReceipt> = emptyList(), actionEvidence: List<ActionEvidenceReceipt> = emptyList()) {
+        val ids = (evidence.map { it.id } + metricEvidence.map { it.id } + actionEvidence.map { it.id }).toSet()
         listOf(review.supportingEvidenceIds, review.contradictingEvidenceIds).forEach { refs ->
             require(refs.size <= 32 && refs.distinct().size == refs.size && refs.all { it in ids }) { "核对引用不属于本次证据" }
         }
@@ -281,6 +308,10 @@ object AnalysisRunCodec {
     }
 
     private fun validate(state: AnalysisRunState) {
+        require(state.request.actionPeriod == (state.actionPlan != null)) { "行动复盘缺少固定目录" }
+        state.actionPlan?.let(ActionEvidenceProtocol::validatePlan)
+        require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW) })
+        state.request.profileTarget?.let { LongitudinalProfileProtocol.validateScope(it, state.request.scope) }
         require(state.request.profileTarget == null || state.calls.all {
             it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)
         }) { "画像任务只允许原文候选综合与核对" }
@@ -307,6 +338,7 @@ object AnalysisRunCodec {
             require(attempts.map { listOf(it.reductionTarget, it.reductionReviewTokens, it.reductionScans) }.distinct().size == 1)
             require(attempts.map { it.reductionInputs }.distinct().size == 1) { "重试改变了派生输入" }
             require(attempts.map { listOf(it.profileMaintenancePlanSha256, it.profileReference, it.profileMaintenanceProof) }.distinct().size == 1)
+            require(attempts.map { it.actionEvidence }.distinct().size == 1) { "重试改变了行动证据" }
             require(attempts.map { it.metricEvidence }.distinct().size == 1) { "重试改变了指标证据" }
             require(attempts.dropLast(1).all { it.status == CallStatus.FAILED || it.status == CallStatus.INTERRUPTED })
         }
@@ -314,6 +346,11 @@ object AnalysisRunCodec {
             validId(call.batchKey); validId(call.providerId)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
             call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
+            val actionCall = call.purpose == CallPurpose.ACTION_SYNTHESIS || call.purpose == CallPurpose.REVIEW && state.request.actionPeriod
+            require(actionCall == state.request.actionPeriod) { "行动复盘调用目的不符" }
+            require(actionCall || call.actionEvidence.isEmpty())
+            require(call.actionEvidence.map { it.id }.distinct().size == call.actionEvidence.size)
+            call.actionEvidence.forEach { ActionEvidenceProtocol.validateReceipt(it); require(it in requireNotNull(state.actionPlan).entries) }
             val metricCall = call.purpose == CallPurpose.METRIC_ANALYSIS ||
                 call.purpose == CallPurpose.REVIEW && call.metricEvidence.isNotEmpty()
             if (metricCall) {
@@ -321,7 +358,7 @@ object AnalysisRunCodec {
                 call.metricEvidence.forEach { RecordMetricProtocol.validate(it, scope) }
             } else require(call.metricEvidence.isEmpty()) { "本调用类型不支持指标证据" }
             if (call.purpose == CallPurpose.REDUCTION || call.purpose == CallPurpose.PROFILE_RELATION || metricCall) require(call.evidence.isEmpty())
-            else require(call.evidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
+            else require(call.evidence.size + call.actionEvidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
             call.evidence.forEach { ref ->
                 validId(ref.recordId)
                 require(digest.matches(ref.id) && digest.matches(ref.sha256) && ref.revision > 0)
@@ -402,7 +439,8 @@ object AnalysisRunCodec {
                     require(metricCall && call.metricEvidence == extraction.metricEvidence) { "核对没有重新提供目标完整指标" }
                 } else {
                     require(!metricCall) { "原文核对不能替换成指标证据" }
-                    val mandatory = if (extraction.purpose == CallPurpose.SYNTHESIS) extraction.evidence
+                    require(call.actionEvidence == extraction.actionEvidence) { "核对没有重新提供全部行动上下文" }
+                    val mandatory = if (extraction.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS)) extraction.evidence
                         else claim.evidenceIds.map { id -> extraction.evidence.single { it.id == id } }
                     require(mandatory.all { it in call.evidence }) { "核对没有重新提供全部目标原文及综合上下文" }
                     call.profileMaintenanceProof?.let { proof ->
@@ -415,15 +453,15 @@ object AnalysisRunCodec {
                 require(call.finishedAt != null && call.failureCode == null)
                 if (call.purpose.producesClaims) {
                     val proposal = requireNotNull(call.proposal)
-                    validateProposal(proposal, call.evidence, limits.maxOutputBytes, call.metricEvidence)
-                    if (call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.METRIC_ANALYSIS)) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
+                    validateProposal(proposal, call.evidence, limits.maxOutputBytes, call.metricEvidence, call.actionEvidence)
+                    if (call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS, CallPurpose.METRIC_ANALYSIS)) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
                         "综合判断必须保留为可能解释"
                     }
                 } else if (call.purpose == CallPurpose.PROFILE_RELATION) ProfileMaintenanceProtocol.validateRelation(requireNotNull(call.profileRelation), limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.PROFILE_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.profileScan), call.evidence, limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.REDUCTION) validateReduction(requireNotNull(call.reductionOutput), call.reductionInputs, limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.reductionScan), call.evidence, limits.maxOutputBytes)
-                else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes, call.metricEvidence)
+                else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes, call.metricEvidence, call.actionEvidence)
             } else {
                 require(call.proposal == null && call.review == null && call.reductionOutput == null && call.reductionScan == null && call.profileRelation == null && call.profileScan == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)
@@ -495,10 +533,10 @@ object AnalysisRunCodec {
             "maxInputBytes" to it.maxInputBytes, "inputTokenLimit" to it.inputTokenLimit, "outputTokenReserve" to it.outputTokenReserve,
             "maxCalls" to it.maxCalls, "totalInputBytes" to it.totalInputBytes, "maxOutputBytes" to it.maxOutputBytes) },
         "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString(),
-        "profileTarget" to request.profileTarget?.let(::profileTargetMap))
+        "profileTarget" to request.profileTarget?.let(::profileTargetMap), "actionPeriod" to request.actionPeriod)
 
     internal fun profileTargetMap(target: ProfileAnalysisTarget): Map<String, Any?> =
-        mapOf("dimension" to target.dimension.name, "layer" to target.layer.name)
+        LongitudinalProfileProtocol.targetMap(target)
     internal fun receiptMap(ref: EvidenceReceipt): Map<String, Any?> = mapOf("id" to ref.id, "recordId" to ref.recordId, "revision" to ref.revision,
         "field" to ref.field, "start" to ref.start, "end" to ref.end, "totalCodePoints" to ref.totalCodePoints, "sha256" to ref.sha256)
     private fun callMap(call: AnalysisCall) = mapOf("batchKey" to call.batchKey, "attempt" to call.attempt, "providerId" to call.providerId,
@@ -519,7 +557,8 @@ object AnalysisRunCodec {
         "profileReference" to call.profileReference?.let(ProfileMaintenanceProtocol::referenceMap),
         "profileRelation" to call.profileRelation?.let(ProfileMaintenanceProtocol::relationMap),
         "profileScan" to call.profileScan?.let(ReductionReviewProtocol::scanMap),
-        "profileMaintenanceProof" to call.profileMaintenanceProof?.let(ProfileMaintenanceProtocol::proofMap))
+        "profileMaintenanceProof" to call.profileMaintenanceProof?.let(ProfileMaintenanceProtocol::proofMap),
+        "actionEvidence" to call.actionEvidence.map(ActionEvidenceProtocol::receiptMap))
     internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
     internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)

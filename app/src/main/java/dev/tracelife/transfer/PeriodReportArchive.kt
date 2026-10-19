@@ -84,6 +84,7 @@ object PeriodReportArchive {
                         .put("lifeCoverage", "unknown").put("wholeScopeAnalyzed", false).put("aiAnalysisPerformed", false))
                     .put("knowledge", JSONObject().put("included", report.knowledgeCount)
                         .put("omittedInvalid", report.omittedInvalidKnowledge).put("omittedOutOfScope", report.omittedOutOfScopeKnowledge)
+                        .put("omittedActionEvidenceNotIncluded", report.omittedActionEvidenceKnowledge)
                         .put("originalEvidence", false).put("referencedOriginalEvidenceIncluded", true)
                         .put("userTextIncluded", false).put("validAt", report.evaluatedAt.toString()))
                     .put("completeness", JSONObject().put("sourceBodiesIncluded", false).put("attachmentsIncluded", false)
@@ -218,7 +219,7 @@ object PeriodReportArchive {
             offset = page.nextOffset ?: break
         } while (true)
         archive.pages("knowledge/index.md", "当时有效且证据在范围内的知识", entries,
-            "分析范围与本期相交的候选中，省略失效知识 ${report.omittedInvalidKnowledge} 条、证据范围不符知识 ${report.omittedOutOfScopeKnowledge} 条；不含分析范围本就不相交的知识。")
+            "分析范围与本期相交的候选中，省略失效知识 ${report.omittedInvalidKnowledge} 条、证据范围不符知识 ${report.omittedOutOfScopeKnowledge} 条，行动原始回看未纳入本格式而省略 ${report.omittedActionEvidenceKnowledge} 条；不含分析范围本就不相交的知识。")
     }
 
     private fun writeMetrics(archive: Writer, report: PeriodReport, evidence: RecordMetricEvidence) {

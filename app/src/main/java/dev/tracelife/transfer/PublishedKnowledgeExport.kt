@@ -62,6 +62,7 @@ internal object PublishedKnowledgeExport {
             }
             val reason = when {
                 options.kind == ReadingPackageKind.EVIDENCE -> "evidence_package"
+                value.actionPlan != null -> "action_evidence_not_in_reading_package"
                 value.id in deleted -> "deleted"
                 value.source != stamp -> "stale_source"
                 value.publishedAt > snapshot.capturedAt -> "not_yet_published"

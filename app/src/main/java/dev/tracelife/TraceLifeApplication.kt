@@ -26,6 +26,10 @@ import dev.tracelife.transfer.DataTransfer
 import java.util.concurrent.Executors
 
 class TraceLifeApplication : Application() {
+    val backgroundScheduler by lazy { dev.tracelife.background.BackgroundScheduler(this) }
+    val incrementalOrganizer by lazy {
+        dev.tracelife.background.IncrementalOrganizer(this, repository, analysis, onPolicyChanged = backgroundScheduler::update)
+    }
     val io = Executors.newSingleThreadExecutor()
     val dataTransfer by lazy { DataTransfer(this, repository) }
     val analysis by lazy { ControlledAnalysis(repository) }
@@ -39,14 +43,22 @@ class TraceLifeApplication : Application() {
     val periodReduction by lazy { PeriodReductionProcessor(analysis) }
     val periodReview by lazy { PeriodReductionReviewProcessor(analysis) }
     val actions by lazy { ActionExperiments(repository) }
+    val actionPeriodReflection by lazy { dev.tracelife.actions.ActionPeriodReflection(analysis) }
     val dashboard by lazy { DashboardService(repository) }
+    val dashboardPreferences by lazy { dev.tracelife.dashboard.DashboardPreferencesService(repository, dashboard) }
     val personalProfile by lazy { PersonalProfile(repository) }
     val profileCandidates by lazy { ProfileCandidateGenerator(repository, analysis) }
     val profileMaintenance by lazy { ProfileMaintenance(repository, analysis) }
+    val longitudinalProfiles by lazy { dev.tracelife.profile.LongitudinalProfileGenerator(repository, analysis) }
+    val profileChanges by lazy { dev.tracelife.profile.ProfileChangeSummary(repository) }
     val periodReports by lazy { PeriodReports(repository) }
     val periodDrafts by lazy { PeriodReductionReports(repository, analysis) }
     val deepSeekCredentials by lazy { DeepSeekCredentials(this) }
     val deepSeekProvider by lazy { DeepSeekProvider(deepSeekCredentials) }
+    override fun onCreate() {
+        super.onCreate()
+        io.execute { backgroundScheduler.update(incrementalOrganizer.policy()) }
+    }
     val repository by lazy {
         LifeRepository(this).also { repository ->
             val installation = getSharedPreferences("installation", MODE_PRIVATE)

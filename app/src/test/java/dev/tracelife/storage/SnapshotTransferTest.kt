@@ -282,6 +282,7 @@ class SnapshotTransferTest {
                 buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
             }
             triggers.forEach { db.execSQL("DROP TRIGGER $it") }
+            db.execSQL("DROP TABLE dashboard_preferences")
             db.execSQL("DROP TABLE profile_heads")
             db.execSQL("DROP TABLE profile_revisions")
             db.execSQL("DROP TABLE deleted_profiles")

@@ -4,6 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import dev.tracelife.dashboard.DashboardPreferences
+import dev.tracelife.dashboard.StoredDashboardPreferences
+import dev.tracelife.actions.ActionEvidencePlan
+import dev.tracelife.actions.ActionEvidenceReceipt
+import dev.tracelife.actions.ActionEvidenceProtocol
 import dev.tracelife.actions.ActionHead
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.actions.StoredActionRevision
@@ -338,6 +343,39 @@ class LifeRepository(
         }
     }
 
+    internal fun changeEventsAfter(afterId: Long, limit: Int = 100): List<ChangeEvent> = access { db ->
+        require(afterId >= 0 && limit in 1..1000)
+        db.rawQuery("SELECT id, entity_id, revision, kind, created_at FROM change_events WHERE id > ? ORDER BY id LIMIT ?",
+            arrayOf(afterId.toString(), limit.toString())).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(ChangeEvent(cursor.getLong(0), cursor.getString(1), cursor.getInt(2),
+                cursor.getString(3), Instant.parse(cursor.getString(4)))) }
+        }
+    }
+
+    internal fun latestChangeEventId(): Long = access { db ->
+        db.rawQuery("SELECT COALESCE(MAX(id), 0) FROM change_events", null).use { check(it.moveToFirst()); it.getLong(0) }
+    }
+
+    internal fun localRestoreEpoch(): Long = access { db ->
+        db.rawQuery("SELECT restore_epoch FROM store_state WHERE singleton = 1", null).use { check(it.moveToFirst()); it.getLong(0) }
+    }
+
+    fun dashboardPreferences(): StoredDashboardPreferences? = access(DashboardPreferencesStore::read)
+
+    fun saveDashboardPreferences(expectedRevision: Int, preferences: DashboardPreferences): StoredDashboardPreferences {
+        require(expectedRevision >= 0)
+        val fixed = preferences.validated()
+        return access { db -> transaction(db) {
+            val previous = DashboardPreferencesStore.read(db)
+            if ((previous?.revision ?: 0) != expectedRevision) throw RevisionConflictException("看板偏好版本已变化")
+            val now = clock.instant()
+            require(previous == null || now >= previous.updatedAt) { "时钟早于看板偏好最后修改时间" }
+            if (previous?.value == fixed) return@transaction previous
+            require(expectedRevision < Int.MAX_VALUE - 1) { "看板偏好修订达到上限" }
+            StoredDashboardPreferences(expectedRevision + 1, fixed, now).also { DashboardPreferencesStore.write(db, it) }
+        } }
+    }
+
     fun deletedRecordIds(): Set<String> = access { db -> strings(db, "SELECT id FROM deleted_records").toSet() }
 
     fun currentGeneration(): Long = access { db -> storeState(db).second }
@@ -497,7 +535,21 @@ class LifeRepository(
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
             }
             val state = AnalysisRunCodec.decode(run.payload)
+            state.request.profileTarget?.takeIf { it.layer == dev.tracelife.profile.ProfileLayer.LONG_TERM }?.let { target ->
+                state.calls.forEach { call ->
+                    val metadata = call.evidence.map { it.recordId }.distinct().map { id ->
+                        analysisSourcePage(run.source, state.request.scope.copy(recordIds = setOf(id)), 0, 1).items.single()
+                    }
+                    if (call.purpose == dev.tracelife.analysis.CallPurpose.SYNTHESIS)
+                        dev.tracelife.profile.LongitudinalProfileProtocol.validateInputs(target, call.evidence, metadata)
+                    call.proposal?.let { dev.tracelife.profile.LongitudinalProfileProtocol.validateProposal(target, it, call.evidence, metadata) }
+                    call.review?.let { dev.tracelife.profile.LongitudinalProfileProtocol.validateReview(target, it, call.evidence, metadata) }
+                }
+            }
             val prior = current?.let { AnalysisRunCodec.decode(it.payload) }
+            require(prior == null || prior.actionPlan == state.actionPlan) { "行动证据目录不可改变" }
+            if (current == null || state.calls.any { it !in prior?.calls.orEmpty() && it.status in setOf(dev.tracelife.analysis.CallStatus.IN_FLIGHT, dev.tracelife.analysis.CallStatus.SUCCEEDED) })
+                state.actionPlan?.let { if (!actionEvidencePlanCurrent(state.request.scope, it)) throw dev.tracelife.analysis.AnalysisDependencyBlockedException("行动证据目录已变化") }
             val changedPlans = state.profileMaintenancePlans.filter { it !in prior?.profileMaintenancePlans.orEmpty() }
             val changedCalls = state.calls.filter { it !in prior?.calls.orEmpty() && it.profileMaintenancePlanSha256 != null &&
                 it.status in setOf(dev.tracelife.analysis.CallStatus.IN_FLIGHT, dev.tracelife.analysis.CallStatus.SUCCEEDED) }
@@ -708,6 +760,11 @@ class LifeRepository(
             // Metrics represent a complete query, including negative/zero results. Recompute
             // while the publication transaction still owns the current source snapshot.
             value.metricEvidence.forEach { dev.tracelife.metrics.RecordMetricProtocol.validateCurrent(this, it) }
+            value.actionPlan?.let {
+                require(now >= run.updatedAt) { "行动复盘发布时钟已回拨" }
+                require(actionEvidencePlanCurrent(value.scope, it)) { "行动原始资料已变化" }
+                ActionEvidenceProtocol.validateSources(it, value.actionEvidence, ActionStore.allRevisions(db), value.scope)
+            }
             val current = readKnowledgeRevision(db, value.id, null)
             // A retry may repeat an already switched head, but never bypass current dependencies.
             if (current != null && sameKnowledgePublication(current, value) && value.createdAt == current.createdAt &&
@@ -716,7 +773,7 @@ class LifeRepository(
                 return@transaction current
             }
             AnalysisRunCodec.decode(run.payload).request.profileTarget?.let { target ->
-                require(value.profileMaintenanceProof != null || profileMaintenanceCatalog(target, value.runId, value.claimRef).isEmpty()) {
+                require(value.profileMaintenanceProof != null || target.layer != dev.tracelife.profile.ProfileLayer.LONG_TERM && profileMaintenanceCatalog(target, value.runId, value.claimRef).isEmpty()) {
                     "画像定向知识发布需要先完成历史关联与反例维护"
                 }
             }
@@ -746,6 +803,17 @@ class LifeRepository(
         exists(db, "deleted_knowledge", "id = ?", id)
     }
 
+    internal fun actionEvidencePlan(scope: AnalysisQuery): ActionEvidencePlan = access { db ->
+        transaction(db) { ActionEvidenceProtocol.plan(scope, ActionStore.allRevisions(db)) }
+    }
+    internal fun actionEvidencePlanCurrent(scope: AnalysisQuery, plan: ActionEvidencePlan): Boolean =
+        actionEvidencePlan(scope) == plan
+    internal fun actionEvidenceBody(ref: ActionEvidenceReceipt): Map<String, Any?> = access { db ->
+        transaction(db) { ActionEvidenceProtocol.modelMap(requireNotNull(ActionStore.revision(db, ref.actionId, ref.revision)) {
+            "行动证据已不存在"
+        }, ref) }
+    }
+
     fun actionRevision(id: String, revision: Int? = null): StoredActionRevision? = access { db ->
         transaction(db) { ActionStore.revision(db, id, revision) }
     }
@@ -767,7 +835,16 @@ class LifeRepository(
         }
     }
     internal fun deleteAction(id: String, expectedRevision: Int) = access { db ->
-        transaction(db) { ActionStore.delete(db, id, expectedRevision, clock.instant()) }
+        transaction(db) {
+            ActionStore.delete(db, id, expectedRevision, clock.instant())
+            allAnalysisRuns(db).filter { run -> AnalysisRunCodec.decode(run.payload).actionPlan?.entries?.any { it.actionId == id } == true }
+                .forEach { run -> if (readAnalysisRun(db, run.id) != null) deleteAnalysisRun(run.id, run.version) }
+            allKnowledgeRevisions(db).filter { value -> value.actionPlan?.entries?.any { it.actionId == id } == true }.map { it.id }.distinct()
+                .forEach { knowledgeId ->
+                    purgeProfileMaintenanceRuns(db, deletedKnowledgeId = knowledgeId)
+                    if (readKnowledgeRevision(db, knowledgeId, null) != null) purgeKnowledge(db, listOf(knowledgeId))
+                }
+        }
     }
 
     fun profileRevision(id: String, revision: Int? = null): StoredProfileRevision? = access { db ->
@@ -926,6 +1003,7 @@ class LifeRepository(
             }
             val state = AnalysisRunCodec.decode(run.payload)
             val target = requireNotNull(state.request.profileTarget) { "任务不是画像候选分析" }
+            require(target.layer != dev.tracelife.profile.ProfileLayer.LONG_TERM) { "长期画像必须通过完整维护核对及明确应用" }
             val generated = requireNotNull(state.calls.lastOrNull {
                 it.purpose == dev.tracelife.analysis.CallPurpose.SYNTHESIS && it.status == dev.tracelife.analysis.CallStatus.SUCCEEDED && it.batchKey == claim.batchKey
             }) { "画像候选不属于成功的原文综合" }
@@ -1000,7 +1078,8 @@ class LifeRepository(
                     claimFeedback = allClaimFeedback(db), deletedClaimFeedback = deletions(db, "deleted_claim_feedback"),
                     knowledgeRevisions = allKnowledgeRevisions(db), knowledgeHeads = allKnowledgeHeads(db), deletedKnowledge = deletions(db, "deleted_knowledge"),
                     actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"),
-                    profileRevisions = ProfileStore.allRevisions(db), profileHeads = ProfileStore.allHeads(db), deletedProfiles = deletions(db, "deleted_profiles"))
+                    profileRevisions = ProfileStore.allRevisions(db), profileHeads = ProfileStore.allHeads(db), deletedProfiles = deletions(db, "deleted_profiles"),
+                    dashboardPreferences = DashboardPreferencesStore.read(db))
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -1061,6 +1140,7 @@ class LifeRepository(
         if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1"))) {
             throw IllegalStateException("目标已有记录、模板、分析、反馈、知识、行动或画像，须明确允许替换后恢复")
         }
+        val restoredPreferences = DashboardPreferencesStore.read(db) ?: snapshot.dashboardPreferences
         val mergedProfileDeletions = mergeDeletions(deletions(db, "deleted_profiles"), snapshot.deletedProfiles)
         require(mergedProfileDeletions.size <= ProfileValidation.MAX_DELETIONS) { "画像删除标记超过上限" }
         val deletedProfileIds = mergedProfileDeletions.map { it.id }.toSet()
@@ -1109,6 +1189,16 @@ class LifeRepository(
         val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
             mergedTemplates.any { importedTemplateDeletions[it.id] != it }
         val deletedAnalysisIds = mergedAnalyses.map { it.id }.toMutableSet()
+        // Local user action chains win. Machine text based on a replaced/deleted action body cannot return.
+        snapshot.analysisRuns.filter { run ->
+            val state = AnalysisRunCodec.decode(run.payload)
+            try { ActionEvidenceProtocol.validateSources(state.actionPlan, state.calls.flatMap { it.actionEvidence }, actionRevisions, state.request.scope); false }
+            catch (_: IllegalArgumentException) { true }
+        }.filterNot { it.id in deletedAnalysisIds }.forEach { run ->
+            require(mergedAnalyses.size < 100_000)
+            mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+            deletedAnalysisIds += run.id
+        }
         val maintenanceDeleted = ProfileMaintenanceDeletion.affectedRuns(snapshot.analysisRuns,
             snapshot.profileRevisions + ProfileStore.allRevisions(db), snapshot.knowledgeRevisions + allKnowledgeRevisions(db),
             snapshot.claimFeedback + allClaimFeedback(db), deletedProfileIds, deletedFeedbackIds,
@@ -1177,7 +1267,11 @@ class LifeRepository(
                     }
                 }
                 val sourcesRetained = !forbidden && revisions.all { value ->
-                    try { KnowledgeValidation.validateEvidence(value, recordsByRevision); true } catch (_: IllegalArgumentException) { false }
+                    try {
+                        KnowledgeValidation.validateEvidence(value, recordsByRevision)
+                        ActionEvidenceProtocol.validateSources(value.actionPlan, value.actionEvidence, actionRevisions, value.scope)
+                        true
+                    } catch (_: IllegalArgumentException) { false }
                 }
                 if (sourcesRetained) retainedKnowledge += revisions
                 else mergedKnowledgeDeletions += Deletion(id, revisions.maxOf { it.revision }, clock.instant())
@@ -1301,6 +1395,10 @@ class LifeRepository(
                 mergedKnowledgeDeletions.forEach { insertDeletion(db, "deleted_knowledge", it) }
                 ActionStore.replace(db, actionRevisions, actionHeads, mergedActionDeletions)
                 ProfileStore.replace(db, profileRevisions, profileHeads, mergedProfileDeletions)
+                restoredPreferences?.let { DashboardPreferencesStore.write(db, it) }
+                val restoreEpoch = localRestoreEpoch()
+                require(restoreEpoch < Long.MAX_VALUE) { "恢复代数达到上限" }
+                db.execSQL("UPDATE store_state SET restore_epoch = restore_epoch + 1 WHERE singleton = 1")
                 // A same-store backup may carry a source generation ahead of the target. Move
                 // beyond every imported stamp, not merely +1, so no restored task becomes current
                 // by numeric coincidence. Even empty→empty restore invalidates publication.

@@ -73,7 +73,7 @@ val result = app.analysisProcessor.process(
 
 `DeepSeekCredentials.clear()` 清除配置，后续调用需要重新设置。密钥用 Android Keystore 中 AES-256 密钥加密，认证应用身份和格式版本；密文位于私有 `noBackupFilesDir/deepseek/api-key.enc`。数据库备份、知识包、系统备份均不含凭据。更换手机需要重新配置。配置损坏或 Keystore 密钥不可用时返回 `UNREADABLE`，不会退回明文保存。轮换或清除配置会等待正在使用密钥的请求结束。
 
-应用默认使用 `deepseek-flash`，可通过 `DeepSeekProvider(credentials, DeepSeekModel.PRO)` 选择 `deepseek-v4-pro`。不接收任意服务器 URL；地址固定为官方 `https://api.deepseek.com/chat/completions`，只使用 HTTPS。首版使用非思考、非流式 JSON 输出，不携带工具、图片或未登记历史。Android 新增联网权限，但没有后台自动上传行为。
+应用默认使用 `deepseek-flash`，可通过 `DeepSeekProvider(credentials, DeepSeekModel.PRO)` 选择 `deepseek-v4-pro`。不接收任意服务器 URL；地址固定为官方 `https://api.deepseek.com/chat/completions`，只使用 HTTPS。首版使用非思考、非流式 JSON 输出，不携带工具、图片或未登记历史。Android 已有联网权限；[后台增量整理](BACKGROUND_ANALYSIS.md)默认关闭，明确启用后才自动派发受控的记录提取／核对请求。
 
 ## 预算与响应校验
 
@@ -101,7 +101,7 @@ val result = app.analysisProcessor.process(
 | `STALE` / `EXPIRED` | 来源变化或任务过期，建立新任务 |
 | `NO_DATA` / `TASK_UNAVAILABLE` / `CONFLICT` | 无资料、任务已删除或并发冲突，需要对应处理 |
 
-当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，已有[画像采用与维护](PERSONAL_PROFILE.md)，新的[受控画像候选](PROFILE_CANDIDATES.md)按指定维度提出近期／情境解释，长期倾向自动推断仍待实现。
+显式提取接口本身不安排定时工作；[后台增量整理](BACKGROUND_ANALYSIS.md)提供独立的启用、暂停与限额策略。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，已有[画像采用与维护](PERSONAL_PROFILE.md)，新的[受控画像候选](PROFILE_CANDIDATES.md)按指定维度提出近期／情境解释，[纵向画像](LONGITUDINAL_PROFILE.md)提供跨周期长期候选，仍需完整维护核对和明确保存。
 
 ## 综合真实调用验证
 
@@ -194,3 +194,12 @@ val result = app.analysisProcessor.process(
 | 最终核对 | 3,136 | 210 |
 
 以上为服务端实际用量，均符合登记预算。这个小样本展示了模型分类可能出错，也验证了程序能阻止已知反例与支持意见冲突时发布；第三轮通过不代表总体准确率或其他资料也能正确识别。
+
+## 行动周期联动的显式测试
+
+```bash
+./gradlew testDebugUnitTest --tests 'dev.tracelife.providers.DeepSeekActionPeriodLiveTest' \
+  -PtraceLifeDeepSeekActionPeriod=true
+```
+
+默认关闭，普通测试和 CI 不读取凭据。此用例使用仓库外的既有密钥和明确标注的合成行动计划、回看与日常记录，最多一次生成、一次独立核对，不自动重试。检查原计划与调整后计划分离、两类来源引用、整批核对以及确认后发布；JVM 使用临时包装密钥。实际运行结果见[四项后端验证记录](plans/2026-10-19-backend-completion.md#验证记录)，不代表模型总体准确率或真机验证。

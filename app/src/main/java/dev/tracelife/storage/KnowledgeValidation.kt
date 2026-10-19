@@ -1,5 +1,6 @@
 package dev.tracelife.storage
 
+import dev.tracelife.actions.ActionEvidenceProtocol
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.BatchProposal
@@ -61,7 +62,7 @@ object KnowledgeValidation {
         val value = StoredKnowledgeRevision(idFor(run.id, claimRef), revision, run.id, claimRef, run.source,
             state.request.scope, run.expiresAt, category, claim,
             call.batchKey, call.attempt, call.providerId, call.requestSha256, requireNotNull(call.review), call.evidence,
-            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof, call.metricEvidence, call.profileMaintenanceProof)
+            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof, call.metricEvidence, call.profileMaintenanceProof, state.actionPlan, call.actionEvidence)
         validate(value)
         return value
     }
@@ -73,9 +74,18 @@ object KnowledgeValidation {
         require(value.id == idFor(value.runId, value.claimRef) && value.revision in 1 until Int.MAX_VALUE) { "知识身份或修订无效" }
         require(value.claimRef.claimIndex in 0..19 && digest.matches(value.claimRef.claimSha256)) { "知识陈述身份无效" }
         val proof = value.reductionProof
+        value.actionPlan?.let { plan ->
+            ActionEvidenceProtocol.validatePlan(plan)
+            require(proof == null && value.profileMaintenanceProof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
+            require(value.actionEvidence.all { it in plan.entries })
+        }
+        require(value.actionEvidence.isEmpty() || value.actionPlan != null)
+        require(value.actionEvidence.map { it.id }.distinct().size == value.actionEvidence.size)
+        value.actionEvidence.forEach(ActionEvidenceProtocol::validateReceipt)
         value.profileMaintenanceProof?.let { maintenance ->
             require(proof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
             require(maintenance.plan.target == value.claimRef)
+            dev.tracelife.profile.LongitudinalProfileProtocol.validateScope(maintenance.plan.profileTarget, value.scope)
             dev.tracelife.profile.ProfileMaintenanceProtocol.validateProof(maintenance, value.evidence, value.review)
         }
         require(value.metricEvidence.isEmpty() || value.metricEvidence.size == 1 && value.evidence.isEmpty() && proof == null &&
@@ -100,7 +110,7 @@ object KnowledgeValidation {
         require(value.topics.size <= 30 && value.topics.all { it.isNotBlank() && it == it.trim() && it.length <= 80 }) { "知识主题无效" }
         require(value.category != KnowledgeCategory.INSIGHT || value.feedbackVersion > 0) { "洞察缺少用户确认依赖" }
         require((value.category == KnowledgeCategory.INSIGHT) == (value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)) { "知识类别与来源性质不一致" }
-        require(value.evidence.size + value.metricEvidence.size in 1..32 && value.evidence.map { it.id }.distinct().size == value.evidence.size) { "知识证据数量或身份无效" }
+        require(value.evidence.size + value.metricEvidence.size + value.actionEvidence.size in 1..32 && value.evidence.map { it.id }.distinct().size == value.evidence.size) { "知识证据数量或身份无效" }
         allEvidence(value).forEach { ref ->
             SnapshotValidation.id(ref.recordId)
             require(digest.matches(ref.id) && digest.matches(ref.sha256) && ref.revision > 0)
@@ -108,8 +118,8 @@ object KnowledgeValidation {
             require(ref.start >= 0 && ref.end > ref.start && ref.end <= ref.totalCodePoints && ref.end - ref.start <= 4096)
             require(ref.id == AnalysisRunCodec.evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
         }
-        AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES, value.metricEvidence)
-        AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES, value.metricEvidence)
+        AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES, value.metricEvidence, value.actionEvidence)
+        AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES, value.metricEvidence, value.actionEvidence)
         require(value.review.verdict == ReviewVerdict.SUPPORTED) { "只有获得支持的核对可以发布" }
         feedbackDependencies(value).forEach { token ->
             SnapshotValidation.id(token.claim.batchKey)
@@ -137,7 +147,7 @@ object KnowledgeValidation {
         if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
             latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
             latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence ||
-            latest.profileMaintenanceProof != value.profileMaintenanceProof) return false
+            latest.profileMaintenanceProof != value.profileMaintenanceProof || latest.actionEvidence != value.actionEvidence || state.actionPlan != value.actionPlan) return false
         return proof == null || try {
             ReductionReviewProtocol.proof(state, latest) == proof
         } catch (_: IllegalArgumentException) { false }
@@ -207,6 +217,13 @@ object KnowledgeValidation {
             require(value.scope.includeArchived || !record.archived)
             val occurrence = record.draft.occurrence
             require(occurrence.startDate == null || occurrence.startDate <= value.scope.through && occurrence.endDate!! >= value.scope.from) { "知识证据超出范围" }
+        }
+        value.profileMaintenanceProof?.plan?.profileTarget?.let { target ->
+            val metadata = value.evidence.map { requireNotNull(sources[it.recordId to it.revision]) }.distinctBy { it.id to it.revision }.map {
+                SourceDescriptor(it.id, it.revision, it.draft.occurrence, it.archived, it.draft.topics, SourceTimeClass.WITHIN)
+            }
+            dev.tracelife.profile.LongitudinalProfileProtocol.validateProposal(target, BatchProposal(listOf(value.claim)), value.evidence, metadata)
+            dev.tracelife.profile.LongitudinalProfileProtocol.validateReview(target, value.review, value.evidence, metadata)
         }
     }
 }

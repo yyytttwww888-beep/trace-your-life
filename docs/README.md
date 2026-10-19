@@ -1,6 +1,6 @@
 # Trace Life 文档入口
 
-当前推进 M4 受控画像候选生成与跨任务维护后端，餐食照片分析暂缓；代码及页面接入状态见[项目入口](../README.md)与开发路线。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
+当前推进 M4 行动周期分析、纵向画像、后台增量整理与看板偏好后端，餐食照片分析暂缓；代码及页面接入状态见[项目入口](../README.md)与开发路线。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
 
 ## 开始与协作
 
@@ -40,6 +40,12 @@
 - [跨任务画像维护](PROFILE_MAINTENANCE.md)：历史关系、反馈约束、反例扫描及明确更新。
 - [M4 第四阶段计划](plans/2026-10-19-profile-maintenance.md)：维护范围、更新与恢复验收。
 
+- [行动周期分析](ACTION_PERIOD_REFLECTION.md)：独立行动证据、综合、全批核对及依赖维护。
+- [纵向画像与变化摘要](LONGITUDINAL_PROFILE.md)：多周期分批候选、跨期维护门槛及修订比较。
+- [后台增量整理](BACKGROUND_ANALYSIS.md)：启用、调度、持久额度、失败恢复及恢复授权。
+- [看板偏好](DASHBOARD_PREFERENCES.md)：偏好版本、默认值、保存与迁移。
+- [四项后端实施计划](plans/2026-10-19-backend-completion.md)：范围和统一验证记录。
+
 ## 架构决策
 
 - [ADR 0001：本地权威资料与可迁移视图](adr/0001-local-source-of-truth.md)。
@@ -62,6 +68,7 @@
 | 个体纵向分析、情境与证据维护 | [纵向证据调研](research/2026-10-16-longitudinal-profile-evidence.md) |
 | 深度复盘的成熟方法 | [AAR、无责复盘与 PDSA](research/2026-10-16-reflection-methods.md) |
 | 拍照饮食分析的依据与范围 | [饮食指南及分析边界](research/2026-10-16-dietary-photo-analysis.md) |
+| Android 持久后台任务 | [WorkManager 官方核验](research/2026-10-19-android-background-analysis.md) |
 | Android 与华为健康数据接入 | [官方接入途径及待核实条件](research/2026-10-16-huawei-health-integration.md) |
 
 同一设计结论在对应设计文件维护，主设计提供摘要和链接；研究材料保留核验日期、实际阅读范围与来源，避免把摘要再次当作新的研究证据。

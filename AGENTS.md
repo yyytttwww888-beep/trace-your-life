@@ -25,6 +25,10 @@
 | 画像维度、采用、历史、反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)、[画像接口](docs/PERSONAL_PROFILE.md)、[M4 第二阶段计划](docs/plans/2026-10-19-personal-profile.md)；生成和维护同时读检索协议，迁移同时读数据转移接口 |
 | 画像候选生成、核对或转为画像条目 | [画像候选接口](docs/PROFILE_CANDIDATES.md)、[M4 第三阶段计划](docs/plans/2026-10-19-profile-candidates.md)；协议变更同时读受控分析与 DeepSeek 接口，迁移同时读数据转移接口 |
 | 跨任务画像关系、历史反馈约束、原文反例扫描或维护应用 | [画像维护接口](docs/PROFILE_MAINTENANCE.md)、[M4 第四阶段计划](docs/plans/2026-10-19-profile-maintenance.md)；协议变更同时读检索协议，删除或恢复同时读数据转移接口 |
+| 行动进入周期分析、行动证据核对或删除传播 | [行动周期分析](docs/ACTION_PERIOD_REFLECTION.md)；协议变更读受控分析，恢复变更读数据转移接口 |
+| 跨周期长期候选或画像变化摘要 | [纵向画像](docs/LONGITUDINAL_PROFILE.md)；生成同时读画像维护接口与检索协议 |
+| 后台增量整理、调度、额度或恢复授权 | [后台分析](docs/BACKGROUND_ANALYSIS.md)、[四项后端计划](docs/plans/2026-10-19-backend-completion.md)；核验变化的 Android 官方资料 |
+| 看板偏好持久化或迁移 | [看板偏好](docs/DASHBOARD_PREFERENCES.md)、数据转移接口 |
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |
 | 华为接入、饮食依据、复盘方法或画像研究 | 从[研究导航](docs/README.md)读取对应笔记，再核验会变化的官方资料 |
 | 新功能排期、验收、提交或协作 | [开发路线](docs/ROADMAP.md)、[贡献约定](CONTRIBUTING.md) |
