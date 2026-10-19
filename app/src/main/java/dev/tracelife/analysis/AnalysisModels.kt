@@ -4,6 +4,7 @@ import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.SourcePage
 import dev.tracelife.storage.StoredAnalysisRun
 import dev.tracelife.metrics.RecordMetricReceipt
+import dev.tracelife.profile.ProfileAnalysisTarget
 import java.time.Instant
 
 data class AnalysisLimits(
@@ -30,6 +31,7 @@ data class AnalysisRequest(
     val limits: AnalysisLimits = AnalysisLimits(),
     val focusTopics: Set<String> = emptySet(),
     val expiresAt: Instant? = null,
+    val profileTarget: ProfileAnalysisTarget? = null,
 ) {
     init {
         require(question.isNotBlank() && question.length <= 2_000)

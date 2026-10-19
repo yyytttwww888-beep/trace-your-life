@@ -151,6 +151,7 @@ class AnalysisAccountingTest {
         val call = AnalysisCall("synthetic-batch", 1, "synthetic-provider", hash, 10, 10, listOf(ref), now,
             CallStatus.SUCCEEDED, finishedAt = now, proposal = proposal)
         val root = JSONObject(AnalysisRunCodec.encode(AnalysisRunState(AnalysisRequest("合成历史容量测试", scope), listOf(call))))
+        root.getJSONObject("request").remove("profileTarget")
         val template = root.getJSONArray("calls").getJSONObject(0)
         template.remove("tokenCountKind")
         template.remove("usage")

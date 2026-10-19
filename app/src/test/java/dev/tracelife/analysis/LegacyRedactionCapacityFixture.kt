@@ -11,6 +11,7 @@ object LegacyRedactionCapacityFixture {
         require(state.calls.isNotEmpty() && state.calls.size <= 5 && state.request.limits.maxCalls == 100)
         require(state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         val root = JSONObject(run.payload).put("formatVersion", 5)
+        root.getJSONObject("request").remove("profileTarget")
         val calls = root.getJSONArray("calls")
         repeat(calls.length()) { stripNew(calls.getJSONObject(it)) }
         val source = state.calls.first { it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED }

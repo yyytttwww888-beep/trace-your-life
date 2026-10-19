@@ -101,7 +101,7 @@ val result = app.analysisProcessor.process(
 | `STALE` / `EXPIRED` | 来源变化或任务过期，建立新任务 |
 | `NO_DATA` / `TASK_UNAVAILABLE` / `CONFLICT` | 无资料、任务已删除或并发冲突，需要对应处理 |
 
-当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，长期画像仍待实现。
+当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，已有[画像采用与维护](PERSONAL_PROFILE.md)，新的[受控画像候选](PROFILE_CANDIDATES.md)按指定维度提出近期／情境解释，长期倾向自动推断仍待实现。
 
 ## 综合真实调用验证
 
@@ -158,3 +158,15 @@ val result = app.analysisProcessor.process(
 ```
 
 该开关最多启用两次付费请求，普通测试和 CI 默认跳过且不读取 KEY。沿用仓库外密钥、临时测试包装密钥及结束后的清理；仅输出合成陈述、安全计数和用量。接口见[受控指标分析](METRIC_ANALYSIS.md)。
+
+## 画像候选真实调用验证
+
+受控画像任务在执行器请求和适配器顶层系统指令中分别标明固定维度与层次，提示词同样计入完整输入预算；仅支持近期状态和情境模式。生成沿用 `SYNTHESIS`，核对沿用 `REVIEW` 并重读整批原文，响应结构与计量校验保持一致。详细行为见[画像候选接口](PROFILE_CANDIDATES.md)。
+
+```bash
+./gradlew testDebugUnitTest \
+  --tests 'dev.tracelife.providers.DeepSeekProfileLiveTest' \
+  -PtraceLifeDeepSeekProfile=true
+```
+
+该开关默认关闭，使用仓库外既有密钥和三条明确标注的合成资料，最多一次生成加一次独立核对，无自动重试。测试在生成后模拟用户明确确认，再核对当前反馈版本并保存为画像候选，检查默认画像不会自动采用。普通测试和 CI 跳过且不读取 KEY；JVM 仍使用临时包装密钥，只记录安全计数和用量。实际执行结果见[M4 第三阶段计划](plans/2026-10-19-profile-candidates.md#验证记录)，不代表总体准确率、长期人格判断或实体手机验证。

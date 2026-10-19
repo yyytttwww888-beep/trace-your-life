@@ -10,6 +10,7 @@ import dev.tracelife.storage.UnreadableSourceException
 import dev.tracelife.transfer.StaleSnapshotException
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.metrics.RecordMetricReceipt
+import dev.tracelife.profile.ProfileAnalysisProtocol
 import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -100,6 +101,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val providerId = provider.id.also(AnalysisRunCodec::validId)
         val task = current(id)
         val state = task.state
+        requirePurpose(task, CallPurpose.EXTRACTION)
         val limits = state.request.limits
         require(selections.size in 1..32 && selections.distinct().size == selections.size) { "每批须选择 1 至 32 个不同片段" }
         require(history.size <= 20 && instructions.length.toLong() + history.sumOf { it.length.toLong() } <= limits.maxInputBytes) { "指令和历史过长" }
@@ -157,8 +159,10 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
         val receipts = fragments.map(::receipt)
         val route = route(id)
+        val profileTarget = task.state.request.profileTarget
         val payload = AnalysisRunCodec.json(mapOf(
-            "protocolVersion" to 3, "purpose" to "SYNTHESIS", "system" to SYNTHESIS_INSTRUCTIONS,
+            "protocolVersion" to if (profileTarget == null) 3 else 7, "purpose" to "SYNTHESIS",
+            "system" to if (profileTarget == null) SYNTHESIS_INSTRUCTIONS else ProfileAnalysisProtocol.GENERATION_INSTRUCTIONS,
             "question" to task.state.request.question, "scope" to AnalysisRunCodec.scopeMap(task.state.request.scope),
             "focusTopics" to task.state.request.focusTopics.sorted(),
             "source" to mapOf("storeId" to task.stored.source.storeId, "generation" to task.stored.source.generation),
@@ -167,7 +171,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             "coverage" to mapOf("providedFragments" to receipts.size, "wholeScopeReviewed" to false,
                 "crossBatchIntegrated" to false, "attachmentsRead" to false, "metricEvidenceProvided" to false),
             "evidence" to fragments.zip(receipts).map { (fragment, ref) -> evidenceMap(task, fragment, ref) },
-        ))
+        ) + if (profileTarget == null) emptyMap() else mapOf("profileTarget" to AnalysisRunCodec.profileTargetMap(profileTarget)))
         ensureRegistered(task.stored)
         val request = modelRequest(id, batchKey, payload, limits)
         val call = execute(task, batchKey, receipts, providerId, provider.contextWindowTokens,
@@ -182,6 +186,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         AnalysisRunCodec.validId(batchKey)
         val providerId = provider.id.also(AnalysisRunCodec::validId)
         val task = current(id)
+        requirePurpose(task, CallPurpose.METRIC_ANALYSIS)
         val metrics = listOf(RecordMetricProtocol.calculate(repository, task.stored.source, task.state.request.scope))
         val payload = AnalysisRunCodec.json(mapOf(
             "protocolVersion" to 6, "purpose" to "METRIC_ANALYSIS", "system" to METRIC_INSTRUCTIONS,
@@ -204,6 +209,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         AnalysisRunCodec.validId(batchKey)
         val providerId = provider.id.also(AnalysisRunCodec::validId)
         val task = current(id)
+        requirePurpose(task, CallPurpose.REDUCTION)
         require(children.size in 2..4 && children.distinct().size == children.size)
         val inputs = children.map { node ->
             val parent = ReductionGraph.resolve(task.state.calls, node)
@@ -463,8 +469,10 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val feedback = repository.claimFeedback(feedbackId)
         val feedbackVersion = repository.claimFeedbackVersion(feedbackId)
         val route = route(runId)
+        val profileTarget = task.state.request.profileTarget
         val payload = AnalysisRunCodec.json(mapOf(
-            "protocolVersion" to 2, "purpose" to "REVIEW", "system" to REVIEW_INSTRUCTIONS,
+            "protocolVersion" to if (profileTarget == null) 2 else 7, "purpose" to "REVIEW",
+            "system" to (REVIEW_INSTRUCTIONS + if (profileTarget == null) "" else ProfileAnalysisProtocol.REVIEW_INSTRUCTIONS),
             "question" to task.state.request.question, "scope" to AnalysisRunCodec.scopeMap(task.state.request.scope),
             "source" to mapOf("storeId" to task.stored.source.storeId, "generation" to task.stored.source.generation),
             "target" to AnalysisRunCodec.claimRefMap(claim) + AnalysisRunCodec.claimMap(proposed),
@@ -474,7 +482,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             "coverage" to mapOf("reviewedFragments" to receipts.size, "wholeScopeReviewed" to false,
                 "counterevidenceSearchExhaustive" to false, "attachmentsRead" to false),
             "evidence" to fragments.zip(receipts).map { (fragment, ref) -> evidenceMap(task, fragment, ref) },
-        ))
+        ) + if (profileTarget == null) emptyMap() else mapOf("profileTarget" to AnalysisRunCodec.profileTargetMap(profileTarget)))
         ensureRegistered(task.stored)
         val request = modelRequest(runId, reviewKey, payload, limits)
         val call = execute(task, reviewKey, receipts, providerId, provider.contextWindowTokens, request,
@@ -537,6 +545,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
     ): AnalysisCall {
         val state = task.state
         val limits = state.request.limits
+        requirePurpose(task, purpose)
         ensureRegistered(task.stored)
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
@@ -611,6 +620,12 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             reductionOutput = if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes) else null, reductionScan = completion.scan)
         save(registered, state.copy(calls = state.calls + completed))
         return completed
+    }
+
+    private fun requirePurpose(task: AnalysisTask, purpose: CallPurpose) {
+        require(task.state.request.profileTarget == null || purpose == CallPurpose.SYNTHESIS || purpose == CallPurpose.REVIEW) {
+            "画像任务只允许原文候选综合与核对"
+        }
     }
 
     private fun target(state: AnalysisRunState, ref: ClaimRef): Pair<AnalysisCall, ProposedClaim> {

@@ -28,6 +28,13 @@ import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.profile.ProfileHead
+import dev.tracelife.profile.ProfileAnalysisTarget
+import dev.tracelife.profile.ProfileAdoption
+import dev.tracelife.profile.ProfileCandidateMaterialization
+import dev.tracelife.profile.ProfileCandidateMaterializationStatus
+import dev.tracelife.profile.ProfileDraft
+import dev.tracelife.profile.ProfileKnowledgeRef
+import dev.tracelife.profile.profileCandidateId
 import dev.tracelife.profile.ProfileValidation
 import dev.tracelife.profile.StoredProfileRevision
 import dev.tracelife.transfer.Deletion
@@ -757,6 +764,75 @@ class LifeRepository(
     }
     internal fun deleteProfile(id: String, expectedRevision: Int) = access { db ->
         transaction(db) { ProfileStore.delete(db, id, expectedRevision, clock.instant()) }
+    }
+
+    internal fun profileForSlot(knowledgeId: String, target: ProfileAnalysisTarget): StoredProfileRevision? = access { db ->
+        ProfileStore.forSlot(db, knowledgeId, target)
+    }
+
+    internal fun profileDeleted(id: String): Boolean = access { db -> ProfileStore.deleted(db, id) }
+
+    /** User-selected publication and candidate creation commit together. No model, confirmation,
+     * adoption, rebinding or independent user text is synthesized by this bridge. */
+    internal fun materializeProfileCandidate(runId: String, claim: ClaimRef, expectedRunVersion: Int): ProfileCandidateMaterialization = access { db ->
+        require(expectedRunVersion > 0)
+        transaction(db) {
+            val run = readAnalysisRun(db, runId) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
+            if (run.version != expectedRunVersion) throw RevisionConflictException("画像候选任务已有新版本")
+            requireAnalysisSource(db, run.source)
+            val now = clock.instant()
+            require(now >= run.createdAt && now >= run.updatedAt && (run.expiresAt == null || now < run.expiresAt)) {
+                "画像候选任务已到期或时钟回拨"
+            }
+            fun finish(result: ProfileCandidateMaterialization): ProfileCandidateMaterialization {
+                val finishedAt = clock.instant()
+                require(finishedAt >= now && (run.expiresAt == null || finishedAt < run.expiresAt)) { "画像候选发布期间有效时间已变化" }
+                requireAnalysisSource(db, run.source)
+                if (readAnalysisRun(db, runId)?.version != expectedRunVersion) throw RevisionConflictException("画像候选任务发布期间发生变化")
+                return result
+            }
+            val state = AnalysisRunCodec.decode(run.payload)
+            val target = requireNotNull(state.request.profileTarget) { "任务不是画像候选分析" }
+            val generated = requireNotNull(state.calls.lastOrNull {
+                it.purpose == dev.tracelife.analysis.CallPurpose.SYNTHESIS && it.status == dev.tracelife.analysis.CallStatus.SUCCEEDED && it.batchKey == claim.batchKey
+            }) { "画像候选不属于成功的原文综合" }
+            val proposal = requireNotNull(generated.proposal?.claims?.getOrNull(claim.claimIndex))
+            require(AnalysisRunCodec.claimSha256(proposal) == claim.claimSha256)
+            val knowledgeId = KnowledgeValidation.idFor(runId, claim)
+            val id = profileCandidateId(knowledgeId, target)
+            if (ProfileStore.deleted(db, id)) return@transaction finish(ProfileCandidateMaterialization(
+                ProfileCandidateMaterializationStatus.DELETED, null, null, null))
+            require(!exists(db, "deleted_knowledge", "id = ?", knowledgeId)) { "知识已永久删除" }
+            val feedbackId = AnalysisRunCodec.feedbackId(runId, claim)
+            require(!exists(db, "deleted_claim_feedback", "id = ?", feedbackId)) { "用户反馈已永久删除" }
+            val feedback = requireNotNull(readClaimFeedback(db, feedbackId)) { "画像候选需要用户明确确认" }
+            require(feedback.decision == ClaimFeedbackDecision.CONFIRMED && feedback.source == run.source) { "画像候选尚未确认或已撤回" }
+            val review = requireNotNull(state.calls.lastOrNull {
+                it.purpose == dev.tracelife.analysis.CallPurpose.REVIEW && it.status == dev.tracelife.analysis.CallStatus.SUCCEEDED &&
+                    it.reviewTarget == claim && it.feedbackVersion == feedback.version
+            }) { "当前反馈尚未经过独立核对" }
+            require(review.review?.verdict == dev.tracelife.analysis.ReviewVerdict.SUPPORTED) { "最新核对不支持此画像候选" }
+            val existing = ProfileStore.revision(db, id) ?: ProfileStore.forSlot(db, knowledgeId, target)
+            val library = KnowledgeLibrary(this, Clock.fixed(now, clock.zone))
+            if (existing != null) {
+                val linked = library.get(existing.draft.knowledge.knowledgeId, existing.draft.knowledge.revision)
+                val matches = existing.draft.knowledge.knowledgeId == knowledgeId && existing.draft.dimension == target.dimension &&
+                    existing.draft.layer == target.layer && linked != null && linked.isCurrentRevision &&
+                    linked.evidenceState == KnowledgeEvidenceState.CURRENT && linked.value.publishedAt <= now &&
+                    linked.value.category == KnowledgeCategory.INSIGHT && existing.updatedAt <= now
+                return@transaction finish(ProfileCandidateMaterialization(
+                    if (matches) ProfileCandidateMaterializationStatus.EXISTING else ProfileCandidateMaterializationStatus.CONFLICT,
+                    existing.draft.knowledge, ProfileHead(existing.id, existing.revision), existing.adoption))
+            }
+            val previous = readKnowledgeRevision(db, knowledgeId, null)
+            require(previous == null || previous.category == KnowledgeCategory.INSIGHT) { "现有知识类别不同，须明确维护原知识" }
+            val published = library.publish(runId, claim, review.batchKey, KnowledgeCategory.INSIGHT, expectedRunVersion,
+                previous?.revision, previous?.topics ?: emptySet())
+            val ref = ProfileKnowledgeRef(published.id, published.revision)
+            val candidate = StoredProfileRevision(id, 1, ProfileDraft(ref, target.dimension, target.layer), ProfileAdoption.CANDIDATE, now, now)
+            val saved = saveProfile(candidate, null)
+            finish(ProfileCandidateMaterialization(ProfileCandidateMaterializationStatus.CREATED, ref, ProfileHead(saved.id, saved.revision), saved.adoption))
+        }
     }
 
     fun deleteKnowledge(id: String, expectedRevision: Int) = access { db ->

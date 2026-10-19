@@ -1,6 +1,6 @@
 # 个人画像采用与维护接口
 
-本阶段将已有观察／洞察组织为可维护的画像条目，提供分类、用户采用、独立反馈、历史、证据定位和迁移。完整目标见[画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)，本轮范围与验证见[M4 第二阶段计划](plans/2026-10-19-personal-profile.md)。自动候选生成、跨任务同义判断合并、画像发布摘要、后台调度和前端仍待实现。
+本阶段将已有观察／洞察组织为可维护的画像条目，提供分类、用户采用、独立反馈、历史、证据定位和迁移。完整目标见[画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)，本轮范围与验证见[M4 第二阶段计划](plans/2026-10-19-personal-profile.md)。新提案通过[受控画像候选生成](PROFILE_CANDIDATES.md)处理；长期倾向自动推断、跨任务同义判断合并、画像发布摘要、后台调度和前端仍待实现。
 
 ## 保存和采用
 

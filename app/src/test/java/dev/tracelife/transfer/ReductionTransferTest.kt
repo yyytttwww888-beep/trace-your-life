@@ -67,7 +67,7 @@ class ReductionTransferTest {
         val json = JSONObject(bytes.toString(Charsets.UTF_8))
         assertEquals(6, json.getInt("formatVersion"))
         assertEquals(7, json.getInt("sourceSchemaVersion"))
-        assertEquals(7, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
+        assertEquals(8, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(bytes.inputStream()))
         val archive = File(workspace, "reduction.tlb")
         BackupArchive.write(snapshot, directory(), archive, password)
