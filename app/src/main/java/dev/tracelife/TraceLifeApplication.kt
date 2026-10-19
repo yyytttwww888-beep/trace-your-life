@@ -6,11 +6,13 @@ import dev.tracelife.analysis.AnalysisBatchProcessor
 import dev.tracelife.analysis.AnalysisFeedback
 import dev.tracelife.analysis.AutomaticOrganizer
 import dev.tracelife.analysis.PeriodSynthesisProcessor
+import dev.tracelife.analysis.PeriodReductionProcessor
 import dev.tracelife.actions.ActionExperiments
 import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.metrics.RecordMetrics
 import dev.tracelife.metrics.RecordMetricEvidenceService
 import dev.tracelife.reports.PeriodReports
+import dev.tracelife.reports.PeriodReductionReports
 import dev.tracelife.providers.DeepSeekCredentials
 import dev.tracelife.providers.DeepSeekProvider
 import dev.tracelife.storage.LifeRepository
@@ -29,8 +31,10 @@ class TraceLifeApplication : Application() {
     val metricEvidence by lazy { RecordMetricEvidenceService(repository) }
     val automaticOrganizer by lazy { AutomaticOrganizer(repository, analysis, analysisProcessor, knowledge) }
     val periodSynthesis by lazy { PeriodSynthesisProcessor(analysis) }
+    val periodReduction by lazy { PeriodReductionProcessor(analysis) }
     val actions by lazy { ActionExperiments(repository) }
     val periodReports by lazy { PeriodReports(repository) }
+    val periodDrafts by lazy { PeriodReductionReports(repository, analysis) }
     val deepSeekCredentials by lazy { DeepSeekCredentials(this) }
     val deepSeekProvider by lazy { DeepSeekProvider(deepSeekCredentials) }
     val repository by lazy {

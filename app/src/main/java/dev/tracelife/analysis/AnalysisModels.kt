@@ -56,10 +56,22 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, REVIEW;
+    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION;
 
     val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS
 }
+
+/** Derived drafts are routing material, never original evidence or publishable claims. */
+data class ReductionNodeRef(val batchKey: String, val attempt: Int, val outputSha256: String)
+data class ReductionFeedbackToken(val claim: ClaimRef, val version: Int)
+data class ReductionInput(val id: String, val node: ReductionNodeRef, val requestSha256: String,
+    val feedbackTokens: List<ReductionFeedbackToken>)
+data class ReductionStatement(val text: String, val inputIds: List<String>)
+data class ReductionDigest(val statements: List<ReductionStatement>, val unknowns: List<String> = emptyList())
+data class ReductionDependencies(val ref: ReductionNodeRef, val leafRefs: List<ReductionNodeRef>,
+    val originalEvidence: List<EvidenceReceipt>, val feedbackTokens: List<ReductionFeedbackToken>)
+data class ReductionNodeView(val ref: ReductionNodeRef, val inputs: List<ReductionInput>, val digest: ReductionDigest,
+    val leafRefs: List<ReductionNodeRef>, val originalEvidence: List<EvidenceReceipt>)
 enum class ReviewVerdict { SUPPORTED, UNSUPPORTED, CONTRADICTED, INSUFFICIENT_CONTEXT }
 enum class ReviewIssue { USER_REPORT_AS_FACT, SCOPE_OVERGENERALIZATION, CAUSAL_OVERREACH, COUNTEREVIDENCE_OMISSION, INSUFFICIENT_CONTEXT, OTHER }
 /** A bounded model quality check, never an independent truth or permission to publish. */
@@ -91,6 +103,8 @@ data class AnalysisCall(
     val reviewTarget: ClaimRef? = null,
     val review: ClaimReview? = null,
     val feedbackVersion: Int = 0,
+    val reductionInputs: List<ReductionInput> = emptyList(),
+    val reductionOutput: ReductionDigest? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList())
@@ -161,6 +175,7 @@ interface AnalysisProvider {
 
 class AnalysisBudgetException(message: String) : IllegalStateException(message)
 class AnalysisConflictException(message: String) : IllegalStateException(message)
+class AnalysisDependencyBlockedException(message: String) : IllegalStateException(message)
 class AnalysisValidationException(message: String) : IllegalArgumentException(message)
 class AnalysisTaskUnavailableException : IllegalArgumentException("分析任务不存在或已清理")
 

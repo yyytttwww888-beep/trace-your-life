@@ -105,6 +105,14 @@ internal object SnapshotValidation {
                 require(it.id.matches(Regex("[0-9a-f]{64}")) && it.lastRevision in 1 until Int.MAX_VALUE) { "反馈删除标记无效" }
             }
             require(snapshot.claimFeedback.map { it.id }.toSet().intersect(snapshot.deletedClaimFeedback.map { it.id }.toSet()).isEmpty()) { "备份同时包含反馈及其删除标记" }
+            val erasedFeedback = snapshot.deletedClaimFeedback.map { it.id }.toSet()
+            // A backup already carrying a deletion fence must also carry its redaction. Older
+            // backups without that fence are sanitized after merging the target's deletions.
+            snapshot.analysisRuns.forEach { run ->
+                require(AnalysisRunCodec.redactDeletedFeedback(run, erasedFeedback, snapshot.capturedAt) == run) {
+                    "备份包含已永久删除反馈影响的模型文字"
+                }
+            }
             val runs = snapshot.analysisRuns.associateBy { it.id }
             val feedbackStates = mutableMapOf<String, AnalysisRunState>()
             snapshot.claimFeedback.forEach { value -> runs[value.runId]?.let { run ->
@@ -118,7 +126,6 @@ internal object SnapshotValidation {
             }
             require(snapshot.knowledgeHeads.map { it.id }.toSet().intersect(snapshot.deletedKnowledge.map { it.id }.toSet()).isEmpty()) { "备份同时包含知识及其删除标记" }
             val erasedRuns = snapshot.deletedAnalysisRuns.map { it.id }.toSet()
-            val erasedFeedback = snapshot.deletedClaimFeedback.map { it.id }.toSet()
             require(snapshot.knowledgeRevisions.none { value -> value.runId in erasedRuns ||
                 AnalysisRunCodec.feedbackId(value.runId, value.claimRef) in erasedFeedback }) { "备份包含已永久删除任务或反馈的知识副本" }
             // Publications own their immutable claim/review proof; later task edits or feedback

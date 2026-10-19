@@ -1,6 +1,6 @@
 # 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批全周期整合和画像尚未实现。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批归并见[分层周期草稿](PERIOD_REDUCTION.md)；草稿的整体原文核对、正式发布和画像仍待实现。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 
@@ -72,4 +72,4 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 后续验收
 
-M3 已实现语义核对、独立纠正、条件发布和记录覆盖指标；后两者见[知识接口](KNOWLEDGE.md)。核对只检查明确提供的原文，自动反例查找、跨任务同义陈述与反馈合并仍待实现。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。提取和综合输出均保留候选状态，必须经独立发布检查才能进入正式知识；[自动整理器](PERIOD_REFLECTION.md)可串起提取、核对和发布。有界综合的独立输入覆盖与多批未整合状态见[综合接口](SYNTHESIS_ACTIONS.md)。健康指标、模型可引用指标、跨批整合和自动更新后置。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。
+M3 已实现语义核对、独立纠正、条件发布和记录覆盖指标；后两者见[知识接口](KNOWLEDGE.md)。核对只检查明确提供的原文，自动反例查找、跨任务同义陈述与反馈合并仍待实现。现有自动处理由调用方启动一轮，不是 Android 定时后台任务。提取和综合输出均保留候选状态，必须经独立发布检查才能进入正式知识；[自动整理器](PERIOD_REFLECTION.md)可串起提取、核对和发布。有界综合的独立输入覆盖与多批未整合状态见[综合接口](SYNTHESIS_ACTIONS.md)。健康指标、模型可引用指标、分层草稿的整体原文核对／发布和自动更新后置。当前接口没有新页面；Robolectric、APK 构建和真机验证分别报告。

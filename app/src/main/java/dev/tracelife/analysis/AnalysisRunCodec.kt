@@ -18,14 +18,15 @@ object AnalysisRunCodec {
     const val MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
     private val digest = Regex("[0-9a-f]{64}")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 4)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 5)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
         require(version >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
+        require(version >= 5 || state.calls.none { it.purpose == CallPurpose.REDUCTION }) { "旧分析格式不支持归并调用" }
         val reserved = responseReservation(state)
         return json(mapOf("formatVersion" to version, "request" to requestMap(state.request), "calls" to state.calls.map {
-            val fields = callMap(it)
+            val fields = if (version < 5) callMap(it) - setOf("reductionInputs", "reductionOutput") else callMap(it)
             when (version) {
                 1 -> fields - setOf("tokenCountKind", "usage", "purpose", "reviewTarget", "review", "feedbackVersion")
                 2 -> fields - setOf("purpose", "reviewTarget", "review", "feedbackVersion")
@@ -51,6 +52,11 @@ object AnalysisRunCodec {
                 changed = true
                 call.copy(status = CallStatus.FAILED, failureCode = "FEEDBACK_DELETED", finishedAt = maxOf(now, call.startedAt),
                     review = null, usage = null)
+            } else if (call.purpose == CallPurpose.REDUCTION && call.failureCode != "FEEDBACK_DELETED" &&
+                call.reductionInputs.flatMap { it.feedbackTokens }.any { feedbackId(run.id, it.claim) in deletedFeedbackIds }) {
+                changed = true
+                call.copy(status = CallStatus.FAILED, failureCode = "FEEDBACK_DELETED", finishedAt = maxOf(now, call.startedAt),
+                    reductionOutput = null, usage = null)
             } else call
         }
         if (!changed) return run
@@ -90,7 +96,7 @@ object AnalysisRunCodec {
             }
         }
         val root = read(0).obj("formatVersion", "request", "calls")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..4)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..5)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj("question", "scope", "limits", "focusTopics", "expiresAt")
@@ -108,10 +114,12 @@ object AnalysisRunCodec {
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
+                val reviewed = metered + arrayOf("purpose", "reviewTarget", "review", "feedbackVersion")
                 val call = raw.obj(*when (format) {
                     1 -> fields
                     2 -> metered
-                    else -> metered + arrayOf("purpose", "reviewTarget", "review", "feedbackVersion")
+                    3, 4 -> reviewed
+                    else -> reviewed + arrayOf("reductionInputs", "reductionOutput")
                 })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
@@ -125,10 +133,13 @@ object AnalysisRunCodec {
                     if (format < 3) CallPurpose.EXTRACTION else CallPurpose.valueOf(call.string("purpose")),
                     call["reviewTarget"]?.let { value -> value.obj("batchKey", "claimIndex", "claimSha256").let {
                         ClaimRef(it.string("batchKey"), it.int("claimIndex"), it.string("claimSha256"))
-                    } }, call["review"]?.let(::parseReview), if (format < 3) 0 else call.int("feedbackVersion"))
+                    } }, call["review"]?.let(::parseReview), if (format < 3) 0 else call.int("feedbackVersion"),
+                    if (format < 5) emptyList() else call.list("reductionInputs").map(::parseReductionInput),
+                    call["reductionOutput"]?.let(::parseReductionDigest))
             },
         )
         require(format >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
+        require(format >= 5 || state.calls.none { it.purpose == CallPurpose.REDUCTION }) { "旧分析格式不支持归并调用" }
         validate(state)
         return state to root.int("formatVersion")
     }
@@ -175,6 +186,27 @@ object AnalysisRunCodec {
         require(json(proposalMap(proposal)).toByteArray(Charsets.UTF_8).size <= maxBytes) { "提案输出超过预算" }
     }
 
+    internal fun reductionFromWire(proposal: BatchProposal, inputs: List<ReductionInput>, maxBytes: Int): ReductionDigest {
+        require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) { "派生归并只能保留为可能解释" }
+        require(json(proposalMap(proposal)).toByteArray(Charsets.UTF_8).size <= maxBytes)
+        return ReductionDigest(proposal.claims.map { ReductionStatement(it.text, it.evidenceIds) }, proposal.unknowns).also {
+            validateReduction(it, inputs, maxBytes)
+        }
+    }
+
+    internal fun validateReduction(output: ReductionDigest, inputs: List<ReductionInput>, maxBytes: Int) {
+        require(output.statements.size <= 20 && output.unknowns.size <= 20)
+        val ids = inputs.map { it.id }.toSet()
+        output.statements.forEach { statement ->
+            require(statement.text.isNotBlank() && statement.text.length <= 2_000)
+            require(statement.inputIds.size in 1..4 && statement.inputIds.distinct().size == statement.inputIds.size && statement.inputIds.all { it in ids }) {
+                "归并只能关联本次派生输入，不得伪装成原文引用"
+            }
+        }
+        require(output.unknowns.all { it.isNotBlank() && it.length <= 2_000 })
+        require(json(ReductionGraph.digestMap(output)).toByteArray(Charsets.UTF_8).size <= maxBytes)
+    }
+
     internal fun validateReview(review: ClaimReview, evidence: List<EvidenceReceipt>, maxBytes: Int) {
         val ids = evidence.map { it.id }.toSet()
         listOf(review.supportingEvidenceIds, review.contradictingEvidenceIds).forEach { refs ->
@@ -205,13 +237,15 @@ object AnalysisRunCodec {
             require(attempts.map { it.attempt } == (1..attempts.size).toList())
             require(attempts.map { it.requestSha256 to it.providerId }.distinct().size == 1) { "重试改变了请求或模型" }
             require(attempts.map { Triple(it.purpose, it.reviewTarget, it.feedbackVersion) }.distinct().size == 1) { "重试改变了核对目标或反馈" }
+            require(attempts.map { it.reductionInputs }.distinct().size == 1) { "重试改变了派生输入" }
             require(attempts.dropLast(1).all { it.status == CallStatus.FAILED || it.status == CallStatus.INTERRUPTED })
         }
         state.calls.forEachIndexed { index, call ->
             validId(call.batchKey); validId(call.providerId)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
             call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
-            require(call.evidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
+            if (call.purpose == CallPurpose.REDUCTION) require(call.evidence.isEmpty())
+            else require(call.evidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
             call.evidence.forEach { ref ->
                 validId(ref.recordId)
                 require(digest.matches(ref.id) && digest.matches(ref.sha256) && ref.revision > 0)
@@ -220,8 +254,12 @@ object AnalysisRunCodec {
                 require(ref.id == evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
             }
             require(call.feedbackVersion >= 0)
+            if (call.purpose != CallPurpose.REDUCTION) require(call.reductionInputs.isEmpty() && call.reductionOutput == null)
             if (call.purpose.producesClaims) {
                 require(call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
+            } else if (call.purpose == CallPurpose.REDUCTION) {
+                require(call.proposal == null && call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
+                ReductionGraph.validateInputs(state.calls.take(index), call)
             } else {
                 require(call.proposal == null)
                 val target = requireNotNull(call.reviewTarget)
@@ -244,12 +282,14 @@ object AnalysisRunCodec {
                     if (call.purpose == CallPurpose.SYNTHESIS) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
                         "综合判断必须保留为可能解释"
                     }
-                } else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes)
+                } else if (call.purpose == CallPurpose.REDUCTION) validateReduction(requireNotNull(call.reductionOutput), call.reductionInputs, limits.maxOutputBytes)
+                else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes)
             } else {
-                require(call.proposal == null && call.review == null)
+                require(call.proposal == null && call.review == null && call.reductionOutput == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)
                 else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED", "FEEDBACK_DELETED") + ProviderFailureCode.entries.map { "PROVIDER_${it.name}" })
-                if (call.failureCode == "FEEDBACK_DELETED") require(call.purpose == CallPurpose.REVIEW && call.feedbackVersion > 0 && call.status == CallStatus.FAILED)
+                if (call.failureCode == "FEEDBACK_DELETED") require(call.status == CallStatus.FAILED &&
+                    (call.purpose == CallPurpose.REVIEW && call.feedbackVersion > 0 || call.purpose == CallPurpose.REDUCTION))
             }
         }
     }
@@ -296,7 +336,8 @@ object AnalysisRunCodec {
         "finishedAt" to call.finishedAt?.toString(), "failureCode" to call.failureCode, "proposal" to call.proposal?.let(::proposalMap),
         "tokenCountKind" to call.tokenCountKind.name, "usage" to call.usage?.let { mapOf("promptTokens" to it.promptTokens, "completionTokens" to it.completionTokens) },
         "purpose" to call.purpose.name, "reviewTarget" to call.reviewTarget?.let(::claimRefMap), "review" to call.review?.let(::reviewMap),
-        "feedbackVersion" to call.feedbackVersion)
+        "feedbackVersion" to call.feedbackVersion, "reductionInputs" to call.reductionInputs.map(ReductionGraph::inputMap),
+        "reductionOutput" to call.reductionOutput?.let(ReductionGraph::digestMap))
     internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
     internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)
@@ -314,6 +355,23 @@ object AnalysisRunCodec {
             val claim = item.obj("text", "evidenceIds", "kind")
             ProposedClaim(claim.string("text"), claim.strings("evidenceIds"), ClaimKind.valueOf(claim.string("kind")))
         }, proposal.strings("unknowns"))
+    }
+    private fun parseReductionInput(raw: Any?): ReductionInput {
+        val input = raw.obj("id", "node", "requestSha256", "feedbackTokens")
+        val node = input["node"].obj("batchKey", "attempt", "outputSha256")
+        return ReductionInput(input.string("id"), ReductionNodeRef(node.string("batchKey"), node.int("attempt"), node.string("outputSha256")),
+            input.string("requestSha256"), input.list("feedbackTokens").map { rawToken ->
+                val token = rawToken.obj("claim", "version")
+                val claim = token["claim"].obj("batchKey", "claimIndex", "claimSha256")
+                ReductionFeedbackToken(ClaimRef(claim.string("batchKey"), claim.int("claimIndex"), claim.string("claimSha256")), token.int("version"))
+            })
+    }
+    private fun parseReductionDigest(raw: Any?): ReductionDigest {
+        val output = raw.obj("statements", "unknowns")
+        return ReductionDigest(output.list("statements").map { rawStatement ->
+            val statement = rawStatement.obj("text", "inputIds")
+            ReductionStatement(statement.string("text"), statement.strings("inputIds"))
+        }, output.strings("unknowns"))
     }
     @Suppress("UNCHECKED_CAST")
     private fun Any?.obj(vararg fields: String): Map<String, Any?> = (this as? Map<String, Any?>)?.also {
