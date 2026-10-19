@@ -76,12 +76,13 @@ object KnowledgeValidation {
         val proof = value.reductionProof
         value.actionPlan?.let { plan ->
             ActionEvidenceProtocol.validatePlan(plan)
-            require(proof == null && value.profileMaintenanceProof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
-            require(value.actionEvidence.all { it in plan.entries })
+            require(value.profileMaintenanceProof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
+            require(allActionEvidence(value).all { it in plan.entries })
+            require(proof == null || proof.originalActionEvidence.toSet() == plan.entries.toSet()) { "行动归并证明遗漏固定范围来源" }
         }
-        require(value.actionEvidence.isEmpty() || value.actionPlan != null)
+        require(allActionEvidence(value).isEmpty() || value.actionPlan != null)
         require(value.actionEvidence.map { it.id }.distinct().size == value.actionEvidence.size)
-        value.actionEvidence.forEach(ActionEvidenceProtocol::validateReceipt)
+        allActionEvidence(value).forEach(ActionEvidenceProtocol::validateReceipt)
         value.profileMaintenanceProof?.let { maintenance ->
             require(proof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
             require(maintenance.plan.target == value.claimRef)
@@ -99,7 +100,7 @@ object KnowledgeValidation {
             require(value.category == KnowledgeCategory.INSIGHT && value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)
             require(ReductionGraph.feedbackRef(proof.target) == value.claimRef && value.claim.text == proof.statement.text &&
                 value.claim.evidenceIds == value.review.supportingEvidenceIds) { "周期洞察与归并陈述或最终原文支持不一致" }
-            ReductionReviewProtocol.validateProof(proof, value.evidence, value.review)
+            ReductionReviewProtocol.validateProof(proof, value.evidence, value.review, value.actionEvidence)
         }
         require(value.source.generation >= 0 && value.feedbackVersion >= 0 && value.reviewAttempt in 1..100 &&
             digest.matches(value.reviewRequestSha256)) { "知识核对身份无效" }
@@ -167,6 +168,13 @@ object KnowledgeValidation {
     fun allEvidence(value: StoredKnowledgeRevision): List<EvidenceReceipt> {
         val receipts = value.reductionProof?.originalEvidence.orEmpty() + value.profileMaintenanceProof?.originalEvidence.orEmpty() + value.evidence
         require(receipts.groupBy { it.id }.values.all { group -> group.distinct().size == 1 }) { "知识原文引用身份冲突" }
+        return receipts.distinctBy { it.id }
+    }
+
+    /** Every action revision scanned is retained, including irrelevant context omitted from the final call. */
+    fun allActionEvidence(value: StoredKnowledgeRevision): List<dev.tracelife.actions.ActionEvidenceReceipt> {
+        val receipts = value.reductionProof?.originalActionEvidence.orEmpty() + value.actionEvidence
+        require(receipts.groupBy { it.id }.values.all { group -> group.distinct().size == 1 }) { "知识行动引用身份冲突" }
         return receipts.distinctBy { it.id }
     }
 

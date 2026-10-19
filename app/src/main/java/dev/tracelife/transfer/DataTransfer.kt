@@ -80,9 +80,8 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         val archive = File(directory, "knowledge.zip")
         val written = KnowledgeArchive.writeForPublication(snapshot, attachments, archive, options)
         publish(archive, target, directory) { adjacent, published ->
-            if (written.profileValidUntil == null) repository.publishSnapshot(snapshot, adjacent, published)
-            else repository.publishDerivedFile(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
-                snapshot.analysisGeneration, written.profileValidUntil, adjacent, published, validFrom = snapshot.capturedAt)
+            repository.publishDerivedFile(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
+                snapshot.analysisGeneration, written.validUntil, adjacent, published, validFrom = snapshot.capturedAt)
         }
         written.result.copy(bytes = target.length())
     }

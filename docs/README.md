@@ -41,6 +41,7 @@
 - [M4 第四阶段计划](plans/2026-10-19-profile-maintenance.md)：维护范围、更新与恢复验收。
 
 - [行动周期分析](ACTION_PERIOD_REFLECTION.md)：独立行动证据、综合、全批核对及依赖维护。
+- [行动归并与知识包计划](plans/2026-10-19-action-report-export.md)：多批整体归并、双类型原文扫描、固定行动证据导出与验证。
 - [纵向画像与变化摘要](LONGITUDINAL_PROFILE.md)：多周期分批候选、跨期维护门槛及修订比较。
 - [后台增量整理](BACKGROUND_ANALYSIS.md)：启用、调度、持久额度、失败恢复及恢复授权。
 - [看板偏好](DASHBOARD_PREFERENCES.md)：偏好版本、默认值、保存与迁移。

@@ -1,5 +1,6 @@
 package dev.tracelife.reports
 
+import dev.tracelife.actions.ActionEvidenceReceipt
 import dev.tracelife.analysis.AnalysisConflictException
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisStatus
@@ -25,10 +26,14 @@ class PeriodDraft internal constructor(
     val inputs: List<ReductionInput>,
     val leafCount: Int,
     internal val evidenceIndex: List<EvidenceReceipt>,
+    internal val actionEvidenceIndex: List<ActionEvidenceReceipt> = emptyList(),
 ) {
+    val originalActionEvents: Int get() = actionEvidenceIndex.size
     val originalFragments: Int get() = evidenceIndex.size
     val originalsSemanticallyReviewed: Boolean get() = false
 }
+
+data class DraftActionEvidencePage(val items: List<ActionEvidenceReceipt>, val total: Int, val nextOffset: Int?)
 
 data class DraftEvidencePage(val items: List<EvidenceReceipt>, val total: Int, val nextOffset: Int?)
 
@@ -42,7 +47,8 @@ class PeriodReductionReports(private val repository: LifeRepository, private val
             Collections.unmodifiableSet(it.toSet())
         })
         return PeriodDraft(runId, task.stored.version, task.stored.source, scope, node,
-            view.inputs, view.leafRefs.size, Collections.unmodifiableList(view.originalEvidence.toList())).also(::assertCurrent)
+            view.inputs, view.leafRefs.size, Collections.unmodifiableList(view.originalEvidence.toList()),
+            Collections.unmodifiableList(view.originalActionEvidence.toList())).also(::assertCurrent)
     }
 
     fun body(draft: PeriodDraft): ReductionDigest = current(draft) {
@@ -58,6 +64,19 @@ class PeriodReductionReports(private val repository: LifeRepository, private val
         val end = minOf(draft.evidenceIndex.size.toLong(), offset.toLong() + limit).toInt()
         val items = if (offset >= draft.evidenceIndex.size) emptyList() else draft.evidenceIndex.subList(offset, end).toList()
         DraftEvidencePage(items, draft.evidenceIndex.size, end.takeIf { offset < it && it < draft.evidenceIndex.size })
+    }
+
+    fun actionEvidence(draft: PeriodDraft, offset: Int = 0, limit: Int = 25): DraftActionEvidencePage = current(draft) {
+        require(offset >= 0 && limit in 1..100)
+        val end = minOf(draft.actionEvidenceIndex.size.toLong(), offset.toLong() + limit).toInt()
+        val items = if (offset >= draft.actionEvidenceIndex.size) emptyList() else draft.actionEvidenceIndex.subList(offset, end).toList()
+        DraftActionEvidencePage(items, draft.actionEvidenceIndex.size, end.takeIf { offset < it && it < draft.actionEvidenceIndex.size })
+    }
+
+    /** One bounded complete action leaf, retaining old plan, report and next plan semantics. */
+    fun actionOriginal(draft: PeriodDraft, evidenceId: String): Map<String, Any?> = current(draft) {
+        val receipt = requireNotNull(draft.actionEvidenceIndex.singleOrNull { it.id == evidenceId }) { "行动引用不在草稿来源链" }
+        repository.actionEvidenceBody(receipt)
     }
 
     /** Offset is relative to a registered original fragment, never the whole record. */

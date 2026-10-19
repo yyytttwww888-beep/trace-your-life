@@ -763,7 +763,7 @@ class LifeRepository(
             value.actionPlan?.let {
                 require(now >= run.updatedAt) { "行动复盘发布时钟已回拨" }
                 require(actionEvidencePlanCurrent(value.scope, it)) { "行动原始资料已变化" }
-                ActionEvidenceProtocol.validateSources(it, value.actionEvidence, ActionStore.allRevisions(db), value.scope)
+                ActionEvidenceProtocol.validateSources(it, KnowledgeValidation.allActionEvidence(value), ActionStore.allRevisions(db), value.scope)
             }
             val current = readKnowledgeRevision(db, value.id, null)
             // A retry may repeat an already switched head, but never bypass current dependencies.
@@ -1269,7 +1269,7 @@ class LifeRepository(
                 val sourcesRetained = !forbidden && revisions.all { value ->
                     try {
                         KnowledgeValidation.validateEvidence(value, recordsByRevision)
-                        ActionEvidenceProtocol.validateSources(value.actionPlan, value.actionEvidence, actionRevisions, value.scope)
+                        ActionEvidenceProtocol.validateSources(value.actionPlan, KnowledgeValidation.allActionEvidence(value), actionRevisions, value.scope)
                         true
                     } catch (_: IllegalArgumentException) { false }
                 }

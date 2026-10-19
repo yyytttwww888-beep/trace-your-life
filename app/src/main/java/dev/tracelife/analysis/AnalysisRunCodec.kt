@@ -30,7 +30,7 @@ object AnalysisRunCodec {
 
     private val PROFILE_FIELDS = setOf("profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 10)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 11)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -42,6 +42,7 @@ object AnalysisRunCodec {
         require(version >= 8 || state.request.profileTarget == null) { "旧分析格式不支持画像目标" }
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
         require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
+        require(version >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
             var value = if (version < 10) raw - "actionPeriod" else raw
@@ -136,7 +137,7 @@ object AnalysisRunCodec {
         val root = rawRoot.obj(*(arrayOf("formatVersion", "request", "calls") +
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..10)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..11)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
@@ -201,6 +202,7 @@ object AnalysisRunCodec {
             if (format < 9) emptyList() else root.list("profileMaintenancePlans").map(ProfileMaintenanceProtocol::parsePlan),
             root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
         )
+        require(format >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         require(format >= 10 || state.calls.none { it.purpose == CallPurpose.ACTION_SYNTHESIS })
         require(format >= 9 || state.calls.none { it.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN) })
         require(format >= 4 || state.calls.none { it.purpose == CallPurpose.SYNTHESIS }) { "旧分析格式不支持综合调用" }
@@ -310,7 +312,7 @@ object AnalysisRunCodec {
     private fun validate(state: AnalysisRunState) {
         require(state.request.actionPeriod == (state.actionPlan != null)) { "行动复盘缺少固定目录" }
         state.actionPlan?.let(ActionEvidenceProtocol::validatePlan)
-        require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW) })
+        require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW, CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         state.request.profileTarget?.let { LongitudinalProfileProtocol.validateScope(it, state.request.scope) }
         require(state.request.profileTarget == null || state.calls.all {
             it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)
@@ -346,8 +348,8 @@ object AnalysisRunCodec {
             validId(call.batchKey); validId(call.providerId)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
             call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
-            val actionCall = call.purpose == CallPurpose.ACTION_SYNTHESIS || call.purpose == CallPurpose.REVIEW && state.request.actionPeriod
-            require(actionCall == state.request.actionPeriod) { "行动复盘调用目的不符" }
+            val actionCall = state.request.actionPeriod
+            require(call.purpose != CallPurpose.ACTION_SYNTHESIS || actionCall) { "行动复盘调用目的不符" }
             require(actionCall || call.actionEvidence.isEmpty())
             require(call.actionEvidence.map { it.id }.distinct().size == call.actionEvidence.size)
             call.actionEvidence.forEach { ActionEvidenceProtocol.validateReceipt(it); require(it in requireNotNull(state.actionPlan).entries) }
@@ -357,7 +359,7 @@ object AnalysisRunCodec {
                 require(call.evidence.isEmpty() && call.metricEvidence.size == 1) { "指标调用只能提供一个完整范围指标" }
                 call.metricEvidence.forEach { RecordMetricProtocol.validate(it, scope) }
             } else require(call.metricEvidence.isEmpty()) { "本调用类型不支持指标证据" }
-            if (call.purpose == CallPurpose.REDUCTION || call.purpose == CallPurpose.PROFILE_RELATION || metricCall) require(call.evidence.isEmpty())
+            if (call.purpose == CallPurpose.REDUCTION || call.purpose == CallPurpose.PROFILE_RELATION || metricCall) require(call.evidence.isEmpty() && call.actionEvidence.isEmpty())
             else require(call.evidence.size + call.actionEvidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
             call.evidence.forEach { ref ->
                 validId(ref.recordId)
@@ -460,7 +462,7 @@ object AnalysisRunCodec {
                 } else if (call.purpose == CallPurpose.PROFILE_RELATION) ProfileMaintenanceProtocol.validateRelation(requireNotNull(call.profileRelation), limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.PROFILE_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.profileScan), call.evidence, limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.REDUCTION) validateReduction(requireNotNull(call.reductionOutput), call.reductionInputs, limits.maxOutputBytes)
-                else if (call.purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.reductionScan), call.evidence, limits.maxOutputBytes)
+                else if (call.purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.reductionScan), call.evidence, limits.maxOutputBytes, call.actionEvidence)
                 else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes, call.metricEvidence, call.actionEvidence)
             } else {
                 require(call.proposal == null && call.review == null && call.reductionOutput == null && call.reductionScan == null && call.profileRelation == null && call.profileScan == null)
@@ -488,10 +490,11 @@ object AnalysisRunCodec {
         val expected = ReductionGraph.ancestorTokens(before.calls, target.root).associateBy { it.claim }
         require(call.reductionReviewTokens.all { expected[it.claim]?.let { token -> token == it } != false })
         val originals = ReductionGraph.originalEvidence(before, target.root)
+        val actions = ReductionGraph.originalActionEvidence(before, target.root)
         if (call.purpose == CallPurpose.REDUCTION_SCAN) {
-            require(call.review == null && call.reductionScans.isEmpty() && call.evidence.all { it in originals })
-            val occupied = ReductionReviewProtocol.compatibleScans(before, target, call.feedbackVersion, call.reductionReviewTokens).flatMap { it.evidence }.map { it.id }.toSet()
-            require(call.evidence.none { it.id in occupied })
+            require(call.review == null && call.reductionScans.isEmpty() && call.evidence.all { it in originals } && call.actionEvidence.all { it in actions })
+            val occupied = ReductionReviewProtocol.compatibleScans(before, target, call.feedbackVersion, call.reductionReviewTokens).flatMap { it.evidence.map { ref -> ref.id } + it.actionEvidence.map { ref -> ref.id } }.toSet()
+            require((call.evidence.map { it.id } + call.actionEvidence.map { it.id }).none { it in occupied })
         } else {
             require(call.reductionScan == null)
             ReductionReviewProtocol.proof(before, call)

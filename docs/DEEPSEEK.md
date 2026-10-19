@@ -203,3 +203,12 @@ val result = app.analysisProcessor.process(
 ```
 
 默认关闭，普通测试和 CI 不读取凭据。此用例使用仓库外的既有密钥和明确标注的合成行动计划、回看与日常记录，最多一次生成、一次独立核对，不自动重试。检查原计划与调整后计划分离、两类来源引用、整批核对以及确认后发布；JVM 使用临时包装密钥。实际运行结果见[四项后端验证记录](plans/2026-10-19-backend-completion.md#验证记录)，不代表模型总体准确率或真机验证。
+
+## 行动跨批报告与知识包的显式测试
+
+```bash
+./gradlew -PtraceLifeDeepSeekActionReport=true testDebugUnitTest \
+  --tests 'dev.tracelife.providers.DeepSeekActionReportLiveTest'
+```
+
+默认关闭，使用同一仓库外 KEY。先用明确合成的期初计划、补记回看及日常记录构造三个局部草稿，再最多调用真实 DeepSeek 三次：整体归并、全部原始来源扫描、最终相关原文独立核对。测试显式模拟确认后发布，再导出指定周的知识包，检查结论和旧／新计划均可定位。没有重试或追加压缩调用，JVM 使用临时包装密钥。实际结果见[本轮验证](plans/2026-10-19-action-report-export.md#验证记录)；不代表局部提取质量、复杂反例召回或总体分析准确率。

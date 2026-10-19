@@ -26,8 +26,11 @@ data class PeriodReductionReviewProgress(
     val counterevidenceFragments: Int = 0,
     val finalRereadFragments: Int = 0,
     val verdict: ReviewVerdict? = null,
+    val originalActionEvents: Int = 0,
+    val scannedActionEvents: Int = 0,
+    val finalRereadActionEvents: Int = 0,
 ) {
-    val allOriginalsScanned: Boolean get() = originalFragments > 0 && scannedFragments == originalFragments
+    val allOriginalsScanned: Boolean get() = originalFragments + originalActionEvents > 0 && scannedFragments == originalFragments && scannedActionEvents == originalActionEvents
     val counterevidenceSearchExhaustive: Boolean get() = false
 }
 
@@ -122,7 +125,7 @@ class PeriodReductionReviewProcessor(private val analysis: ControlledAnalysis) {
         val context = analysis.reductionReviewContext(runId, target)
         val findings = context.scans.flatMap { it.result.findings }
         val scanned = findings.map { it.receiptId }.toSet()
-        val pending = context.originalEvidence.map { it.id }.filter { it !in scanned }
+        val pending = (context.originalEvidence.map { it.id } + context.originalActionEvidence.map { it.id }).filter { it !in scanned }
         val related = findings.count { it.classification != ReductionRelevance.IRRELEVANT }
         val needsContext = findings.count { it.classification == ReductionRelevance.NEEDS_CONTEXT }
         val latestReview = context.latestReview
@@ -139,10 +142,11 @@ class PeriodReductionReviewProcessor(private val analysis: ControlledAnalysis) {
         if (latest.stored.version != task.stored.version || latest.status != task.status)
             throw AnalysisConflictException("原文核对进度在读取期间发生变化")
         return Snapshot(PeriodReductionReviewProgress(runId, target, status, task.stored.source, task.stored.version,
-            context.feedbackVersion, context.originalEvidence.size, scanned.size, related,
+            context.feedbackVersion, context.originalEvidence.size, context.scans.sumOf { it.evidence.size }, related,
             findings.count { it.classification == ReductionRelevance.IRRELEVANT }, needsContext,
             findings.count { it.classification == ReductionRelevance.COUNTEREVIDENCE },
-            latestReview?.evidence?.size ?: 0, latestReview?.review?.verdict), context, pending)
+            latestReview?.evidence?.size ?: 0, latestReview?.review?.verdict, context.originalActionEvidence.size,
+            context.scans.sumOf { it.actionEvidence.size }, latestReview?.actionEvidence?.size ?: 0), context, pending)
     }
 
     private fun key(purpose: String, context: ReductionReviewContext, ids: List<String>): String =

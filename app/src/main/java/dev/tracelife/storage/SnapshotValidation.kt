@@ -176,7 +176,7 @@ internal object SnapshotValidation {
                 ActionEvidenceProtocol.validateSources(state.actionPlan, state.calls.flatMap { it.actionEvidence }, snapshot.actionRevisions, state.request.scope)
             }
             snapshot.knowledgeRevisions.forEach { value ->
-                ActionEvidenceProtocol.validateSources(value.actionPlan, value.actionEvidence, snapshot.actionRevisions, value.scope)
+                ActionEvidenceProtocol.validateSources(value.actionPlan, KnowledgeValidation.allActionEvidence(value), snapshot.actionRevisions, value.scope)
             }
             require(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS &&
                 snapshot.deletedActions.map { it.id }.distinct().size == snapshot.deletedActions.size) { "行动删除标记过多或重复" }

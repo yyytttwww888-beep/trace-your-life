@@ -273,19 +273,19 @@ class ActionPeriodReflectionTest {
         }
     }
 
-    @Test fun `generic reading and material exports report omitted action backed knowledge`() {
+    @Test fun `generic reading includes action knowledge while legacy period material reports its omission`() {
         seed(); prepareAndPublish(); val snapshot = capture()
         val current = snapshot.records.groupBy { it.id }.map { (_, versions) -> versions.maxBy { it.revision } }
         val selection = PublishedKnowledgeExport.select(snapshot, current, current, ReadingExportOptions())
-        assertEquals(1, selection.omittedByReason["action_evidence_not_in_reading_package"])
-        assertTrue(selection.entries.isEmpty())
+        assertTrue(selection.omittedByReason.isEmpty())
+        assertEquals(1, selection.entries.size)
         assertEquals(1, PeriodReports(repository, clock).open(scope).omittedActionEvidenceKnowledge)
     }
 
     @Test fun `new payload versions reject mixed legacy action fields and retain old task format`() {
         seed(); period.start(request(), "run"); period.process("run", provider)
         val payload = JSONObject(analysis.task("run").stored.payload)
-        assertEquals(10, payload.getInt("formatVersion"))
+        assertEquals(11, payload.getInt("formatVersion"))
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(payload.put("formatVersion", 9).toString()) }
         val ordinary = JSONObject(AnalysisRunCodec.encode(AnalysisRunState(AnalysisRequest("合成旧任务", scope))))
         ordinary.put("formatVersion", 9); ordinary.remove("actionPlan"); ordinary.getJSONObject("request").remove("actionPeriod")

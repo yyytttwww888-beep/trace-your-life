@@ -2,13 +2,15 @@ package dev.tracelife.analysis
 
 /** Pure, bounded same-run provenance graph. Edges always point to earlier whole successful batches. */
 object ReductionGraph {
+    fun leafPurpose(state: AnalysisRunState): CallPurpose = if (state.request.actionPeriod) CallPurpose.ACTION_SYNTHESIS else CallPurpose.SYNTHESIS
+    fun isLeaf(purpose: CallPurpose): Boolean = purpose == CallPurpose.SYNTHESIS || purpose == CallPurpose.ACTION_SYNTHESIS
     fun nodeRef(call: AnalysisCall): ReductionNodeRef {
-        require(call.status == CallStatus.SUCCEEDED && call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REDUCTION))
+        require(call.status == CallStatus.SUCCEEDED && call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS, CallPurpose.REDUCTION))
         return ReductionNodeRef(call.batchKey, call.attempt, outputSha256(call))
     }
 
     fun outputSha256(call: AnalysisCall): String = AnalysisRunCodec.sha256(AnalysisRunCodec.json(when (call.purpose) {
-        CallPurpose.SYNTHESIS -> requireNotNull(call.proposal).let { mapOf("claims" to it.claims.map(AnalysisRunCodec::claimMap), "unknowns" to it.unknowns) }
+        CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS -> requireNotNull(call.proposal).let { mapOf("claims" to it.claims.map(AnalysisRunCodec::claimMap), "unknowns" to it.unknowns) }
         CallPurpose.REDUCTION -> digestMap(requireNotNull(call.reductionOutput))
         else -> throw IllegalArgumentException("只有综合与归并批次可以成为派生输入")
     }))
@@ -25,9 +27,12 @@ object ReductionGraph {
     fun originalEvidence(state: AnalysisRunState, node: ReductionNodeRef): List<EvidenceReceipt> =
         leaves(state.calls, node, false).flatMap { it.evidence }.distinctBy { it.id }
 
+    fun originalActionEvidence(state: AnalysisRunState, node: ReductionNodeRef): List<dev.tracelife.actions.ActionEvidenceReceipt> =
+        leaves(state.calls, node, false).flatMap { it.actionEvidence }.distinctBy { it.id }
+
     internal fun resolve(calls: List<AnalysisCall>, node: ReductionNodeRef, allowRedacted: Boolean = false): AnalysisCall {
         val call = requireNotNull(calls.singleOrNull { it.batchKey == node.batchKey && it.attempt == node.attempt }) { "派生输入不属于此前批次" }
-        require(call.purpose == CallPurpose.SYNTHESIS || call.purpose == CallPurpose.REDUCTION)
+        require(isLeaf(call.purpose) || call.purpose == CallPurpose.REDUCTION)
         if (allowRedacted && isRedacted(call)) {
             require(call.redactedReductionIdentity == null || call.redactedReductionIdentity.outputSha256 == node.outputSha256)
             return call
@@ -38,7 +43,7 @@ object ReductionGraph {
 
     private fun leaves(calls: List<AnalysisCall>, node: ReductionNodeRef, allowRedacted: Boolean): List<AnalysisCall> {
         val call = resolve(calls, node, allowRedacted)
-        if (call.purpose == CallPurpose.SYNTHESIS) return listOf(call)
+        if (isLeaf(call.purpose)) return listOf(call)
         val earlier = calls.take(calls.indexOf(call))
         return call.reductionInputs.flatMap { leaves(earlier, it.node, allowRedacted) }
     }
@@ -71,7 +76,7 @@ object ReductionGraph {
     fun feedbackClaims(calls: List<AnalysisCall>, node: ReductionNodeRef, includeDerived: Boolean = true,
         allowRedacted: Boolean = false): List<ClaimRef> {
         val call = resolve(calls, node, allowRedacted)
-        if (call.purpose == CallPurpose.SYNTHESIS) return requireNotNull(call.proposal).claims.mapIndexed { index, claim ->
+        if (isLeaf(call.purpose)) return requireNotNull(call.proposal).claims.mapIndexed { index, claim ->
             ClaimRef(call.batchKey, index, AnalysisRunCodec.claimSha256(claim))
         }
         val earlier = calls.take(calls.indexOf(call))
