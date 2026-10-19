@@ -778,9 +778,10 @@ class LifeRepository(
         SourceStamp(snapshot.storeId, snapshot.generation), snapshot.analysisGeneration, null, stagedFile, destination,
     )
 
-    /** A derived export additionally becomes invalid when one of its included results expires. */
+    /** A derived export can bind both ends of its evaluation interval at atomic publication. */
     fun publishDerivedFile(
         source: SourceStamp, analysisGeneration: Long, validUntil: Instant?, stagedFile: File, destination: File,
+        validFrom: Instant? = null,
     ) = access { db ->
         requireExternalPath(stagedFile)
         requireExternalPath(destination)
@@ -792,8 +793,11 @@ class LifeRepository(
             if (source.storeId != state.first || source.generation != state.second || analysisGeneration != analysisGeneration(db)) {
                 throw StaleSnapshotException("资料或分析已变化，须重新生成导出")
             }
-            if (validUntil != null && !clock.instant().isBefore(validUntil)) {
-                throw StaleSnapshotException("报告材料已过期，须重新生成导出")
+            if (validFrom != null || validUntil != null) {
+                val now = clock.instant()
+                if (validFrom != null && now < validFrom || validUntil != null && !now.isBefore(validUntil)) {
+                    throw StaleSnapshotException("导出材料的评估时间或有效期已变化，须重新生成导出")
+                }
             }
             Files.createLink(destination.toPath(), stagedFile.toPath())
         }

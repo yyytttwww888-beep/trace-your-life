@@ -1,6 +1,6 @@
 # 数据转移接口与格式
 
-本文件描述数据转移后端的实际接口，包括 M3 分批分析、核对、用户反馈与正式知识的备份边界。产品目的与完整范围见[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md)，初始实现见[M2 计划](plans/2026-10-16-backup-knowledge-export.md)。知识发布与有效状态见[正式知识接口](KNOWLEDGE.md)。当前不提供前端按钮；调用须在后台线程执行，不能把整库转移接口提供给模型。
+本文件描述数据转移后端的实际接口，包括分析、核对、用户反馈、正式知识与行动的备份边界，以及周期材料和看板导出。产品目的与完整范围见[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md)，初始实现见[M2 计划](plans/2026-10-16-backup-knowledge-export.md)。知识发布与有效状态见[正式知识接口](KNOWLEDGE.md)。当前不提供前端按钮；调用须在后台线程执行，不能把整库转移接口提供给模型。
 
 ## 调用入口
 
@@ -125,6 +125,38 @@ manifest 明确 `synthesisStatus=NOT_GENERATED`、`restorable=false`、`validity
 
 普通阅读包、证据包和周期材料包均明确 `reductionDraftsIncluded=false`。已正式发布的归并洞察可进入普通阅读包和周期材料包；导出检查全部祖先反馈及完整扫描原文范围，扫描分类与最终重读证据分别标明。原文证据包仍不包含正式知识。归并草稿及依赖保存在完整备份中，通过[草稿接口](PERIOD_REDUCTION.md)当前读取，专用草稿文件导出尚未实现。
 
+## 看板导出
+
+`exportDashboard(destination, request)` 建立新看板后导出；`exportDashboard(destination, snapshot)` 导出已查阅的同一快照，失效则拒绝。请求、趋势口径、全局行动与日期语义见[看板接口](DASHBOARD.md)。本模块不新增持久化类型，数据库及完整备份格式不变。
+
+ZIP 格式为 `trace-life-dashboard` v1：
+
+```text
+README.md                  阅读入口和范围
+dashboard.md               当前／前期覆盖、卡片与导航
+manifest.json              格式、历史状态、包含／省略项与校验入口
+metadata.json              关注项顺序、来源状态、比较与数量
+metrics/current.json       本期口径、范围、每日值和图表点
+metrics/current.csv        本期图表点；90 天按自然周
+metrics/previous.json      前期口径、范围、每日值和图表点
+metrics/previous.csv       前期图表点
+sources/current/           本期分页来源元数据及贡献点映射
+sources/previous/          前期分页来源元数据及贡献点映射
+insights/current/          本期匹配洞察 ID／修订定位
+insights/previous/         前期匹配洞察 ID／修订定位
+actions/                   当前全局行动摘要
+markers/                   本期行动采纳／回看标记
+inventory/                 文件长度与 SHA-256 分页清单
+```
+
+资料覆盖是独立辅助区，manifest 明示 `sourceMetadataPurpose=global_record_coverage_not_health_card_evidence`；即使默认三张健康卡片尚不可用，也不会把记录覆盖当作健康数值。每个来源保存 ID、修订、发生日期、时区、归档、主题、时间类别与贡献点索引；未知时间及区间不贡献每日点，可能同时出现在两期候选中。`ExportResult.records` 为两期来源 ID 去重后的数量。
+
+每页最多 25 项；CSV 仅含程序生成的身份、日期、版本、数值和状态。用户标题、主题只放入 JSON 资料与转义后的 Markdown，不进入 CSV。洞察只保存应用内 ID／修订，不复制洞察正文或受控模型凭据。行动区保存标题、状态、回看日期、来源状态、最新执行及回看身份；做法、预期信号和回看观察正文省略。原始记录全文、照片、独立反馈、任务台账和凭据也不在包内。
+
+manifest 标明 `validity=historical_snapshot_at_evaluatedAt`、`restorable=false`、`modelCitableReceipt=false`、`modelRequests=0`。文件清单以哈希链分页，生成后验证内部导航目标。包最多 10,000 个文件、64 MiB 解压内容；索引页最多 128 KiB，其他文件最多 1 MiB，超限中止。
+
+沿用受控暂存、刷盘、无覆盖原子创建与中断清理。最终创建文件时在同一主存锁／事务内检查来源与分析代数，并用同一次时钟读取验证 `[evaluatedAt, validUntil)`；复制文件期间发生修改、到期、跨午夜或时钟回拨均拒绝发布。外部已导出的历史包不会随以后资料变化自动更新。系统文件选择器与 Android 文档 provider 的接入仍待前端阶段。
+
 ## 行动保存与阅读导出
 
 完整备份 v5 的 `actionRevisions` 保存严格版本化的行动载荷字符串，内部格式 v1；`actionHeads` 指向每条完整修订链的最新版本，`deletedActions` 登记永久删除。每个修订保留当前计划、本次回看、被回看的旧计划及回看操作 ID。载荷只保存用户明确提交的文字，来源知识仅保留 ID／修订，不复制机器正文。备份校验连续修订链、当前指针、状态转换、旧计划绑定与操作身份，来源已删除不阻止用户独立行动文字恢复。
@@ -147,6 +179,6 @@ KNOWLEDGE 阅读包从 `actions/index.md` 进入当前计划，提供按回看�
 
 来源快照最多 100,000 条记录修订、10,000 个模板版本，限制在范围筛选前执行；存储层先检查数量和文本预算再读取全部对象。阅读包筛选后最多 10,000 条当前记录、100,000 个文件、256 MiB 解压内容；索引默认每页 50 条，可设置 1–100。单页索引限制 128 KiB，过长机器数据按字节和条数分页。大量照片可选择省略或缩小范围。
 
-原生 SQLite 和 Robolectric 测试覆盖往返、旧格式兼容、知识和行动完整修订链、本地回看优先、删除优先与原文缺失、发布／恢复版本检查、损坏与超限输入、目录穿越、索引链接和中断清理；周期材料还覆盖全部核对引用、指标 CSV、到期失效，以及预检查后出现同名目标时不覆盖。2026-10-19 全量验证共 511 项，505 项通过、6 项显式真实 API 测试默认跳过；lint 无错误、保留 2 项既有版本提示，调试 APK 构建成功。阶段记录见[路线进度](ROADMAP.md)。尚未完成实体手机、系统文档 provider 或外部 AI 实际阅读验收。
+原生 SQLite 和 Robolectric 测试覆盖往返、旧格式兼容、知识和行动完整修订链、本地回看优先、删除优先与原文缺失、发布／恢复版本检查、损坏与超限输入、目录穿越、索引链接和中断清理；周期材料还覆盖全部核对引用、指标 CSV、到期失效，以及预检查后出现同名目标时不覆盖。看板导出增加双窗口贡献映射、正文省略、分页哈希导航、跨午夜及最终发布时钟回拨验证。当前累计 541 项离线测试通过，6 项显式真实 API 测试默认跳过；lint 无错误、保留 2 项既有版本提示，调试 APK 构建成功，分次验证见[M4 阶段计划](plans/2026-10-19-dashboard-data.md#验证记录)。尚未完成实体手机、系统文档 provider 或外部 AI 实际阅读验收。
 
 指标解释的备份重算与完整范围导出规则见[受控指标分析](METRIC_ANALYSIS.md)。指标凭据保存实际来源修订，知识阅读包和周期包检查完整日期范围与全部成员；普通 `metrics/metadata.json` 的应用统计身份保持 `modelCitableReceipt=false`，已发布洞察另带受控指标凭据。
