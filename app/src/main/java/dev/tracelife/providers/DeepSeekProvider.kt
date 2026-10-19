@@ -24,6 +24,10 @@ import dev.tracelife.analysis.ReductionRelevance
 import dev.tracelife.analysis.ReductionScanCompletion
 import dev.tracelife.analysis.ReductionScanResult
 import dev.tracelife.analysis.TokenCountKind
+import dev.tracelife.profile.ProfileAnalysisProtocol
+import dev.tracelife.profile.ProfileAnalysisTarget
+import dev.tracelife.profile.ProfileDimension
+import dev.tracelife.profile.ProfileLayer
 import java.io.StringReader
 import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
@@ -48,15 +52,19 @@ class DeepSeekProvider internal constructor(
     override fun countInputTokens(request: ModelRequest): Int = prepare(request).inputTokens
     override fun prepare(request: ModelRequest): PreparedModelRequest {
         val envelope = StrictJson.parse(request.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
-        return prepareWithInstructions(request, when (envelope["purpose"]) {
-            "REDUCTION" -> REDUCTION_INSTRUCTIONS
-            "METRIC_ANALYSIS" -> METRIC_INSTRUCTIONS
+        val profile = profileTarget(envelope, "SYNTHESIS")
+        return prepareWithInstructions(request, when {
+            profile != null -> OUTPUT_INSTRUCTIONS + ProfileAnalysisProtocol.GENERATION_INSTRUCTIONS
+            envelope["purpose"] == "REDUCTION" -> REDUCTION_INSTRUCTIONS
+            envelope["purpose"] == "METRIC_ANALYSIS" -> METRIC_INSTRUCTIONS
             else -> OUTPUT_INSTRUCTIONS
         })
     }
     override fun prepareReview(request: ModelRequest): PreparedModelRequest {
         val envelope = StrictJson.parse(request.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
+        val profile = profileTarget(envelope, "REVIEW")
         return prepareWithInstructions(request, when {
+            profile != null -> REVIEW_INSTRUCTIONS + ProfileAnalysisProtocol.REVIEW_INSTRUCTIONS
             envelope["purpose"] == "REDUCTION_REVIEW" -> PERIOD_REVIEW_INSTRUCTIONS
             envelope["purpose"] == "REVIEW" && envelope["evidenceType"] == "RECORD_METRIC" -> METRIC_REVIEW_INSTRUCTIONS
             else -> REVIEW_INSTRUCTIONS
@@ -95,7 +103,12 @@ class DeepSeekProvider internal constructor(
         require(request == prepare(request.original)) { "DeepSeek 请求与已计量输入不一致" }
         val envelope = StrictJson.parse(request.original.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
         val metric = envelope["purpose"] == "METRIC_ANALYSIS"
-        val (proposal, usage) = execute(request) { parseProposal(it, metric) }
+        val profile = profileTarget(envelope, "SYNTHESIS")
+        val (proposal, usage) = execute(request) { content ->
+            parseProposal(content, metric).also { proposal ->
+                require(profile == null || proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION })
+            }
+        }
         return ModelCompletion(proposal, usage)
     }
 
@@ -141,6 +154,15 @@ class DeepSeekProvider internal constructor(
             result to usage
         } catch (failure: DeepSeekException) { throw failure }
         catch (_: Exception) { throw DeepSeekException(DeepSeekFailure.RESPONSE) }
+    }
+
+    private fun profileTarget(envelope: Map<String, Any?>, expectedPurpose: String): ProfileAnalysisTarget? {
+        val raw = envelope["profileTarget"] ?: return null
+        require(envelope["purpose"] == expectedPurpose && envelope["evidenceType"] == null) { "画像目标与调用类型不一致" }
+        val target = raw.obj()
+        require(target.keys == setOf("dimension", "layer"))
+        return ProfileAnalysisTarget(ProfileDimension.valueOf(target["dimension"] as? String ?: error("missing dimension")),
+            ProfileLayer.valueOf(target["layer"] as? String ?: error("missing layer")))
     }
 
     private fun parseProposal(content: String, metric: Boolean): BatchProposal {

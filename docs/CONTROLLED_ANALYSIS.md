@@ -1,6 +1,6 @@
 # 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批归并见[分层周期草稿](PERIOD_REDUCTION.md)；归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，画像仍待实现。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批归并见[分层周期草稿](PERIOD_REDUCTION.md)；归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，新的[画像候选](PROFILE_CANDIDATES.md)复用原文综合与独立核对，仅生成近期／情境提案。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 
@@ -35,6 +35,8 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 | `task(id)` / `tasks(offset, limit)` | 查看任务、状态、调用、证据和历史提案；过期或失效状态明确显示 |
 | `recoverInterrupted(id)` | 工作者重启后，把遗留在途调用转为可重试；不自动重复派发 |
 | `delete(id, expectedVersion)` | 按版本删除任务与提案；保存删除标记，旧的受管备份不能恢复该任务 |
+
+可空的 `AnalysisRequest.profileTarget` 固定画像维度与近期／情境层次；此类任务只允许 `SYNTHESIS`、`REVIEW`，详见[画像候选](PROFILE_CANDIDATES.md)。普通任务保持原有行为。
 
 计划日期均为包含端点的绝对发生日期，不用录入时间替代。完整周期的主题仅为关注提示，不排除误分类和未分类记录。`recordIds = null` 表示全部；非空 ID 集合是用户明确指定的子范围，缺失、归档排除或不在期间的 ID 由 `missingExactIds` 报告，空集合拒绝。
 

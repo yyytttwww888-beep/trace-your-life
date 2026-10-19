@@ -70,7 +70,7 @@ class ControlledMetricAnalysisTest {
         assertEquals(listOf("known", "overlap", "unknown"), call.metricEvidence.single().sources.map { it.recordId })
         assertEquals(listOf(call.metricEvidence.single().id), proposal.claims.single().evidenceIds)
         assertEquals(0L, AnalysisBatchProcessor(analysis).coverage("run").completedTextCodePoints)
-        assertEquals(7, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(8, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
     }
 
     @Test fun `empty period still has typed zero coverage and no fictitious raw evidence`() {
@@ -293,6 +293,7 @@ class ControlledMetricAnalysisTest {
         analysis.runBatch("run", "raw", listOf(EvidenceSelection("known", "body")), raw)
         val old = JSONObject(analysis.task("run").stored.payload).apply {
             put("formatVersion", 6)
+            getJSONObject("request").remove("profileTarget")
             getJSONArray("calls").getJSONObject(0).remove("metricEvidence")
         }.toString()
         val restored = AnalysisRunCodec.decode(old)
@@ -302,6 +303,7 @@ class ControlledMetricAnalysisTest {
         analysis.analyzeMetrics("run", "metric", MetricProvider())
         val smuggled = JSONObject(analysis.task("run").stored.payload).apply {
             put("formatVersion", 6)
+            getJSONObject("request").remove("profileTarget")
             val calls = getJSONArray("calls")
             repeat(calls.length()) { calls.getJSONObject(it).remove("metricEvidence") }
         }.toString()

@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import dev.tracelife.model.RevisionConflictException
 import dev.tracelife.profile.ProfileChange
+import dev.tracelife.profile.ProfileAnalysisTarget
 import dev.tracelife.profile.ProfileCodec
 import dev.tracelife.profile.ProfileHead
 import dev.tracelife.profile.ProfileKnowledgeRef
@@ -43,6 +44,12 @@ internal object ProfileStore {
             if (it.moveToFirst()) ProfileCodec.decode(it.getString(0)) else null
         }
     }
+
+    fun forSlot(db: SQLiteDatabase, knowledgeId: String, target: ProfileAnalysisTarget): StoredProfileRevision? =
+        db.rawQuery("SELECT r.payload FROM profile_heads h JOIN profile_revisions r ON r.id = h.id AND r.revision = h.revision WHERE h.knowledge_id = ? AND h.dimension = ? AND h.layer = ?",
+            arrayOf(knowledgeId, target.dimension.name, target.layer.name)).use {
+            if (it.moveToFirst()) ProfileCodec.decode(it.getString(0)) else null
+        }
 
     fun save(db: SQLiteDatabase, value: StoredProfileRevision, expectedRevision: Int?, checkKnowledge: (ProfileKnowledgeRef) -> Unit): StoredProfileRevision {
         ProfileValidation.validate(value)
@@ -129,7 +136,10 @@ internal object ProfileStore {
         }) }
     }
 
-    private fun deleted(db: SQLiteDatabase, id: String) = db.rawQuery("SELECT 1 FROM deleted_profiles WHERE id = ?", arrayOf(id)).use { it.moveToFirst() }
+    fun deleted(db: SQLiteDatabase, id: String): Boolean {
+        SnapshotValidation.id(id)
+        return db.rawQuery("SELECT 1 FROM deleted_profiles WHERE id = ?", arrayOf(id)).use { it.moveToFirst() }
+    }
 
     private fun headValues(value: StoredProfileRevision) = ContentValues().apply {
         put("id", value.id); put("revision", value.revision)

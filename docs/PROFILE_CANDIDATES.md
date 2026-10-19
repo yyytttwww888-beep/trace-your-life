@@ -1,0 +1,84 @@
+# 受控画像候选生成接口
+
+本阶段从固定范围的原始记录生成近期状态或情境模式提案，随后独立核对，并由用户明确选择保存为画像候选。完整目标见[画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)，范围和验证见[M4 第三阶段计划](plans/2026-10-19-profile-candidates.md)。长期倾向自动推断、跨任务语义治理、画像摘要与定时后台运行仍待实现。
+
+## 建立任务与分批处理
+
+应用入口是 `TraceLifeApplication.profileCandidates`，对应 `ProfileCandidateGenerator(repository, analysis, clock)`。在后台线程调用；这是受信任的应用编排接口，不向模型开放任意主存读取或写入。
+
+```kotlin
+val task = app.profileCandidates.start(
+    AnalysisRequest(
+        question = "从已记录的学习经历中，找出有明确情境限制的做法与体验。",
+        scope = AnalysisQuery(
+            LocalDate.of(2026, 10, 12), LocalDate.of(2026, 10, 18), "Asia/Shanghai",
+        ),
+        profileTarget = ProfileAnalysisTarget(
+            ProfileDimension.ABILITIES_AND_STRATEGIES,
+            ProfileLayer.CONTEXTUAL_PATTERN,
+        ),
+    ),
+    id = stableRunId,
+)
+val report = app.profileCandidates.process(
+    task.stored.id,
+    generator = app.deepSeekProvider,
+    reviewer = app.deepSeekProvider,
+    maxModelRequests = 5,
+    fragmentsPerBatch = 1,
+)
+val progress = app.profileCandidates.inspect(task.stored.id, limit = 25)
+```
+
+每个任务固定一个八维目标及一个层次；`RECENT_STATE`、`CONTEXTUAL_PATTERN` 可用，`LONG_TERM` 在请求和解码时拒绝。可以为其他维度单独建立有界任务，不能将八维分析解释为已经取得全部生活资料。范围中的未知日期、跨期记录和未分类资料仍按原协议处理，主题仅作关注提示。
+
+目标以 `AnalysisRequest.profileTarget` 保存，重启和恢复不依赖解析问题文字。相同任务 ID 与相同计划重试复用已有任务；使用旧 ID 改变范围或目标会被拒绝。来源变化后原任务停止，新任务必须显式建立。
+
+每轮先处理已有待核对提案，再沿元数据索引读取下一批未处理原文。生成与核对共用 `maxModelRequests=1..100`，单个生成批次最多 `fragmentsPerBatch=1..32` 个片段；单请求和累计预算仍由[受控分析](CONTROLLED_ANALYSIS.md)强制执行。默认每批 1 个片段，为整批重读核对保留输入空间；显式扩大批次时须同时为生成和核对提高任务输入预算。生成预算不足时减小批次，核对不能删掉必要原文来凑预算。较长候选或后续用户反馈仍可能使核对超过预算，此时保留已有进度并报告 `BUDGET_EXHAUSTED`；任务预算不可原地修改，须明确建立预算更充足的新任务。
+
+处理不会自动确认陈述、发布知识或采用画像。取消只阻止后续派发；已经发送的请求无法撤回。失败保留安全原因码和进度，不自动重试付费请求；遗留在途调用使用 `analysis.recoverInterrupted(runId)` 后显式继续。
+
+## 查看候选与证据
+
+`inspect(runId, offset, limit)` 提供有界元数据页，不返回整批陈述或原文；`limit=1..100`。使用 `next(progress)` 翻页、`candidate(progress, claim)` 读取本页登记的单条提案，二者校验来源、分析代数、任务版本和时间。也可按已知身份调用 `candidate(runId, claim, expectedRunVersion)`；条件变化后须重新查看。原文仍沿受控分析的范围与字段入口定位，已物化条目也可以使用[画像证据接口](PERSONAL_PROFILE.md#证据和反馈边界)。
+
+状态分别说明待核对、当前核对意见、待用户确认、用户否定／纠正／撤回、已删除、可保存或已有画像决定。模型的 `SUPPORTED` 仅表示有限证据下的意见，不是事实认证；用户认可也不增加独立原始事件。
+
+生成只能引用本次登记的原文，所有陈述均为 `POSSIBLE_INTERPRETATION`。提示词要求模型保留自述性质、具体情境、支持与反例、替代解释和未知；画像目标、旧画像或用户采用决定不充作新原始证据。
+
+独立核对重读整个生成批次的全部原文，不能只重读模型选择的支持引用。批内重读不代表已经搜索全库反例；`counterevidenceSearchExhaustive=false`。`crossTaskSemanticDeduplication=false`、`manualDeletedSlotTracking=false` 分别说明跨任务语义去重和已永久删除的手工组织位置尚未跟踪。多批处理明确报告尚未跨批整合，不将若干局部提案包装成完整周期或长期画像。
+
+## 明确确认与保存
+
+用户查看提案后，经[共享反馈接口](CLAIM_REVIEW.md)明确确认、纠正或否定。确认会产生新的反馈版本，先前核对因此失效，需要重新核对当前版本。以下为已经由用户明确选中并确认的陈述：
+
+```kotlin
+val confirmation = app.analysisFeedback.respond(
+    runId = runId,
+    claim = selectedClaim,
+    expectedRunVersion = app.analysis.task(runId).stored.version,
+    decision = ClaimFeedbackDecision.CONFIRMED,
+)
+app.analysis.reviewClaim(
+    runId, reviewOperationId, selectedClaim, provider = app.deepSeekProvider,
+)
+val saved = app.profileCandidates.materialize(
+    runId, selectedClaim, expectedRunVersion = app.analysis.task(runId).stored.version,
+)
+```
+
+`materialize` 重新检查任务范围、来源、版本、期限、确认与最新支持核对，条件成立才将陈述发布为共享 `INSIGHT` 并保存为 `CANDIDATE`。机器正文和证据仍只由共享知识维护。候选默认不进入当前画像；用户另行通过 `personalProfile.adopt` 采用。
+
+重复保存使用稳定身份，不重复增加知识或画像修订。已有条目的采用决定、独立文字和当前修订保留；不会把 `DECLINED` 或 `SUPERSEDED` 重置成候选，也不自动改绑另一个知识版本。发布与创建的仓储桥接保持事务一致，条件变化或容量失败不留下部分保存。
+
+物化结果 `status` 区分 `CREATED`、`EXISTING`、`DELETED`、`CONFLICT`，`profile` 返回实际条目 ID／当前修订，`knowledge` 返回固定知识引用，`adoption` 返回已有采用决定；`DELETED` 时这三个可空字段均为空。`EXISTING` 不表示新建成功或已被采用；`CONFLICT` 须通过既有维护接口明确处理，不能重试时改用随机 ID。
+
+由此流水线创建的画像被永久删除后，其稳定 ID 不能再次使用。现存同知识／同维度／同层次的手工条目也会被识别并保留。本阶段没有跨任务同义判断合并：永久删除的手工自定义 ID 不再保存原组织位置，不能据此识别后来显式选中的同义提案；这一限制与稳定身份幂等分别报告。旧的否定不会被流程自动恢复成当前画像。
+
+## 维护和迁移
+
+任务期间来源修订、补记、删除或到期，会阻止旧任务继续生成或保存；时钟回拨到任务更新时间之前也不能派发或物化。反馈变化使相关旧核对失效；确认后的新版本须重新核对，否定、纠正、撤回或永久删除反馈会阻止对应候选保存，其余未处理批次仍可继续。已发布知识与画像继续使用现有失效传播，用户独立文字按原规则保留。当前由调用方显式启动和续跑，没有 Android 定时任务，也不会在保存日记后自动联网。
+
+分析载荷 v8 保存目标及已有调用台账，严格读取 v1–v7；旧版本不能夹带新字段。数据库仍为 schema v7，外层备份仍为逻辑 v6，画像载荷仍为 v1。完整加密备份保留候选任务；恢复后按历史来源处理，不自动重跑或重新确认。普通阅读包省略分析提案和未采用画像；只有已采用、仍有效且共享知识也被纳入的条目进入画像阅读目录。
+
+真实 DeepSeek 验证采用独立默认关闭的开关，只使用合成资料；命令和实际边界见[DeepSeek 接入](DEEPSEEK.md)。接口自动化测试、真实模型小样本和真机验收分别记录。

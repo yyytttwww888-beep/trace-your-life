@@ -6,6 +6,9 @@ import android.util.JsonWriter
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.metrics.RecordMetricReceipt
+import dev.tracelife.profile.ProfileAnalysisTarget
+import dev.tracelife.profile.ProfileDimension
+import dev.tracelife.profile.ProfileLayer
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.StoredAnalysisRun
 import java.io.StringReader
@@ -21,7 +24,7 @@ object AnalysisRunCodec {
     private val digest = Regex("[0-9a-f]{64}")
     private val NEW_FIELDS = setOf("redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 7)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 8)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -30,8 +33,10 @@ object AnalysisRunCodec {
         require(version >= 6 || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) ||
             it.reductionInputs.any { input -> input.includeDerivedFeedback } || it.redactedReductionIdentity != null })
         require(version >= 7 || state.calls.none { it.purpose == CallPurpose.METRIC_ANALYSIS || it.metricEvidence.isNotEmpty() })
+        require(version >= 8 || state.request.profileTarget == null) { "旧分析格式不支持画像目标" }
         val reserved = responseReservation(state)
-        return json(mapOf("formatVersion" to version, "request" to requestMap(state.request), "calls" to state.calls.map {
+        val request = requestMap(state.request).let { if (version < 8) it - "profileTarget" else it }
+        return json(mapOf("formatVersion" to version, "request" to request, "calls" to state.calls.map {
             var fields = callMap(it)
             if (version < 7) fields = fields - "metricEvidence"
             if (version < 6) fields = (fields - NEW_FIELDS) + mapOf("reductionInputs" to it.reductionInputs.map { input -> ReductionGraph.inputMap(input) - "includeDerivedFeedback" })
@@ -111,10 +116,15 @@ object AnalysisRunCodec {
             }
         }
         val root = read(0).obj("formatVersion", "request", "calls")
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..7)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..8)
         val format = root.int("formatVersion")
         val legacy = format == 1
-        val request = root["request"].obj("question", "scope", "limits", "focusTopics", "expiresAt")
+        val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
+            if (format >= 8) arrayOf("profileTarget") else emptyArray()))
+        val profileTarget = request["profileTarget"]?.let { raw ->
+            val target = raw.obj("dimension", "layer")
+            ProfileAnalysisTarget(ProfileDimension.valueOf(target.string("dimension")), ProfileLayer.valueOf(target.string("layer")))
+        }
         val scope = request["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
         val limits = request["limits"].obj("pageSize", "fragmentCodePoints", "maxInputBytes", "inputTokenLimit", "outputTokenReserve", "maxCalls", "totalInputBytes", "maxOutputBytes")
         val state = AnalysisRunState(
@@ -125,7 +135,7 @@ object AnalysisRunCodec {
             ), AnalysisLimits(limits.int("pageSize"), limits.int("fragmentCodePoints"), limits.int("maxInputBytes"),
                 limits.int("inputTokenLimit"), limits.int("outputTokenReserve"), limits.int("maxCalls"),
                 limits.long("totalInputBytes"), limits.int("maxOutputBytes")),
-                request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt")),
+                request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
@@ -255,6 +265,9 @@ object AnalysisRunCodec {
     }
 
     private fun validate(state: AnalysisRunState) {
+        require(state.request.profileTarget == null || state.calls.all {
+            it.purpose == CallPurpose.SYNTHESIS || it.purpose == CallPurpose.REVIEW
+        }) { "画像任务只允许原文候选综合与核对" }
         val scope = state.request.scope
         require(scope.from.year in 1..9999 && scope.through.year in 1..9999 && scope.from <= scope.through)
         ZoneId.of(scope.zoneId)
@@ -408,7 +421,11 @@ object AnalysisRunCodec {
         "limits" to request.limits.let { mapOf("pageSize" to it.pageSize, "fragmentCodePoints" to it.fragmentCodePoints,
             "maxInputBytes" to it.maxInputBytes, "inputTokenLimit" to it.inputTokenLimit, "outputTokenReserve" to it.outputTokenReserve,
             "maxCalls" to it.maxCalls, "totalInputBytes" to it.totalInputBytes, "maxOutputBytes" to it.maxOutputBytes) },
-        "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString())
+        "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString(),
+        "profileTarget" to request.profileTarget?.let(::profileTargetMap))
+
+    internal fun profileTargetMap(target: ProfileAnalysisTarget): Map<String, Any?> =
+        mapOf("dimension" to target.dimension.name, "layer" to target.layer.name)
     internal fun receiptMap(ref: EvidenceReceipt): Map<String, Any?> = mapOf("id" to ref.id, "recordId" to ref.recordId, "revision" to ref.revision,
         "field" to ref.field, "start" to ref.start, "end" to ref.end, "totalCodePoints" to ref.totalCodePoints, "sha256" to ref.sha256)
     private fun callMap(call: AnalysisCall) = mapOf("batchKey" to call.batchKey, "attempt" to call.attempt, "providerId" to call.providerId,

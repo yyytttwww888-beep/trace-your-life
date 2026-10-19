@@ -1,6 +1,6 @@
 # 陈述核对与用户反馈接口
 
-本阶段在保存的提案上增加语义核对和独立用户反馈，沿用[受控分析接口](CONTROLLED_ANALYSIS.md)的范围、快照、预算与取证台账。实现计划见[第三阶段](plans/2026-10-17-evidence-review-and-feedback.md)。核对、用户认可、证据有效性分别管理；结果不会自动成为正式知识，须经[独立条件发布](KNOWLEDGE.md)。后续已支持[有界综合提案](SYNTHESIS_ACTIONS.md)，核对综合目标时重读该批全部原文上下文；跨批归并由[分层周期草稿](PERIOD_REDUCTION.md)提供；归并陈述的[原文核对与发布](PERIOD_REVIEW.md)另有受控流程，画像仍待实现。
+本阶段在保存的提案上增加语义核对和独立用户反馈，沿用[受控分析接口](CONTROLLED_ANALYSIS.md)的范围、快照、预算与取证台账。实现计划见[第三阶段](plans/2026-10-17-evidence-review-and-feedback.md)。核对、用户认可、证据有效性分别管理；结果不会自动成为正式知识，须经[独立条件发布](KNOWLEDGE.md)。后续已支持[有界综合提案](SYNTHESIS_ACTIONS.md)，核对综合目标时重读该批全部原文上下文；跨批归并由[分层周期草稿](PERIOD_REDUCTION.md)提供；归并陈述的[原文核对与发布](PERIOD_REVIEW.md)另有受控流程，画像提案沿用[受控候选流程](PROFILE_CANDIDATES.md)，同样重读整批原文并保留独立确认。
 
 ## 受控核对
 
