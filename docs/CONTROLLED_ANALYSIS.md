@@ -1,6 +1,6 @@
 # 受控分析接口
 
-本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批归并见[分层周期草稿](PERIOD_REDUCTION.md)；归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，新的[画像候选](PROFILE_CANDIDATES.md)复用原文综合与独立核对，仅生成近期／情境提案。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
+本模块已经实现文字取证、请求预算、可恢复调用台账和待核对提案保存；后续已增加 [DeepSeek 适配器及自动分批处理](DEEPSEEK.md)、[陈述语义核对与用户反馈](CLAIM_REVIEW.md)。正式知识通过[独立条件发布接口](KNOWLEDGE.md)保存；可继续[自动整理与查阅周期材料](PERIOD_REFLECTION.md)，或执行[有界原文综合](SYNTHESIS_ACTIONS.md)。跨批归并见[分层周期草稿](PERIOD_REDUCTION.md)；归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，新的[画像候选](PROFILE_CANDIDATES.md)复用原文综合与独立核对，普通入口生成近期／情境提案，[纵向入口](LONGITUDINAL_PROFILE.md)生成需维护核对的长期候选。[行动周期分析](ACTION_PERIOD_REFLECTION.md)另登记行动证据类型。依据是[检索与可靠性协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，最初实施范围见[M3 第一阶段计划](plans/2026-10-16-controlled-analysis.md)。
 
 ## 调用入口
 

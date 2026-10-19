@@ -30,6 +30,8 @@ import dev.tracelife.profile.ProfileCodec
 import dev.tracelife.profile.ProfileHead
 import dev.tracelife.profile.ProfileValidation
 import dev.tracelife.profile.StoredProfileRevision
+import dev.tracelife.dashboard.DashboardPreferencesCodec
+import dev.tracelife.dashboard.StoredDashboardPreferences
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -40,7 +42,7 @@ import java.time.LocalDate
 
 /** Versioned logical transfer format. Streams belong to the caller; no credentials are serialized. */
 object SnapshotJsonCodec {
-    const val FORMAT_VERSION = 6
+    const val FORMAT_VERSION = 7
     private const val MAX_DEPTH = 16
     internal const val MAX_NODES = 2_000_000L
     private const val MAX_STRING_CHARACTERS = 1_048_576
@@ -56,6 +58,7 @@ object SnapshotJsonCodec {
             field("capturedAt", snapshot.capturedAt.toString())
             field("sourceSchemaVersion", snapshot.sourceSchemaVersion)
             field("analysisGeneration", snapshot.analysisGeneration)
+            field("dashboardPreferences", snapshot.dashboardPreferences?.let(DashboardPreferencesCodec::encode))
             array("analysisRuns", snapshot.analysisRuns) { run -> objectValue {
                 field("id", run.id); field("version", run.version)
                 name("source").objectValue { field("storeId", run.source.storeId); field("generation", run.source.generation) }
@@ -143,6 +146,7 @@ object SnapshotJsonCodec {
         checkBackup(if (format < 5) actionFields.none(root::containsKey) else actionFields.all(root::containsKey), "行动字段与资料版本不一致")
         val profileFields = setOf("profileRevisions", "profileHeads", "deletedProfiles")
         checkBackup(if (format < 6) profileFields.none(root::containsKey) else profileFields.all(root::containsKey), "画像字段与资料版本不一致")
+        checkBackup(root.containsKey("dashboardPreferences") == (format >= 7), "看板偏好字段与资料版本不一致")
         RepositorySnapshot(
             snapshotId = root.string("snapshotId"), storeId = root.string("storeId"), generation = root.long("generation"), capturedAt = root.instant("capturedAt"),
             sourceSchemaVersion = root.int("sourceSchemaVersion"),
@@ -166,6 +170,7 @@ object SnapshotJsonCodec {
             profileRevisions = if (format < 6) emptyList() else root.array("profileRevisions").map { it as StoredProfileRevision },
             profileHeads = if (format < 6) emptyList() else root.array("profileHeads").map { it as ProfileHead },
             deletedProfiles = if (format < 6) emptyList() else root.array("deletedProfiles").map { it as Deletion },
+            dashboardPreferences = root["dashboardPreferences"] as StoredDashboardPreferences?,
         )
     } catch (failure: InvalidBackupException) {
         throw failure
@@ -205,6 +210,7 @@ object SnapshotJsonCodec {
     private object KnowledgePayloadShape : Shape
     private object ActionPayloadShape : Shape
     private object ProfilePayloadShape : Shape
+    private object PreferencesPayloadShape : Shape
     private object FeedbackTextShape : Shape
     private data class FeedbackShape(val value: Shape) : Shape
     private class NodeBudget(var remaining: Long = MAX_NODES, var analysisBytes: Long = 0, var feedbackBytes: Long = 0,
@@ -235,6 +241,7 @@ object SnapshotJsonCodec {
             "decision" to string, "userText" to NullableShape(FeedbackTextShape), "createdAt" to string, "updatedAt" to string))
         fun mappedDeletion() = MappedShape(deletion) { value -> value.objectFields().let { Deletion(it.string("id"), it.int("lastRevision"), it.instant("deletedAt")) } }
         obj("formatVersion" to number, "snapshotId" to string, "storeId" to string, "generation" to number, "capturedAt" to string, "sourceSchemaVersion" to number,
+            "dashboardPreferences" to NullableShape(PreferencesPayloadShape),
             "analysisGeneration" to number, "analysisRuns" to ArrayShape(MappedShape(analysis) { value -> value.objectFields().let { fields ->
                 val source = fields["source"].objectFields()
                 StoredAnalysisRun(fields.string("id"), fields.int("version"), SourceStamp(source.string("storeId"), source.long("generation")),
@@ -264,7 +271,7 @@ object SnapshotJsonCodec {
             "changes" to ArrayShape(MappedShape(change) { value -> value.objectFields().let { ChangeEvent(it.long("id"), it.string("entityId"), it.int("revision"), it.string("kind"), it.instant("createdAt")) } }, 200_000))
             .copy(optional = setOf("analysisGeneration", "analysisRuns", "deletedAnalysisRuns", "claimFeedback", "deletedClaimFeedback",
                 "knowledgeRevisions", "knowledgeHeads", "deletedKnowledge", "actionRevisions", "actionHeads", "deletedActions",
-                "profileRevisions", "profileHeads", "deletedProfiles"))
+                "profileRevisions", "profileHeads", "deletedProfiles", "dashboardPreferences"))
     }
 
     private fun readValue(reader: JsonReader, depth: Int, shape: Shape, budget: NodeBudget): Any? {
@@ -345,6 +352,13 @@ object SnapshotJsonCodec {
                 checkBackup(budget.profileBytes <= ProfileValidation.MAX_BYTES, "画像修订总量超过保存上限")
                 ProfileCodec.decode(payload)
             }
+            PreferencesPayloadShape -> {
+                checkBackup(reader.peek() == JsonToken.STRING, "看板偏好须为版本化 JSON 文字")
+                val payload = reader.nextString()
+                checkBackup(payload.length <= DashboardPreferencesCodec.MAX_BYTES &&
+                    payload.toByteArray(Charsets.UTF_8).size <= DashboardPreferencesCodec.MAX_BYTES, "看板偏好超过大小上限")
+                DashboardPreferencesCodec.decode(payload)
+            }
             Primitive.INTEGER -> {
                 checkBackup(reader.peek() == JsonToken.NUMBER, "资料字段须为整数")
                 reader.nextString().let { value ->
@@ -359,7 +373,8 @@ object SnapshotJsonCodec {
     }
 
     private fun validateWriteBudget(snapshot: RepositorySnapshot) {
-        checkBackup(snapshot.sourceSchemaVersion == 7, "新建备份必须使用当前来源数据库版本")
+        checkBackup(snapshot.sourceSchemaVersion == 8, "新建备份必须使用当前来源数据库版本")
+        snapshot.dashboardPreferences?.let(DashboardPreferencesCodec::encode)
         ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
         checkBackup(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS, "反馈删除标记过多")
         KnowledgeValidation.validateCollection(snapshot.knowledgeRevisions, snapshot.knowledgeHeads)
@@ -373,7 +388,7 @@ object SnapshotJsonCodec {
             snapshot.analysisRuns.sumOf { it.payload.toByteArray(Charsets.UTF_8).size.toLong() } <= 16L * 1024 * 1024, "分析任务内容超过大小上限")
         checkBackup(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 && snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000, "资料列表过大")
         checkBackup(snapshot.records.all { it.draft.topics.size <= 30 && it.draft.answers.size <= 100 && it.draft.attachmentIds.size <= 20 } && snapshot.templates.all { it.draft.questions.size <= 100 }, "资料字段过多")
-        val nodes = 27L + snapshot.analysisRuns.size * 10L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size + snapshot.profileRevisions.size +
+        val nodes = 28L + snapshot.analysisRuns.size * 10L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size + snapshot.profileRevisions.size +
             3L * (snapshot.knowledgeHeads.size + snapshot.actionHeads.size + snapshot.profileHeads.size) + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
             snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size + snapshot.deletedClaimFeedback.size + snapshot.deletedKnowledge.size + snapshot.deletedActions.size + snapshot.deletedProfiles.size) + 6L * snapshot.changes.size
         checkBackup(nodes <= MAX_NODES, "资料 JSON 超出结构预算")

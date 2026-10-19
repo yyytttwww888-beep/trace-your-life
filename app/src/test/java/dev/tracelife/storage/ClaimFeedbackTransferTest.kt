@@ -96,7 +96,7 @@ class ClaimFeedbackTransferTest {
         fixture()
         val snapshot = repository.captureSnapshot(directory())
         val legacy = json(snapshot).apply {
-            put("formatVersion", 2); put("sourceSchemaVersion", 3)
+            put("formatVersion", 2); put("sourceSchemaVersion", 3); remove("dashboardPreferences")
             remove("claimFeedback"); remove("deletedClaimFeedback")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
             remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")

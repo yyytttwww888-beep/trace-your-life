@@ -3,6 +3,7 @@ package dev.tracelife.storage
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.AnalysisRedactionCapacityException
+import dev.tracelife.actions.ActionEvidenceProtocol
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.profile.ProfileValidation
 import dev.tracelife.profile.StoredProfileRevision
@@ -21,12 +22,14 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..7) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..8) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
             require(snapshot.sourceSchemaVersion >= 6 || snapshot.actionRevisions.isEmpty() && snapshot.actionHeads.isEmpty() && snapshot.deletedActions.isEmpty()) { "旧版资料不能包含行动" }
             require(snapshot.sourceSchemaVersion >= 7 || snapshot.profileRevisions.isEmpty() && snapshot.profileHeads.isEmpty() && snapshot.deletedProfiles.isEmpty()) { "旧版资料不能包含画像" }
+            require(snapshot.sourceSchemaVersion >= 8 || snapshot.dashboardPreferences == null) { "旧版资料不能包含看板偏好" }
+            snapshot.dashboardPreferences?.let { dev.tracelife.dashboard.DashboardPreferencesCodec.encode(it) }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
             require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
@@ -168,6 +171,13 @@ internal object SnapshotValidation {
                 RecordMetricProtocol.validateSnapshot(metric, SourceStamp(snapshot.storeId, snapshot.generation), snapshot.records)
             }
             ActionValidation.validateCollection(snapshot.actionRevisions, snapshot.actionHeads)
+            snapshot.analysisRuns.forEach { run ->
+                val state = AnalysisRunCodec.decode(run.payload)
+                ActionEvidenceProtocol.validateSources(state.actionPlan, state.calls.flatMap { it.actionEvidence }, snapshot.actionRevisions, state.request.scope)
+            }
+            snapshot.knowledgeRevisions.forEach { value ->
+                ActionEvidenceProtocol.validateSources(value.actionPlan, value.actionEvidence, snapshot.actionRevisions, value.scope)
+            }
             require(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS &&
                 snapshot.deletedActions.map { it.id }.distinct().size == snapshot.deletedActions.size) { "行动删除标记过多或重复" }
             snapshot.deletedActions.forEach { id(it.id); require(it.lastRevision in 1 until Int.MAX_VALUE) { "行动删除版本无效" } }

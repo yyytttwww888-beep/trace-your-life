@@ -11,7 +11,7 @@ internal class TextAnalysisInventory(private val analysis: ControlledAnalysis) {
     /** Keep only one metadata page, bounded receipt ranges and at most maxBatches selections. */
     fun build(task: AnalysisTask, purpose: CallPurpose, candidateLimit: Int,
         completedEvidence: List<EvidenceReceipt>? = null): TextInventory {
-        require(purpose in setOf(CallPurpose.EXTRACTION, CallPurpose.SYNTHESIS, CallPurpose.PROFILE_SCAN) && candidateLimit in 0..100)
+        require(purpose in setOf(CallPurpose.EXTRACTION, CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS, CallPurpose.PROFILE_SCAN) && candidateLimit in 0..100)
         // Maintenance scans belong to one exact claim and plan. The caller must supply only the
         // validated context's receipts; scans for another claim never satisfy this coverage.
         require(purpose != CallPurpose.PROFILE_SCAN || completedEvidence != null)

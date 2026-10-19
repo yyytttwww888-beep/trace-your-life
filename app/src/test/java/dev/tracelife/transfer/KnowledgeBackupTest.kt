@@ -79,7 +79,7 @@ class KnowledgeBackupTest {
             payload.replace("\"revision\":1", "\"revision\":\"1\""),
             payload.replace("\"revision\":1", "\"revision\":1.0"),
             payload.replace("\"includeArchived\":false", "\"includeArchived\":0"),
-            payload.replace("\"formatVersion\":4", "\"formatVersion\":5"),
+            payload.replace("\"formatVersion\":5", "\"formatVersion\":999"),
             payload.dropLast(1) + ",\"unknown\":true}",
             payload + "{}",
             JSONObject(payload).apply { getJSONObject("review").put("untrustedFact", "synthetic") }.toString(),
@@ -126,7 +126,7 @@ class KnowledgeBackupTest {
         fixture()
         val snapshot = repository.captureSnapshot(directory())
         val old = json(snapshot).apply {
-            put("formatVersion", 3); put("sourceSchemaVersion", 4)
+            put("formatVersion", 3); put("sourceSchemaVersion", 4); remove("dashboardPreferences")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
             remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
                 remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")

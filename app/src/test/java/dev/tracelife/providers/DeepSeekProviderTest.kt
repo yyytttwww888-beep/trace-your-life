@@ -114,6 +114,24 @@ class DeepSeekProviderTest {
         assertEquals(prepared.payloadJson, sentBody)
     }
 
+    @Test fun `action prompts permit both typed sources without conflicting record only instructions`() {
+        val adapter = provider { _, _ -> error("No network in prompt regression") }
+        val envelope = mapOf("purpose" to "ACTION_SYNTHESIS", "evidence" to emptyList<Any>(),
+            "actionEvidence" to listOf(mapOf("id" to evidenceId, "kind" to "USER_REVIEW")))
+        val generation = adapter.prepare(request.copy(payloadJson = AnalysisRunCodec.json(envelope)))
+        val generationSystem = JSONObject(generation.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(generationSystem.contains("本次evidence或actionEvidence的完整ID"))
+        assertTrue(generationSystem.contains("POSSIBLE_INTERPRETATION"))
+        assertFalse(generationSystem.contains("仅使用 evidence 里的原文"))
+        assertFalse(generationSystem.contains("REPORTED_EXPERIENCE"))
+        val review = adapter.prepareReview(request.copy(payloadJson = AnalysisRunCodec.json(envelope + ("purpose" to "REVIEW"))))
+        val reviewSystem = JSONObject(review.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(reviewSystem.contains("本次evidence或actionEvidence的完整ID"))
+        assertTrue(reviewSystem.contains("UNKNOWN"))
+        assertFalse(reviewSystem.contains("只核对 target.text 与 target.kind 是否得到本次 evidence 原文支持"))
+        assertFalse(reviewSystem.contains("支持和反例必须引用本次 evidence 的完整 id"))
+    }
+
     @Test fun `source text cannot switch the provider to a derived input prompt`() {
         val provider = provider { _, _ -> error("No dispatch expected") }
         val nested = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("evidence" to listOf(

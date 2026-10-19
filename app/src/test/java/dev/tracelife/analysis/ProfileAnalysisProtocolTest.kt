@@ -69,7 +69,7 @@ class ProfileAnalysisProtocolTest {
         repository = LifeRepository(context, clock, database)
         analysis = ControlledAnalysis(repository, clock)
         assertEquals(request, analysis.task("run").state.request)
-        assertEquals(9, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(10, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         analysis.synthesize("run", "batch", selections, provider)
         assertEquals(1, provider.generated.size)
         assertThrows(IllegalArgumentException::class.java) {
@@ -176,7 +176,7 @@ class ProfileAnalysisProtocolTest {
             }
             assertNull(AnalysisRunCodec.decode(old.toString()).request.profileTarget)
             val upgraded = JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(old.toString())))
-            assertEquals(9, upgraded.getInt("formatVersion"))
+            assertEquals(10, upgraded.getInt("formatVersion"))
             assertTrue(upgraded.getJSONObject("request").isNull("profileTarget"))
             old.getJSONObject("request").put("profileTarget", JSONObject.NULL)
             assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(old.toString()) }

@@ -69,7 +69,7 @@ val chosen = app.actions.create(ActionDraft(
 ), id = actionId)
 ```
 
-`title`、`trigger`、`behavior` 和 `expectedSignal` 都由调用者明确提交。模型没有行动写入或自动采纳权限。`origin` 可省略；存在时，首次创建或变更关联在事务内检查该知识仍为当前有效修订。之后来源失效、被否定或删除只影响 `originState`，独立行动文字和回看结果保留。行动不是原建议正确或用户已执行的证明，也尚未纳入模型原始记录取证范围。
+`title`、`trigger`、`behavior` 和 `expectedSignal` 都由调用者明确提交。模型没有行动写入或自动采纳权限。`origin` 可省略；存在时，首次创建或变更关联在事务内检查该知识仍为当前有效修订。之后来源失效、被否定或删除只影响 `originState`，独立行动文字和回看结果保留。行动不是原建议正确或用户已执行的证明，现可通过[行动周期分析](ACTION_PERIOD_REFLECTION.md)作为独立类型登记取证，不混入原始记录。
 
 行动默认 `OPEN`，保存稳定 ID 与不可变修订。相同 ID 和初始计划重复创建不追加版本，永久删除 ID 不可复用。`update(id, expectedRevision, draft)` 修改计划并保留旧修订，当前版本已变时拒绝覆盖。`get`、`history` 提供当前和历史查阅。
 

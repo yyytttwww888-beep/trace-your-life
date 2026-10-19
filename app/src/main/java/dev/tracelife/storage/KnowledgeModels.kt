@@ -34,6 +34,8 @@ data class StoredKnowledgeRevision(
     val reductionProof: ReductionReviewProof? = null,
     val metricEvidence: List<RecordMetricReceipt> = emptyList(),
     val profileMaintenanceProof: dev.tracelife.profile.ProfileMaintenanceProof? = null,
+    val actionPlan: dev.tracelife.actions.ActionEvidencePlan? = null,
+    val actionEvidence: List<dev.tracelife.actions.ActionEvidenceReceipt> = emptyList(),
 )
 
 data class KnowledgeHead(val id: String, val revision: Int)

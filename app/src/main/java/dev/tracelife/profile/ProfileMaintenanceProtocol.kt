@@ -152,9 +152,8 @@ object ProfileMaintenanceProtocol {
         "claim" to value.claim?.let(AnalysisRunCodec::claimMap), "userText" to value.userText,
         "feedbackDecision" to value.feedbackDecision?.name, "feedbackUserText" to value.feedbackUserText, "sourceAvailable" to value.sourceAvailable, "originalEvidence" to false)
     fun parsePlan(raw: Any?): ProfileMaintenancePlan = raw.obj("target", "profileTarget", "references", "createdAt").let {
-        val target = it["profileTarget"].obj("dimension", "layer")
-        ProfileMaintenancePlan(parseClaim(it["target"]), ProfileAnalysisTarget(ProfileDimension.valueOf(target.string("dimension")),
-            ProfileLayer.valueOf(target.string("layer"))), it.list("references").map(::parseReference), Instant.parse(it.string("createdAt")))
+        ProfileMaintenancePlan(parseClaim(it["target"]), LongitudinalProfileProtocol.parseTarget(it["profileTarget"]),
+            it.list("references").map(::parseReference), Instant.parse(it.string("createdAt")))
     }
     fun parseReference(raw: Any?): ProfileMaintenanceReference = raw.obj("kind", "id", "version", "sha256", "feedbackVersions").let {
         ProfileMaintenanceReference(ProfileMaintenanceReferenceKind.valueOf(it.string("kind")), it.string("id"), it.int("version"), it.string("sha256"),

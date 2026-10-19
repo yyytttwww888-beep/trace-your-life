@@ -1,5 +1,7 @@
 package dev.tracelife.analysis
 
+import dev.tracelife.actions.ActionEvidencePlan
+import dev.tracelife.actions.ActionEvidenceReceipt
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.SourcePage
 import dev.tracelife.storage.StoredAnalysisRun
@@ -36,8 +38,10 @@ data class AnalysisRequest(
     val focusTopics: Set<String> = emptySet(),
     val expiresAt: Instant? = null,
     val profileTarget: ProfileAnalysisTarget? = null,
+    val actionPeriod: Boolean = false,
 ) {
     init {
+        require(!actionPeriod || profileTarget == null) { "行动复盘与画像生成必须使用独立任务" }
         require(question.isNotBlank() && question.length <= 2_000)
         require(focusTopics.size <= 30 && focusTopics.all { it.isNotBlank() && it.length <= 80 })
     }
@@ -63,9 +67,9 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN;
+    EXTRACTION, SYNTHESIS, ACTION_SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN;
 
-    val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS || this == METRIC_ANALYSIS
+    val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS || this == ACTION_SYNTHESIS || this == METRIC_ANALYSIS
 }
 
 /** Derived drafts are routing material, never original evidence or publishable claims. */
@@ -137,10 +141,12 @@ data class AnalysisCall(
     val profileRelation: ProfileRelationResult? = null,
     val profileScan: ReductionScanResult? = null,
     val profileMaintenanceProof: ProfileMaintenanceProof? = null,
+    val actionEvidence: List<ActionEvidenceReceipt> = emptyList(),
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),
-    val profileMaintenancePlans: List<ProfileMaintenancePlan> = emptyList())
+    val profileMaintenancePlans: List<ProfileMaintenancePlan> = emptyList(),
+    val actionPlan: ActionEvidencePlan? = null)
 enum class AnalysisStatus { READY, NEEDS_REVIEW, NEEDS_RETRY, IN_FLIGHT, STALE, EXPIRED }
 data class AnalysisTask(val stored: StoredAnalysisRun, val state: AnalysisRunState, val status: AnalysisStatus)
 

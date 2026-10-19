@@ -37,7 +37,8 @@ android {
             val metricEnabled = providers.gradleProperty("traceLifeDeepSeekMetric").orNull == "true"
             val profileEnabled = providers.gradleProperty("traceLifeDeepSeekProfile").orNull == "true"
             val maintenanceEnabled = providers.gradleProperty("traceLifeDeepSeekMaintenance").orNull == "true"
-            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled) {
+            val actionPeriodEnabled = providers.gradleProperty("traceLifeDeepSeekActionPeriod").orNull == "true"
+            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled) {
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
                 if (synthesisEnabled) it.systemProperty("traceLife.deepSeekSynthesis", "true")
@@ -46,6 +47,7 @@ android {
                 if (metricEnabled) it.systemProperty("traceLife.deepSeekMetric", "true")
                 if (profileEnabled) it.systemProperty("traceLife.deepSeekProfile", "true")
                 if (maintenanceEnabled) it.systemProperty("traceLife.deepSeekMaintenance", "true")
+                if (actionPeriodEnabled) it.systemProperty("traceLife.deepSeekActionPeriod", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
             }
@@ -63,6 +65,8 @@ kotlin {
 }
 
 dependencies {
+    implementation("androidx.work:work-runtime:2.11.2")
+    testImplementation("androidx.work:work-testing:2.11.2")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16")
 }
