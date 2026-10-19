@@ -8,7 +8,7 @@ import dev.tracelife.transfer.StaleSnapshotException
 import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
-import java.time.temporal.ChronoUnit
+import java.util.Collections
 
 data class DailyRecordCount(val date: LocalDate, val records: Int)
 
@@ -33,39 +33,22 @@ data class RecordMetricsReport(
 /** Full-scope metadata enumeration, independent of AI output or knowledge publication counts. */
 class RecordMetrics(private val repository: LifeRepository, private val clock: Clock = Clock.systemUTC()) {
     fun calculate(scope: AnalysisQuery): RecordMetricsReport {
-        val days = ChronoUnit.DAYS.between(scope.from, scope.through) + 1
-        require(days in 1..366) { "记录趋势每次支持 1 至 366 天，请按期间分段" }
+        RecordMetricProtocol.validateScope(scope)
+        val fixedScope = scope.copy(recordIds = scope.recordIds?.let { Collections.unmodifiableSet(it.toSortedSet()) })
         val stamp = repository.analysisSourceStamp()
-        val counts = IntArray(days.toInt())
+        val accumulator = RecordCoverageAccumulator(fixedScope)
         var offset = 0
-        var exact = 0
-        var intervals = 0
-        var unknown = 0
-        var overlap = 0
-        var total = 0
-        val requested = scope.recordIds?.toMutableSet() ?: mutableSetOf()
         do {
-            val page = repository.analysisSourcePage(stamp, scope, offset, 100)
-            total = page.total
-            unknown = page.unknown
-            overlap = page.overlap
-            page.items.forEach { record ->
-                requested.remove(record.id)
-                val first = record.occurrence.startDate
-                val last = record.occurrence.endDate
-                when {
-                    first == null -> Unit
-                    first == last -> { counts[ChronoUnit.DAYS.between(scope.from, first).toInt()]++; exact++ }
-                    else -> intervals++
-                }
-            }
+            val page = repository.analysisSourcePage(stamp, fixedScope, offset, 100)
+            page.items.forEach(accumulator::add)
             offset = page.nextOffset ?: break
         } while (true)
         if (repository.analysisSourceStamp() != stamp) throw StaleSnapshotException("计算期间来源已变化")
-        return RecordMetricsReport(source = stamp, scope = scope, calculatedAt = clock.instant(), totalRecords = total,
-            exactDateRecords = exact, intervalRecords = intervals, overlappingRecords = overlap, unknownTimeRecords = unknown,
-            missingExactIds = requested, daysInScope = counts.size, recordedDays = counts.count { it > 0 },
-            daily = counts.mapIndexed { index, count -> DailyRecordCount(scope.from.plusDays(index.toLong()), count) })
+        val values = accumulator.values()
+        return RecordMetricsReport(source = stamp, scope = fixedScope, calculatedAt = clock.instant(), totalRecords = values.totalRecords,
+            exactDateRecords = values.exactDateRecords, intervalRecords = values.intervalRecords, overlappingRecords = values.overlappingRecords,
+            unknownTimeRecords = values.unknownTimeRecords, missingExactIds = values.missingExactIds, daysInScope = values.daysInScope,
+            recordedDays = values.recordedDays, daily = values.daily)
     }
 
     /** Page back to the same source snapshot; changed records require recalculation. */

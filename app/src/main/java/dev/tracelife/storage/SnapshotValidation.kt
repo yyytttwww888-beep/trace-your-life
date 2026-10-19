@@ -4,6 +4,7 @@ import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.AnalysisRedactionCapacityException
 import dev.tracelife.actions.ActionValidation
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
 import dev.tracelife.transfer.InvalidBackupException
@@ -139,6 +140,12 @@ internal object SnapshotValidation {
             // redaction must not retroactively change the meaning of historical revisions.
             val knowledgeSources = snapshot.records.associateBy { it.id to it.revision }
             snapshot.knowledgeRevisions.forEach { KnowledgeValidation.validateEvidence(it, knowledgeSources) }
+            val metricProofs = snapshot.analysisRuns.flatMap { run ->
+                feedbackStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) }.calls.flatMap { it.metricEvidence }
+            } + snapshot.knowledgeRevisions.flatMap { it.metricEvidence }
+            metricProofs.distinctBy { it.id }.forEach { metric ->
+                RecordMetricProtocol.validateSnapshot(metric, SourceStamp(snapshot.storeId, snapshot.generation), snapshot.records)
+            }
             ActionValidation.validateCollection(snapshot.actionRevisions, snapshot.actionHeads)
             require(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS &&
                 snapshot.deletedActions.map { it.id }.distinct().size == snapshot.deletedActions.size) { "行动删除标记过多或重复" }

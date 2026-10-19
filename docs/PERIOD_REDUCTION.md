@@ -77,4 +77,4 @@ if (progress.status == ReductionProcessingStatus.TREE_INTEGRATED) {
 
 普通知识阅读包、原文证据包和已有周期材料 ZIP 标记 `reductionDraftsIncluded=false`。本阶段通过草稿接口读取，尚无专用草稿文件导出；不能把已有材料包误认为包含归并草稿。
 
-草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；归并陈述通过专用目标身份、原文扫描、最终独立核对和明确确认进入 `publishReduction`，见[周期原文核对与发布](PERIOD_REVIEW.md)。不能把多个局部 `SUPPORTED` 直接合并为整体支持。模型可引用指标、自动检索来源链外反例、跨任务反馈合并、自动重建和前端仍待实现。
+草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；归并陈述通过专用目标身份、原文扫描、最终独立核对和明确确认进入 `publishReduction`，见[周期原文核对与发布](PERIOD_REVIEW.md)。不能把多个局部 `SUPPORTED` 直接合并为整体支持。程序指标引用使用[独立受控接口](METRIC_ANALYSIS.md)，当前归并图仍只处理原文综合叶；自动检索来源链外反例、跨任务反馈合并、自动重建和前端仍待实现。

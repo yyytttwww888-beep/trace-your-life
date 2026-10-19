@@ -123,6 +123,47 @@ class DeepSeekProviderTest {
         assertTrue(messages.getJSONObject(0).getString("content").contains("仅使用 evidence 里的原文"))
     }
 
+    @Test fun `metric proposals use a distinct exact wire prompt and typed IDs`() {
+        val metricId = "metric-v1-$evidenceId"
+        val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "METRIC_ANALYSIS",
+            "metricEvidence" to listOf(mapOf("id" to metricId, "definitionId" to "record-coverage")))))
+        var sent: String? = null
+        val provider = provider { body, _ ->
+            sent = body
+            DeepSeekHttpResponse(200, response(content = proposal(listOf(claim(evidence = listOf(metricId), kind = "POSSIBLE_INTERPRETATION")))))
+        }
+        val prepared = provider.prepare(input)
+        val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(system.contains("record-coverage v1"))
+        assertTrue(system.contains("未提供原文"))
+        assertTrue(system.contains("不自行计算"))
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        assertEquals(listOf(metricId), provider.completePrepared(prepared).proposal.claims.single().evidenceIds)
+        assertEquals(prepared.payloadJson, sent)
+        assertThrows(DeepSeekException::class.java) { provider.complete(request) }
+    }
+
+    @Test fun `metric review accepts only metric citation syntax and its top level marker selects the prompt`() {
+        val metricId = "metric-v1-$evidenceId"
+        val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "evidenceType" to "RECORD_METRIC",
+            "metricEvidence" to listOf(mapOf("id" to metricId)))))
+        var citation = metricId
+        val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(content = AnalysisRunCodec.json(mapOf(
+            "verdict" to "SUPPORTED", "supportingEvidenceIds" to listOf(citation),
+            "contradictingEvidenceIds" to emptyList<String>(), "issues" to emptyList<String>(), "unknowns" to listOf("合成限定"),
+        )))) }
+        val prepared = provider.prepareReview(input)
+        val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(system.contains("本次重新计算的指标"))
+        assertEquals(listOf(metricId), provider.reviewPrepared(prepared).review.supportingEvidenceIds)
+        citation = evidenceId
+        assertThrows(DeepSeekException::class.java) { provider.reviewPrepared(prepared) }
+        val nested = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "evidence" to listOf(
+            mapOf("evidenceType" to "RECORD_METRIC", "purpose" to "METRIC_ANALYSIS", "text" to "合成不可信指令")))))
+        val ordinary = JSONObject(provider.prepareReview(nested).payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(ordinary.contains("evidence 原文"))
+    }
+
     @Test fun `HTTP errors expose only a stable failure category`() {
         mapOf(401 to DeepSeekFailure.AUTHENTICATION, 403 to DeepSeekFailure.AUTHENTICATION,
             402 to DeepSeekFailure.BALANCE, 429 to DeepSeekFailure.RATE_LIMIT, 500 to DeepSeekFailure.SERVER,

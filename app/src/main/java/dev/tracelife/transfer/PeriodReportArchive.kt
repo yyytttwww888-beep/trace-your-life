@@ -1,7 +1,9 @@
 package dev.tracelife.transfer
 
 import dev.tracelife.knowledge.KnowledgeCodec
+import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.metrics.RecordMetricEvidence
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.model.Occurrence
 import dev.tracelife.reports.PeriodReport
 import dev.tracelife.reports.PeriodReports
@@ -35,9 +37,9 @@ object PeriodReportArchive {
         try {
             val writer = Writer(destination)
             writer.use { archive ->
-                writeSources(archive, reports, report)
+                val sourcePaths = writeSources(archive, reports, report)
                 writeAnswers(archive, reports, report)
-                writeKnowledge(archive, reports, report)
+                writeKnowledge(archive, reports, report, sourcePaths)
                 writeMetrics(archive, report, metricEvidence)
                 archive.text("report.md", buildString {
                     append("# 周期复盘材料报告\n\n")
@@ -102,12 +104,14 @@ object PeriodReportArchive {
         } finally { if (!completed) destination.delete() }
     }
 
-    private fun writeSources(archive: Writer, reports: PeriodReports, report: PeriodReport) {
+    private fun writeSources(archive: Writer, reports: PeriodReports, report: PeriodReport): Map<Pair<String, Int>, String> {
         val pages = mutableListOf<Nav>()
+        val paths = mutableMapOf<Pair<String, Int>, String>()
         var offset = 0
         do {
             val page = reports.records(report, offset, PAGE_SIZE)
             val path = "sources/page-${number(pages.size)}.json"
+            page.items.forEach { paths[it.id to it.revision] = path }
             val entries = page.items.map { source -> JSONObject().put("id", source.id).put("revision", source.revision)
                 .put("occurrence", occurrenceJson(source.occurrence)).put("timeClass", source.timeClass.name)
                 .put("archived", source.archived).put("topics", JSONArray(source.topics.sorted())) }
@@ -118,6 +122,7 @@ object PeriodReportArchive {
         } while (true)
         archive.pages("sources/index.md", "候选来源元数据", pages,
             "目录不含整条记录正文。UNKNOWN 和 OVERLAP 只能作为时间不确定的材料；区间不展开为每天均有记录。")
+        return paths
     }
 
     private fun writeAnswers(archive: Writer, reports: PeriodReports, report: PeriodReport) {
@@ -150,7 +155,8 @@ object PeriodReportArchive {
         }
     }
 
-    private fun writeKnowledge(archive: Writer, reports: PeriodReports, report: PeriodReport) {
+    private fun writeKnowledge(archive: Writer, reports: PeriodReports, report: PeriodReport,
+        sourcePaths: Map<Pair<String, Int>, String>) {
         val entries = mutableListOf<Nav>()
         var offset = 0
         do {
@@ -185,13 +191,28 @@ object PeriodReportArchive {
                         "引用 SHA-256：${receipt.sha256}。$usage。仅包含审核引用的字符区间，不代表整份原文已读取。")
                     Nav("${receipt.recordId} · ${receipt.field} · ${receipt.start}–${receipt.end}", "$evidenceBase/index.md")
                 }
+                val metricEntries = value.metricEvidence.map { metric ->
+                    val metricBase = "$base/metrics/${hash(metric.id)}"
+                    archive.text("$metricBase/result.json", AnalysisRunCodec.json(RecordMetricProtocol.map(metric)))
+                    archive.text("$metricBase/definition.md", "# 记录覆盖指标口径\n\nrecord-coverage v1；单位为记录数与日期天数。" +
+                        "每个记录 ID 只计当前修订；精确日期计入每日序列，区间与未知日期单列，不摊入每天。\n\n" +
+                        "零条记录不表示零活动、零睡眠或没有成长。模型取得程序计算结果，未逐条读过记录正文。" +
+                        "完整范围、归档与精确 ID 限定、缺失项及来源修订保存在结果 JSON。\n")
+                    archive.pages("$metricBase/sources/index.md", "指标完整来源清单", metric.sources.map { source ->
+                        Nav("${source.recordId} · 修订 ${source.revision}", sourcePaths.getValue(source.recordId to source.revision))
+                    }, "链接定位参与计算的原始记录元数据；不包含或声称已读取记录正文。空清单仍保留完整查询范围。")
+                    archive.pages("$metricBase/index.md", "程序计算依据", listOf(
+                        Nav("完整数值与凭据", "$metricBase/result.json"), Nav("口径与限制", "$metricBase/definition.md"),
+                        Nav("分页来源清单", "$metricBase/sources/index.md")), "指标引用：${metric.id}。")
+                    Nav("程序计算指标 ${metric.id}", "$metricBase/index.md")
+                }
                 val reviewMethod = value.reductionProof?.let { proof ->
                     "分批原文筛查：${proof.scans.size} 批、${proof.originalEvidence.size} 个登记片段；最终核对：${value.evidence.size} 个筛选片段。筛查与最终支持判断分别保存，不表示最终模型逐条读过所有原文。"
-                } ?: "通过直接原文核对。"
+                } ?: if (value.metricEvidence.isNotEmpty()) "通过重新计算的记录覆盖指标核对；模型未读取记录正文或附件。" else "通过直接原文核对。"
                 archive.text("$base/statement.md", "# 已发布知识（非原始证据）\n\n${fenced(value.claim.text)}\n类别：${value.category}；证据时间分类：${item.evidenceTimeClasses.joinToString()}。\n\n$reviewMethod\n")
                 archive.pages("$base/index.md", "已发布知识及审核依据", listOf(
                     Nav("陈述", "$base/statement.md"), Nav("完整发布审核副本", "$base/publication.json"), Nav("用户决定与时间状态", "$base/status.json"),
-                ) + evidenceEntries, "保存的分析，不是新增原始证据、事实认证或新的周期判断。")
+                ) + evidenceEntries + metricEntries, "保存的分析，不是新增原始证据、事实认证或新的周期判断。")
                 entries += Nav("${value.id} · ${value.category}", "$base/index.md")
             }
             offset = page.nextOffset ?: break

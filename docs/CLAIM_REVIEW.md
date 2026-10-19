@@ -80,3 +80,5 @@ val updated = app.analysisFeedback.update(
 ## 归并陈述反馈
 
 `analysisFeedback.respondReduction` 接受固定的归并陈述身份，独立保存用户决定及文字；当前有效性同时检查全部祖先反馈。父正文擦除后仍保留必要纯身份，已有用户文字可维护，但失效内容不能重新确认。归并草稿的原文扫描与最终核对使用[独立协议](PERIOD_REVIEW.md)，不进入普通 `reviewClaim`。
+
+指标陈述仍使用 `reviewClaim`，但自动重新计算同范围的类型化凭据并拒绝附加原文；详见[受控指标分析](METRIC_ANALYSIS.md)。原文核对规则不因此放宽，指标凭据与原文片段分别管理。

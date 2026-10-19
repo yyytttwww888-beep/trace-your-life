@@ -53,6 +53,8 @@ data class KnowledgeIndexPage(
 
 /** Trusted application API, never an unrestricted model tool. Publications are not new evidence. */
 class KnowledgeLibrary(private val repository: LifeRepository, private val clock: Clock = Clock.systemUTC()) {
+    /** Original-record claims and program metric interpretations retain distinct evidence types.
+     * A metric interpretation still needs user confirmation and the latest recomputed review. */
     fun publish(
         runId: String, claim: ClaimRef, reviewKey: String, category: KnowledgeCategory,
         expectedRunVersion: Int, expectedRevision: Int? = null, topics: Set<String> = emptySet(),

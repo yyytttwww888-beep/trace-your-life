@@ -42,6 +42,12 @@ class RecordMetricEvidenceService(
         return RecordMetrics(repository, clock).sources(evidence.report, offset, limit)
     }
 
+    /** Typed model evidence has an independent identity and retains the complete source manifest. */
+    fun sources(evidence: RecordMetricReceipt, offset: Int = 0, limit: Int = 25): SourcePage {
+        RecordMetricProtocol.validateCurrent(repository, evidence)
+        return repository.analysisSourcePage(evidence.source, evidence.scope, offset, limit)
+    }
+
     private fun requireCurrent(report: RecordMetricsReport) {
         if (repository.analysisSourceStamp() != report.source) throw StaleSnapshotException("指标来源已变化，请重新计算")
     }

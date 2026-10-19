@@ -21,6 +21,7 @@ import dev.tracelife.storage.SourceStamp
 import dev.tracelife.storage.SourceTimeClass
 import dev.tracelife.storage.UnreadableSourceException
 import dev.tracelife.transfer.StaleSnapshotException
+import dev.tracelife.transfer.MetricExportScope
 import java.time.Clock
 import java.time.Instant
 import java.util.Collections
@@ -129,8 +130,10 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
                 invalid++
                 return@scanCurrent
             }
-            val evidenceSources = KnowledgeValidation.allEvidence(view.value).map { sources[it.recordId]?.takeIf { record -> record.revision == it.revision } }
-            if (evidenceSources.any { it == null }) {
+            val evidenceSources = KnowledgeValidation.allSourceRevisions(view.value).map { (id, revision) ->
+                sources[id]?.takeIf { record -> record.revision == revision }
+            }
+            if (evidenceSources.any { it == null } || view.value.metricEvidence.any { !MetricExportScope.contains(fixedScope, it.scope) }) {
                 outside++
                 return@scanCurrent
             }

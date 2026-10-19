@@ -10,7 +10,7 @@ internal class TextAnalysisInventory(private val analysis: ControlledAnalysis) {
 
     /** Keep only one metadata page, bounded receipt ranges and at most maxBatches selections. */
     fun build(task: AnalysisTask, purpose: CallPurpose, candidateLimit: Int): TextInventory {
-        require(purpose.producesClaims && candidateLimit in 0..100)
+        require(purpose in setOf(CallPurpose.EXTRACTION, CallPurpose.SYNTHESIS) && candidateLimit in 0..100)
         val runId = task.stored.id
         val route = analysis.route(runId)
         val fragmentSize = task.state.request.limits.fragmentCodePoints

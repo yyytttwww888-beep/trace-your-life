@@ -19,6 +19,7 @@
 | 综合判断、行动采纳、回看或行动修订 | [综合与行动接口](docs/SYNTHESIS_ACTIONS.md)、[第六阶段计划](docs/plans/2026-10-17-synthesis-actions.md)；持久化与恢复同时读数据转移接口 |
 | 跨批归并、周期草稿或派生依赖 | [分层周期草稿接口](docs/PERIOD_REDUCTION.md)、[第七阶段计划](docs/plans/2026-10-19-period-reduction.md)；备份变更同时读数据转移接口 |
 | 周期草稿核对、归并反馈、正式发布或后代清理 | [周期原文核对接口](docs/PERIOD_REVIEW.md)、[第八阶段计划](docs/plans/2026-10-19-period-review-publication.md)；删除或恢复同时读数据转移接口 |
+| 模型指标引用、统计凭据或指标说明发布 | [受控指标分析](docs/METRIC_ANALYSIS.md)、[第九阶段计划](docs/plans/2026-10-19-metric-evidence.md)；保存与导出同时读数据转移接口 |
 | DeepSeek、密钥、网络或自动分批处理 | [DeepSeek 接入](docs/DEEPSEEK.md)、[第二阶段计划](docs/plans/2026-10-17-deepseek-analysis.md)；接口事实变更时核验[官方研究](docs/research/2026-10-17-deepseek-integration.md) |
 | 画像维度、更新、用户反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)；涉及生成和维护时同时读检索协议 |
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |

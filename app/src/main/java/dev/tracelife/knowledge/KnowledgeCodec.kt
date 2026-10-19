@@ -11,6 +11,7 @@ import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.analysis.ReductionReviewProtocol
 import dev.tracelife.analysis.ReviewIssue
 import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.KnowledgeValidation
@@ -22,7 +23,7 @@ import java.time.LocalDate
 
 /** A self-contained immutable publication, independent of the mutable analysis task ledger. */
 object KnowledgeCodec {
-    const val FORMAT_VERSION = 2
+    const val FORMAT_VERSION = 3
 
     fun encode(value: StoredKnowledgeRevision): String {
         KnowledgeValidation.validate(value)
@@ -39,6 +40,7 @@ object KnowledgeCodec {
             "evidence" to value.evidence.map(AnalysisRunCodec::receiptMap), "feedbackVersion" to value.feedbackVersion,
             "topics" to value.topics.sorted(), "createdAt" to value.createdAt.toString(), "publishedAt" to value.publishedAt.toString(),
             "reductionProof" to value.reductionProof?.let(ReductionReviewProtocol::proofMap),
+            "metricEvidence" to value.metricEvidence.map(RecordMetricProtocol::map),
         ), nodeLimit = 20_000).also { require(it.toByteArray(Charsets.UTF_8).size <= KnowledgeValidation.MAX_REVISION_BYTES) { "知识修订超过 256 KiB" } }
     }
 
@@ -80,7 +82,11 @@ object KnowledgeCodec {
         val fields = arrayOf("formatVersion", "id", "revision", "runId", "claimRef", "source", "scope", "expiresAt", "category", "claim",
             "reviewBatchKey", "reviewAttempt", "reviewProviderId", "reviewRequestSha256", "review", "evidence",
             "feedbackVersion", "topics", "createdAt", "publishedAt")
-        val root = raw.obj(*(if (format == 1L) fields else fields + "reductionProof"))
+        val root = raw.obj(*(when (format) {
+            1L -> fields
+            2L -> fields + "reductionProof"
+            else -> fields + arrayOf("reductionProof", "metricEvidence")
+        }))
         val claimRef = root["claimRef"].obj("batchKey", "claimIndex", "claimSha256")
         val source = root["source"].obj("storeId", "generation")
         val scope = root["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
@@ -104,6 +110,7 @@ object KnowledgeCodec {
                     ref.int("start"), ref.int("end"), ref.int("totalCodePoints"), ref.string("sha256"))
             }, root.int("feedbackVersion"), root.strings("topics").uniqueSet(), root.instant("createdAt"), root.instant("publishedAt"),
             root["reductionProof"]?.let(ReductionReviewProtocol::parseProof),
+            if (format >= 3L) root.list("metricEvidence").map(RecordMetricProtocol::parse) else emptyList(),
         ).also(KnowledgeValidation::validate)
     }
 
