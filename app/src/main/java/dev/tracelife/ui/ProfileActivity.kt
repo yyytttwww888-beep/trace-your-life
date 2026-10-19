@@ -1,12 +1,7 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
-import android.text.InputFilter
-import android.text.InputType
-import android.widget.ArrayAdapter
-import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.Spinner
 import dev.tracelife.analysis.AnalysisProviderException
 import dev.tracelife.analysis.AnalysisRequest
 import dev.tracelife.analysis.ClaimKind
@@ -59,35 +54,33 @@ class ProfileActivity : ScreenActivity() {
 
     override fun showHome() {
         entryRevision = null
-        beginScreen("home", "个人画像", showBack = false)
-        Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "画像说明")
-            Ui.note(card, "画像是你明确采用的知识条目的组织结果，不生成或验证人格结论。近期窗口默认 30 天只是查看约定，不是心理测量或长期人格判定阈值；长期与情境条目不受该窗口筛选。")
-            Ui.note(card, "跨任务画像维护（历史比较、反例扫描与明确应用）暂未接入界面。")
-        }
-        Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "操作")
-            cardPrimary(card, "生成画像候选", "generate") { showGenerateForm() }
-            cardButton(card, "候选与历史条目管理", "manage") { showManagement() }
-            cardButton(card, "画像变化摘要", "changes") { showChangesForm() }
-        }
+        beginScreen("home", "关于我", showBack = false)
+        note("从经历中慢慢认识自己。这里留下你选择采用的描述，也允许随时修正。")
         runIo({ app.personalProfile.open(ProfileQuery(zoneId = zoneId)) }) { snapshot ->
+            if (snapshot.total == 0) Ui.card(root).also { card ->
+                Ui.sectionTitle(card, "从最近的经历开始")
+                Ui.note(card, "暂时没有当前可用的描述。先写一些记录，再来看看自己的习惯与变化。")
+                primaryIn(card, "了解近期的自己", "generate") { showGenerateForm() }
+            }
             Ui.card(root).also { card ->
-                Ui.sectionTitle(card, "八维汇总")
-                Ui.note(card, "当前区条目 ${snapshot.total} 条；未进入当前区的条目 ${snapshot.omittedNotCurrent} 条。评估时间：${snapshot.evaluatedAt}")
+                Ui.sectionTitle(card, "我的不同侧面")
+                Ui.note(card, "当前有 ${snapshot.total} 条描述")
                 snapshot.dimensions.forEachIndexed { index, summary ->
                     if (index > 0) Ui.divider(card)
-                    Ui.body(card, dimensionLabel(summary.dimension))
-                    Ui.note(card, "当前 ${summary.currentEntries} 条／共 ${summary.totalEntries} 条" +
-                        (summary.updatedAt?.let { "，最近修改 $it" } ?: ""))
-                    if (summary.unknown) {
-                        chip(card, "暂无", Ui.Tone.NEUTRAL)
-                        Ui.note(card, "暂无当前可用条目。这仅表示该维度没有当前可用条目，不代表任何个人判断，也不表示已检查全部资料。")
-                    }
-                    listRow(card, "查看「${dimensionLabel(summary.dimension)}」条目", "dimension:${summary.dimension}") {
+                    listRow(card, "${dimensionLabel(summary.dimension)}\n" +
+                        (if (summary.unknown) "还没有留下描述" else "${summary.currentEntries} 条当前描述"), "dimension:${summary.dimension}") {
                         showDimension(summary.dimension, 0)
                     }
                 }
+            }
+            Ui.card(root).also { card ->
+                if (snapshot.total > 0) primaryIn(card, "了解近期的自己", "generate") { showGenerateForm() }
+                addButton(card, "待采用与历史描述", "manage") { showManagement() }
+                addButton(card, "变化记录", "changes") { showChangesForm() }
+            }
+            Ui.disclosure(root, "这些描述从哪里来", "profileAbout") { details ->
+                Ui.note(details, "描述来自已有记录与知识，由你明确采用，不是人格测验或固定标签。近期描述默认查看最近 30 天；没有描述只代表资料不足。")
+                Ui.note(details, "${snapshot.omittedNotCurrent} 条描述当前未纳入。已有画像之间的比较、反例检查与长期整理页面仍待接入。")
             }
         }
     }
@@ -120,9 +113,9 @@ class ProfileActivity : ScreenActivity() {
         }) { page ->
             Ui.card(root).also { card ->
                 Ui.sectionTitle(card, "条目")
-                Ui.note(card, "只列出条目元数据；正文在条目详情中查看。")
+                Ui.note(card, "点开查看描述与原文依据。")
                 Ui.note(card, "共 ${page.total} 条")
-                if (page.items.isEmpty()) Ui.note(card, "当前范围没有条目。")
+                if (page.items.isEmpty()) emptyState(card, "当前范围没有条目。")
                 page.items.forEach { item ->
                     listRow(card,
                         "${layerLabel(item.draft.layer)} · ${adoptionLabel(item.adoption)}\n" +
@@ -133,17 +126,17 @@ class ProfileActivity : ScreenActivity() {
                         showEntry(item.id)
                     }
                 }
-                if (offset > 0) cardButton(card, "上一页", "previousPage") { showDimension(value, (offset - PAGE_SIZE).coerceAtLeast(0)) }
-                page.nextOffset?.let { next -> cardButton(card, "下一页", "nextPage") { showDimension(value, next) } }
+                if (offset > 0) addButton(card, "上一页", "previousPage") { showDimension(value, (offset - PAGE_SIZE).coerceAtLeast(0)) }
+                page.nextOffset?.let { next -> addButton(card, "下一页", "nextPage") { showDimension(value, next) } }
             }
         }
     }
 
     private fun showManagement() {
-        beginScreen("manage", "候选与历史条目管理")
+        beginScreen("manage", "待采用与历史描述")
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "说明")
-            Ui.note(card, "这里列出候选、不用于画像与已被替代的条目。「不用于画像」只表示不纳入画像组织，不否定或删除共享知识；认为原判断错误请使用核对与反馈中的纠正／否定。")
+            Ui.note(card, "查看待采用、未采用和已被替代的描述。不采用只会移出「关于我」；如果内容有误，请到「整理」中纠正。")
         }
         runIo({
             val snapshot = app.personalProfile.open(ProfileQuery(zoneId = zoneId, currentOnly = false))
@@ -159,8 +152,8 @@ class ProfileActivity : ScreenActivity() {
             listOf(ProfileAdoption.CANDIDATE, ProfileAdoption.DECLINED, ProfileAdoption.SUPERSEDED).forEach { adoption ->
                 val group = items.filter { it.adoption == adoption }
                 Ui.card(root).also { card ->
-                    Ui.sectionTitle(card, "${adoptionLabel(adoption)}（${group.size} 条）")
-                    if (group.isEmpty()) Ui.note(card, "暂无。")
+                    Ui.cardTitle(card, "${adoptionLabel(adoption)}（${group.size} 条）")
+                    if (group.isEmpty()) emptyState(card, "暂无。")
                     group.forEach { item ->
                         listRow(card,
                             "${dimensionLabel(item.draft.dimension)} · ${layerLabel(item.draft.layer)} · 知识：${knowledgeStateLabel(item.knowledgeState)}\n更新于 ${item.updatedAt}",
@@ -177,7 +170,7 @@ class ProfileActivity : ScreenActivity() {
     private fun showEntry(id: String, revision: Int? = null) {
         entryId = id
         entryRevision = revision
-        beginScreen("entry", if (revision == null) "画像条目" else "画像条目 · 历史修订 $revision")
+        beginScreen("entry", if (revision == null) "关于我的描述" else "历史版本 · $revision")
         runIo({
             val snapshot = app.personalProfile.open(ProfileQuery(zoneId = zoneId, currentOnly = false))
             app.personalProfile.entry(snapshot, id, revision)
@@ -187,22 +180,24 @@ class ProfileActivity : ScreenActivity() {
     private fun renderEntry(detail: ProfileEntryView) {
         val value = detail.value
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "条目信息")
-            Ui.body(card, "维度：${dimensionLabel(value.draft.dimension)} · 层次：${layerLabel(value.draft.layer)}")
+            Ui.sectionTitle(card, dimensionLabel(value.draft.dimension))
+            Ui.note(card, layerLabel(value.draft.layer))
             chipRow(card).also { row ->
                 chip(row, adoptionLabel(value.adoption), adoptionTone(value.adoption))
                 chip(row, knowledgeStateLabel(detail.knowledgeState), knowledgeStateTone(detail.knowledgeState))
                 chip(row, recentStateLabel(detail.recentState), recentStateTone(detail.recentState))
             }
-            Ui.note(card, "当前有效：${if (detail.isCurrent) "是" else "否"} · 是否为当前修订：${if (detail.isCurrentRevision) "是" else "否"}（修订 ${value.revision}）")
-            Ui.note(card, "评估时间：${detail.evaluatedAt}\n创建：${value.createdAt} · 更新：${value.updatedAt}")
-            Ui.body(card, "我的补充：${value.userText ?: "（无）"}")
+            if (!detail.isCurrentRevision) Ui.note(card, "正在查看历史版本，当前状态以最新版本为准。")
+            value.userText?.let { Ui.body(card, "我的补充：$it") }
+            Ui.disclosure(card, "版本信息", "profileVersion") { details ->
+                Ui.note(details, "版本 ${value.revision}\n创建于 ${value.createdAt}\n更新于 ${value.updatedAt}\n检查于 ${detail.evaluatedAt}")
+            }
         }
         val knowledge = detail.knowledge
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "关联知识")
+            Ui.sectionTitle(card, "描述与依据")
             if (knowledge == null) {
-                Ui.note(card, "关联知识不可用（${knowledgeStateLabel(detail.knowledgeState)}）。")
+                emptyState(card, "关联知识不可用（${knowledgeStateLabel(detail.knowledgeState)}）。")
             } else {
                 Ui.body(card, knowledge.value.claim.text)
                 Ui.note(card, "性质：${claimKindLabel(knowledge.value.claim.kind)} · 类别：${categoryLabel(knowledge.value.category)} · 范围：${knowledge.value.scope.from} 至 ${knowledge.value.scope.through}")
@@ -214,11 +209,11 @@ class ProfileActivity : ScreenActivity() {
                 Ui.sectionTitle(card, "原文引用")
                 val receipts = KnowledgeValidation.allEvidence(knowledge.value)
                 if (receipts.isEmpty()) {
-                    Ui.note(card, "该知识没有登记原文引用。")
+                    emptyState(card, "该知识没有登记原文引用。")
                 } else {
-                    Ui.note(card, "已登记原文引用 ${receipts.size} 段（点按读取原文片段）：")
+                    Ui.note(card, "${receipts.size} 段原文，点开查看：")
                     receipts.forEachIndexed { index, receipt ->
-                        listRow(card, "引用 ${index + 1}：记录 ${receipt.recordId.take(8)} · 第 ${receipt.start}–${receipt.end} 码点", "evidence:${receipt.id}") {
+                        listRow(card, "原文 ${index + 1} · ${receipt.end - receipt.start} 字", "evidence:${receipt.id}") {
                             showEvidence(value.id, receipt.id, 0)
                         }
                     }
@@ -232,27 +227,28 @@ class ProfileActivity : ScreenActivity() {
         if (entryRevision != null || !detail.isCurrentRevision) return
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "操作")
-            Ui.note(card, "「不用于画像」与「原判断错误」不同：前者只是不纳入画像组织，后者请通过核对与反馈纠正／否定原判断。")
-            if (value.adoption != ProfileAdoption.ADOPTED) cardPrimary(card, "采用这条画像", "adopt") {
-                confirm("采用这条画像？", "采用是你明确的组织决定，关联知识的当前有效性会再次检查；这不是人格评分或身份推断。", "采用") {
+            Ui.note(card, "不采用会保留原来的知识。若内容有误，请到「整理」中纠正或否定。")
+            if (value.adoption != ProfileAdoption.ADOPTED) primaryIn(card, "采用这条描述", "adopt") {
+                confirm("采用这条描述？", "它会进入「关于我」，以后仍可修正。采用表示你的选择，不会把这段描述变成固定的人格结论。", "采用") {
                     val operationId = UUID.randomUUID().toString()
                     runIo({ app.personalProfile.adopt(value.id, value.revision, operationId) }) { toast("已采用"); showEntry(value.id) }
                 }
             }
-            if (value.adoption != ProfileAdoption.DECLINED) cardButton(card, "不用于画像", "decline") {
+            if (value.adoption != ProfileAdoption.DECLINED) addButton(card, "不用于画像", "decline") {
                 confirm("标记为不用于画像？", "条目退出当前画像组织并保留历史；共享知识不受影响。", "不用于画像") {
                     val operationId = UUID.randomUUID().toString()
                     runIo({ app.personalProfile.decline(value.id, value.revision, operationId) }) { toast("已标记为不用于画像"); showEntry(value.id) }
                 }
             }
-            if (value.adoption != ProfileAdoption.SUPERSEDED) cardButton(card, "标记已被替代", "supersede") {
+            if (value.adoption != ProfileAdoption.SUPERSEDED) addButton(card, "标记已被替代", "supersede") {
                 confirm("标记为已被替代？", "表示这条目退出当前采用并保留历史；不会自动选择替代条目。", "标记已被替代") {
                     val operationId = UUID.randomUUID().toString()
                     runIo({ app.personalProfile.supersede(value.id, value.revision, operationId) }) { toast("已标记为已被替代"); showEntry(value.id) }
                 }
             }
-            val feedbackField = cardField(card, "补充文字（可选，最多 2000 字；清空后保存将清除本次补充，历史仍保留）", value.userText.orEmpty(), multiline = true, maxLength = 2_000)
-            cardButton(card, "保存补充文字", "saveFeedback") {
+            val feedbackField = labeledFieldIn(card, "补充文字（可选）", value = value.userText.orEmpty(), multiline = true, maxLength = 2_000)
+            Ui.note(card, "最多 2000 字；清空后保存将清除本次补充，历史仍保留。")
+            addButton(card, "保存补充文字", "saveFeedback") {
                 val operationId = UUID.randomUUID().toString()
                 val note = feedbackField.text.toString()
                 runIo({ app.personalProfile.feedback(value.id, value.revision, operationId, note.ifBlank { null }) }) {
@@ -260,7 +256,7 @@ class ProfileActivity : ScreenActivity() {
                     showEntry(value.id)
                 }
             }
-            cardDanger(card, "永久删除这条画像", "delete") {
+            dangerIn(card, "永久删除这条画像", "delete") {
                 confirm("永久删除这条画像？", "全部修订与独立补充文字将被永久删除并保留删除标记；关联的共享知识保留。此操作不能撤销。", "永久删除") {
                     runIo({ app.personalProfile.delete(value.id, value.revision) }) {
                         toast("画像已永久删除")
@@ -288,14 +284,14 @@ class ProfileActivity : ScreenActivity() {
         }) { (receipt, fragment) ->
             Ui.card(root).also { card ->
                 Ui.sectionTitle(card, "原文片段")
-                Ui.note(card, "记录 ${fragment.recordId.take(8)} · 修订 ${fragment.revision} · 字段 ${fragment.field}")
-                Ui.note(card, "引用内第 ${fragment.start - receipt.start}–${fragment.end - receipt.start} 码点，共 ${receipt.end - receipt.start} 码点。起点相对于该引用，不能扩展成整条原文。")
+                Ui.note(card, "原文片段 · 版本 ${fragment.revision}")
+                Ui.note(card, "正在查看引用内第 ${fragment.start - receipt.start}–${fragment.end - receipt.start} 字，共 ${receipt.end - receipt.start} 字。")
                 Ui.body(card, fragment.text)
                 if (fragment.start > receipt.start) {
-                    cardButton(card, "上一段", "evidencePrevious") { showEvidence(id, evidence, (start - EVIDENCE_PAGE).coerceAtLeast(0)) }
+                    addButton(card, "上一段", "evidencePrevious") { showEvidence(id, evidence, (start - EVIDENCE_PAGE).coerceAtLeast(0)) }
                 }
                 if (fragment.end < receipt.end) {
-                    cardButton(card, "下一段", "evidenceNext") { showEvidence(id, evidence, fragment.end - receipt.start) }
+                    addButton(card, "下一段", "evidenceNext") { showEvidence(id, evidence, fragment.end - receipt.start) }
                 }
             }
         }
@@ -312,7 +308,7 @@ class ProfileActivity : ScreenActivity() {
             Ui.card(root).also { card ->
                 Ui.sectionTitle(card, "修订")
                 Ui.note(card, "共 ${page.total} 个修订")
-                if (page.items.isEmpty()) Ui.note(card, "暂无修订。")
+                if (page.items.isEmpty()) emptyState(card, "暂无修订。")
                 page.items.forEach { revision ->
                     listRow(card,
                         "修订 ${revision.revision} · ${changeLabel(revision.change)} · ${adoptionLabel(revision.adoption)}\n" +
@@ -321,23 +317,25 @@ class ProfileActivity : ScreenActivity() {
                         showEntry(id, revision.revision)
                     }
                 }
-                if (offset > 0) cardButton(card, "上一页", "previousPage") { showHistory(id, (offset - PAGE_SIZE).coerceAtLeast(0)) }
-                page.nextOffset?.let { next -> cardButton(card, "下一页", "nextPage") { showHistory(id, next) } }
+                if (offset > 0) addButton(card, "上一页", "previousPage") { showHistory(id, (offset - PAGE_SIZE).coerceAtLeast(0)) }
+                page.nextOffset?.let { next -> addButton(card, "下一页", "nextPage") { showHistory(id, next) } }
             }
         }
     }
 
     private fun showGenerateForm() {
-        beginScreen("generate", "生成画像候选")
+        beginScreen("generate", "了解近期的自己")
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "生成条件")
-            Ui.note(card, "从固定范围的原始记录生成「近期状态」或「情境模式」提案，经独立核对后由你明确确认、保存与采用；生成不自动确认、发布或采用。长期层次须经纵向画像流程，本页不提供。")
-            val dimensionSpinner = cardSpinner(card, ProfileDimension.entries.map(::dimensionLabel), 0, "dimension")
-            val layerSpinner = cardSpinner(card, listOf("近期状态", "情境模式"), 0, "layer")
-            val fromField = cardField(card, "范围起始日期（YYYY-MM-DD）", LocalDate.now().minusDays(30).toString())
-            val throughField = cardField(card, "范围结束日期（YYYY-MM-DD）", LocalDate.now().toString())
-            val questionField = cardField(card, "问题（向模型提出的分析请求）", "", multiline = true, maxLength = 2_000)
-            cardPrimary(card, "开始生成", "startGenerate") {
+            Ui.sectionTitle(card, "想了解哪个方面？")
+            Ui.note(card, "从这段时间的记录中整理可能的描述。核对、确认后可以保存，你再决定是否采用。长期描述尚不在本页整理。")
+            Ui.fieldLabel(card, "画像维度")
+            val dimensionSpinner = spinnerIn(card, ProfileDimension.entries.map(::dimensionLabel), 0, "dimension")
+            Ui.fieldLabel(card, "层次")
+            val layerSpinner = spinnerIn(card, listOf("近期状态", "情境模式"), 0, "layer")
+            val fromField = labeledFieldIn(card, "范围起始日期", hint = "YYYY-MM-DD", value = LocalDate.now().minusDays(30).toString())
+            val throughField = labeledFieldIn(card, "范围结束日期", hint = "YYYY-MM-DD", value = LocalDate.now().toString())
+            val questionField = labeledFieldIn(card, "这次想了解什么？", multiline = true, maxLength = 2_000)
+            primaryIn(card, "开始整理", "startGenerate") {
                 val request = try {
                     val from = parseDate(fromField.text.toString(), "起始日期")
                     val through = parseDate(throughField.text.toString(), "结束日期")
@@ -351,14 +349,14 @@ class ProfileActivity : ScreenActivity() {
                     AnalysisRequest(question, AnalysisQuery(from, through, zoneId), profileTarget = target)
                 } catch (failure: IllegalArgumentException) {
                     showError(failure)
-                    return@cardPrimary
+                    return@primaryIn
                 }
                 runIo({ app.deepSeekCredentials.isConfigured() }) { configured ->
                     if (!configured) {
                         showError(IllegalStateException("尚未配置 DeepSeek 密钥。请先在「设置」中保存密钥后再生成。"))
                         return@runIo
                     }
-                    confirm("将向 DeepSeek 发送范围内原文", "生成与核对会将所选范围内的记录原文片段发送给 DeepSeek，产生付费模型请求（每轮最多 5 次）。处理不自动确认、发布或采用。是否继续？", "继续生成") {
+                    confirm("开始在线整理？", "将把所选记录片段发送给 DeepSeek，可能产生费用，每轮最多请求 5 次。整理不会自动替你确认、收录或采用。", "开始整理") {
                         runIo({ app.profileCandidates.start(request).stored.id }) { started -> runCandidatePass(started) }
                     }
                 }
@@ -376,7 +374,7 @@ class ProfileActivity : ScreenActivity() {
             }
             id to failure
         }) { (started, failure) ->
-            failure?.let { toast("模型请求未完成：$it") }
+            failure?.let { toast("在线整理未完成：$it") }
             showCandidateProgress(started, 0)
         }
     }
@@ -384,7 +382,7 @@ class ProfileActivity : ScreenActivity() {
     private fun showCandidateProgress(id: String, offset: Int) {
         runId = id
         candidateOffset = offset
-        beginScreen("candidates", "画像候选任务")
+        beginScreen("candidates", "待确认的描述")
         runIo({ app.profileCandidates.inspect(id, offset, PAGE_SIZE) }) { progress ->
             candidateProgress = progress
             renderCandidateProgress(progress)
@@ -393,45 +391,44 @@ class ProfileActivity : ScreenActivity() {
 
     private fun renderCandidateProgress(progress: ProfileCandidateProgress) {
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "任务状态")
+            Ui.sectionTitle(card, "整理进度")
             chipRow(card).also { row -> chip(row, statusLabel(progress.status), statusTone(progress.status)) }
             progress.target?.let { Ui.note(card, "目标：${dimensionLabel(it.dimension)} · ${layerLabel(it.layer)}") }
             when (progress.status) {
                 ProfileCandidateStatus.BUDGET_EXHAUSTED ->
-                    Ui.note(card, "预算已用完：已有进度保留；任务预算不能原地扩大，须明确建立预算更充足的新任务。")
-                ProfileCandidateStatus.CLOCK_ROLLBACK -> Ui.note(card, "设备时钟早于任务更新时间，已暂停派发与保存。")
-                ProfileCandidateStatus.NEEDS_RECOVERY -> Ui.note(card, "存在在途模型调用遗留，需要先恢复任务。")
+                    Ui.note(card, "本次整理额度已用完，已有内容会保留。如需继续，请建立新的整理。")
+                ProfileCandidateStatus.CLOCK_ROLLBACK -> Ui.note(card, "手机时间发生回拨，已暂停整理。请检查系统时间。")
+                ProfileCandidateStatus.NEEDS_RECOVERY -> Ui.note(card, "上次整理中断了，需要先恢复。")
                 else -> Unit
             }
             Ui.note(card, "整合状态：${integrationLabel(progress.integration)}")
             if (progress.integration == SynthesisIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED) {
-                Ui.body(card, "多批尚未整合：各批提案分别处理，尚未跨批统一整合，不能当作完整周期或长期画像。")
+                Ui.body(card, "这些描述分次整理，尚未合并，不能代表完整的周期或长期倾向。")
             }
             if (progress.status == ProfileCandidateStatus.READY || progress.status == ProfileCandidateStatus.PASS_LIMIT_REACHED) {
-                cardPrimary(card, "继续处理（本轮最多 5 次付费请求）", "continueProcessing") {
-                    confirm("继续付费处理？", "将向 DeepSeek 发送范围内原文片段，本轮最多 5 次模型请求。", "继续处理") {
+                primaryIn(card, "继续整理", "continueProcessing") {
+                    confirm("继续在线整理？", "将把所选记录片段发送给 DeepSeek，可能产生费用，本轮最多请求 5 次。", "继续整理") {
                         runCandidatePass(progress.runId)
                     }
                 }
             }
         }
-        Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "范围覆盖")
+        Ui.disclosure(root, "本次整理范围与进度", "candidateCoverage") { card ->
             val coverage = progress.coverage
             if (coverage == null) {
-                Ui.note(card, "当前没有范围覆盖信息（任务可能不可用或已过期）。")
+                emptyState(card, "暂时无法读取整理进度，可能已过期或被移除。")
             } else {
-                Ui.note(card, "范围覆盖：记录 ${coverage.records} 条，文字 ${coverage.textCodePoints} 码点，已处理 ${coverage.completedTextCodePoints} 码点，剩余片段 ${coverage.remainingTextFragments}。")
+                Ui.note(card, "${coverage.records} 条记录 · 已整理 ${coverage.completedTextCodePoints} / ${coverage.textCodePoints} 字 · 还剩 ${coverage.remainingTextFragments} 段。")
                 if (coverage.hasGaps) {
                     Ui.note(card, "覆盖缺口：未读取附件 ${coverage.unreadAttachments} 个，不可读记录 ${coverage.unreadableRecords} 条，日期未知记录 ${coverage.unknownTimeRecords} 条，跨期记录 ${coverage.overlappingRecords} 条，缺失指定 ID ${coverage.missingExactIds.size} 个。")
                 } else {
                     Ui.note(card, "无已知覆盖缺口。")
                 }
             }
-            Ui.note(card, "如实说明：反例搜索未穷尽（counterevidenceSearchExhaustive=false）；未完成跨任务语义去重（crossTaskSemanticDeduplication=false）；未跟踪已永久删除的手工组织位置（manualDeletedSlotTracking=false）。")
+            Ui.note(card, "这些描述只依据本次所选记录，仍可能有遗漏或反例。本步骤尚未与其他整理结果去重，也不会找回你已永久删除的手工归类。")
         }
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "候选 ${progress.total} 条（本页 ${progress.candidates.size} 条）")
+            Ui.cardTitle(card, "候选 ${progress.total} 条（本页 ${progress.candidates.size} 条）")
             progress.candidates.forEach { item ->
                 chipRow(card).also { row -> chip(row, dispositionLabel(item.disposition), dispositionTone(item.disposition)) }
                 listRow(card,
@@ -442,13 +439,13 @@ class ProfileActivity : ScreenActivity() {
                     showCandidateDetail(progress, item)
                 }
             }
-            if (candidateOffset > 0) cardButton(card, "上一页", "previousPage") { showCandidateProgress(progress.runId, (candidateOffset - PAGE_SIZE).coerceAtLeast(0)) }
-            progress.nextOffset?.let { next -> cardButton(card, "下一页", "nextPage") { showCandidateProgress(progress.runId, next) } }
+            if (candidateOffset > 0) addButton(card, "上一页", "previousPage") { showCandidateProgress(progress.runId, (candidateOffset - PAGE_SIZE).coerceAtLeast(0)) }
+            progress.nextOffset?.let { next -> addButton(card, "下一页", "nextPage") { showCandidateProgress(progress.runId, next) } }
         }
     }
 
     private fun showCandidateDetail(progress: ProfileCandidateProgress, item: ProfileCandidateItem) {
-        beginScreen("candidateDetail", "候选详情")
+        beginScreen("candidateDetail", "待确认的描述")
         runIo({
             try {
                 app.profileCandidates.candidate(progress, item.claim)
@@ -463,11 +460,11 @@ class ProfileActivity : ScreenActivity() {
     private fun renderCandidateDetail(detail: dev.tracelife.profile.ProfileCandidateDetail) {
         val id = detail.item.claim
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "提案")
+            Ui.sectionTitle(card, "描述")
             chipRow(card).also { row -> chip(row, dispositionLabel(detail.item.disposition), dispositionTone(detail.item.disposition)) }
             Ui.body(card, detail.proposal.text)
-            Ui.note(card, "性质：${claimKindLabel(detail.proposal.kind)}（提案均为可能解释，不是已发布知识或已采用画像）")
-            Ui.note(card, "生成输入共 ${detail.evidence.size} 段原文引用（含提案未引用的上下文）。")
+            Ui.note(card, "${claimKindLabel(detail.proposal.kind)} · 尚未收录或采用")
+            Ui.note(card, "本次整理参考了 ${detail.evidence.size} 段原文与上下文。")
         }
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "核对")
@@ -478,46 +475,46 @@ class ProfileActivity : ScreenActivity() {
                 chipRow(card).also { row -> chip(row, verdictLabel(review.verdict), verdictTone(review.verdict)) }
                 if (review.issues.isNotEmpty()) Ui.note(card, "问题：${review.issues.joinToString("、", transform = ::issueLabel)}")
                 if (review.unknowns.isNotEmpty()) Ui.note(card, "未知：${review.unknowns.joinToString("；")}")
-                Ui.note(card, "支持引用 ${review.supportingEvidenceIds.size} 段 · 矛盾引用 ${review.contradictingEvidenceIds.size} 段。模型的「支持」只是有限证据下的意见，不是事实认证。")
+                Ui.note(card, "支持原文 ${review.supportingEvidenceIds.size} 段 · 存在矛盾 ${review.contradictingEvidenceIds.size} 段。核对只依据这些记录，意见仍需你判断。")
             }
             when (detail.item.disposition) {
                 ProfileCandidateDisposition.MAINTENANCE_REQUIRED ->
-                    Ui.note(card, "该候选存在适用历史画像或属长期层次，必须经跨任务维护流程比较并明确应用；普通核对通过也不能直接保存。维护流程暂未接入界面。")
+                    Ui.note(card, "这条描述需要与已有画像或长期资料对照，暂时不能直接保存。对应的比较页面尚未接入。")
                 ProfileCandidateDisposition.READY_TO_MATERIALIZE ->
-                    Ui.note(card, "核对与用户确认均已完成，可以保存为画像候选。")
+                    Ui.note(card, "已完成核对和你的确认，可以保存为待采用描述。")
                 ProfileCandidateDisposition.AWAITING_CONFIRMATION ->
-                    Ui.note(card, "核对已完成，等待你明确确认。确认后先前核对失效，需返回列表「继续处理」完成重新核对，之后才可保存。")
+                    Ui.note(card, "等待你确认。确认后请返回列表「继续整理」，重新核对后即可保存。")
                 else -> Unit
             }
         }
         val currentRunId = runId ?: return
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "操作")
-            cardButton(card, "确认这条陈述", "confirmClaim") {
-                confirm("确认这条陈述？", "确认表示你明确认可这条候选文字；确认会产生新的反馈版本，先前核对因此失效，需要重新核对后才能保存。", "确认") {
+            addButton(card, "确认这条描述", "confirmClaim") {
+                confirm("确认这条描述？", "确认表示你认可这段文字。之后需要重新核对，再决定是否保存；不会自动采用。", "确认") {
                     runIo({
                         app.analysisFeedback.respond(currentRunId, id, app.analysis.task(currentRunId).stored.version, ClaimFeedbackDecision.CONFIRMED)
                     }) {
-                        toast("已确认；请返回候选列表继续处理以完成重新核对")
+                        toast("已确认，请返回列表继续整理，完成重新核对")
                         showCandidateProgress(currentRunId, candidateOffset)
                     }
                 }
             }
             if (detail.item.disposition == ProfileCandidateDisposition.READY_TO_MATERIALIZE) {
-                cardPrimary(card, "保存为画像候选", "materialize") {
-                    confirm("保存为画像候选？", "将把该陈述发布为共享洞察并保存为画像候选；保存后仍需在画像页明确采用，采用是独立操作。", "保存") {
+                primaryIn(card, "保存为待采用描述", "materialize") {
+                    confirm("保存这条描述？", "它会作为洞察收进知识库，并保存为待采用描述。是否加入「关于我」，仍由你另行决定。", "保存") {
                         runIo({
                             app.profileCandidates.materialize(currentRunId, id, app.analysis.task(currentRunId).stored.version)
                         }) { result ->
                             val message = when (result.status) {
                                 ProfileCandidateMaterializationStatus.CREATED ->
-                                    "已保存为画像候选。保存不等于采用：请在「候选与历史条目管理」中查看并明确采用。"
+                                    "已保存。请到「待采用与历史描述」查看，再决定是否采用。"
                                 ProfileCandidateMaterializationStatus.EXISTING ->
-                                    "已存在对应的画像条目，本次未新建；这不表示新建成功或已采用，已有条目的采用决定与文字保留。"
+                                    "已有对应的描述，本次没有重复保存。原来的采用决定与补充文字保留。"
                                 ProfileCandidateMaterializationStatus.DELETED ->
-                                    "对应画像条目已被永久删除，其稳定身份不能再次使用，本次未保存。"
+                                    "这条描述曾被永久删除，本次没有重新保存。"
                                 ProfileCandidateMaterializationStatus.CONFLICT ->
-                                    "与既有画像条目冲突，须通过跨任务维护流程明确处理，不能用其他身份重试；维护流程暂未接入界面，本次未保存。"
+                                    "这条描述与已有画像需要进一步比较，本次没有保存。对应的比较页面尚未接入。"
                             }
                             AlertDialog.Builder(this).setTitle("保存结果").setMessage(message)
                                 .setPositiveButton("知道了") { _, _ -> showCandidateProgress(currentRunId, candidateOffset) }.show()
@@ -529,20 +526,20 @@ class ProfileActivity : ScreenActivity() {
     }
 
     private fun showChangesForm() {
-        beginScreen("changesForm", "画像变化摘要")
+        beginScreen("changesForm", "变化记录")
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "统计范围")
-            Ui.note(card, "按修订时间列出画像的组织变化。计数是操作事实统计，不衡量个人成长、画像准确度或行为改变；同一修订可同时修改多个字段，分类计数不能相加当作总修订数。")
-            val fromField = cardField(card, "起始日期（YYYY-MM-DD）", changesFrom.ifEmpty { LocalDate.now().minusDays(30).toString() })
-            val throughField = cardField(card, "结束日期（YYYY-MM-DD）", changesThrough.ifEmpty { LocalDate.now().toString() })
-            cardButton(card, "查看变化", "openChanges") {
+            Ui.note(card, "回看你采用、修正或补充过的描述。这些是保存记录，不代表成长评分。")
+            val fromField = labeledFieldIn(card, "起始日期", hint = "YYYY-MM-DD", value = changesFrom.ifEmpty { LocalDate.now().minusDays(30).toString() })
+            val throughField = labeledFieldIn(card, "结束日期", hint = "YYYY-MM-DD", value = changesThrough.ifEmpty { LocalDate.now().toString() })
+            primaryIn(card, "查看变化", "openChanges") {
                 val query = try {
                     changesFrom = fromField.text.toString()
                     changesThrough = throughField.text.toString()
                     ProfileChangesQuery(parseDate(changesFrom, "起始日期"), parseDate(changesThrough, "结束日期"), zoneId)
                 } catch (failure: IllegalArgumentException) {
                     showError(failure)
-                    return@cardButton
+                    return@primaryIn
                 }
                 runIo({ app.profileChanges.open(query) }) { snapshot ->
                     changesSnapshot = snapshot
@@ -555,12 +552,14 @@ class ProfileActivity : ScreenActivity() {
     private fun showChanges(snapshot: ProfileChangesSnapshot, offset: Int) {
         changesSnapshot = snapshot
         changesOffset = offset
-        beginScreen("changes", "画像变化摘要")
+        beginScreen("changes", "变化记录")
         Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "统计口径")
-            Ui.body(card, "${snapshot.query.from} 至 ${snapshot.query.through} · 共 ${snapshot.total} 个修订")
-            Ui.note(card, "字段计数（操作事实统计）：" + ProfileChangedField.entries.joinToString("；") { "${changedFieldLabel(it)} ${snapshot.counts[it] ?: 0}" })
-            Ui.note(card, "如实说明：不含已永久删除的历史（includesPermanentlyDeletedHistory=false）；不衡量个人成长（measuresPersonalGrowth=false）。")
+            Ui.sectionTitle(card, "这段时间")
+            Ui.body(card, "${snapshot.query.from} 至 ${snapshot.query.through} · ${snapshot.total} 次保存")
+            Ui.disclosure(card, "变化统计说明", "profileChangeDetails") { details ->
+                Ui.note(details, ProfileChangedField.entries.joinToString("；") { "${changedFieldLabel(it)} ${snapshot.counts[it] ?: 0}" })
+                Ui.note(details, "一次保存可能改变多个项目，计数不能直接相加。这里不含已永久删除的历史，也不衡量个人成长。")
+            }
         }
         runIo({
             try {
@@ -573,15 +572,15 @@ class ProfileActivity : ScreenActivity() {
         }) { page ->
             Ui.card(root).also { card ->
                 Ui.sectionTitle(card, "变化明细")
-                if (page.items.isEmpty()) Ui.note(card, "该范围没有画像变化。")
+                if (page.items.isEmpty()) emptyState(card, "该范围没有画像变化。")
                 page.items.forEachIndexed { index, item ->
                     if (index > 0) Ui.divider(card)
                     Ui.body(card, "${item.changedAt} · ${changeLabel(item.change)} · ${dimensionLabel(item.dimension)} · ${layerLabel(item.layer)}\n" +
                         "修订 ${item.previousRevision ?: 0} → ${item.revision} · ${adoptionLabel(item.adoption)} · 字段：${item.fields.joinToString("、", transform = ::changedFieldLabel)}" +
                         (item.maintenanceAction?.let { " · 维护操作：${maintenanceActionLabel(it)}" } ?: ""))
                 }
-                if (offset > 0) cardButton(card, "上一页", "previousPage") { showChanges(snapshot, (offset - PAGE_SIZE).coerceAtLeast(0)) }
-                page.nextOffset?.let { next -> cardButton(card, "下一页", "nextPage") { showChanges(snapshot, next) } }
+                if (offset > 0) addButton(card, "上一页", "previousPage") { showChanges(snapshot, (offset - PAGE_SIZE).coerceAtLeast(0)) }
+                page.nextOffset?.let { next -> addButton(card, "下一页", "nextPage") { showChanges(snapshot, next) } }
             }
         }
     }
@@ -589,43 +588,6 @@ class ProfileActivity : ScreenActivity() {
     private fun chipRow(card: LinearLayout) = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         card.addView(this)
-    }
-
-    private fun cardButton(card: LinearLayout, label: String, tag: String, action: () -> Unit) =
-        Ui.button(card, label, tag) { if (!busy) action() }
-
-    private fun cardPrimary(card: LinearLayout, label: String, tag: String, action: () -> Unit) =
-        Ui.primary(card, label, tag) { if (!busy) action() }
-
-    private fun cardDanger(card: LinearLayout, label: String, tag: String, action: () -> Unit) =
-        Ui.dangerButton(card, label, tag) { if (!busy) action() }
-
-    private fun cardField(card: LinearLayout, hint: String, value: String = "", multiline: Boolean = false, maxLength: Int = 2_000): EditText {
-        val input = EditText(this).apply {
-            this.hint = hint
-            inputType = InputType.TYPE_CLASS_TEXT or if (multiline) InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES else 0
-            minLines = if (multiline) 3 else 1
-            gravity = android.view.Gravity.TOP or android.view.Gravity.START
-            setText(value)
-            setFreezesText(false)
-            isSaveEnabled = false
-        }
-        Ui.styleField(this, input)
-        card.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
-        input.filters = arrayOf(InputFilter.LengthFilter(maxLength))
-        return input
-    }
-
-    private fun cardSpinner(card: LinearLayout, items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
-        tag = viewTag
-        adapter = ArrayAdapter(this@ProfileActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        setSelection(selected)
-        Ui.styleSpinner(this@ProfileActivity, this)
-        card.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
     }
 
     private fun adoptionTone(value: ProfileAdoption) = when (value) {
@@ -686,7 +648,7 @@ class ProfileActivity : ScreenActivity() {
     }
 
     private fun adoptionLabel(value: ProfileAdoption) = when (value) {
-        ProfileAdoption.CANDIDATE -> "候选"
+        ProfileAdoption.CANDIDATE -> "待采用"
         ProfileAdoption.ADOPTED -> "已采用"
         ProfileAdoption.DECLINED -> "不用于画像"
         ProfileAdoption.SUPERSEDED -> "已被替代"
@@ -704,9 +666,9 @@ class ProfileActivity : ScreenActivity() {
     }
 
     private fun recentStateLabel(value: ProfileRecentState) = when (value) {
-        ProfileRecentState.NOT_APPLICABLE -> "不受近期窗口筛选"
-        ProfileRecentState.IN_WINDOW -> "在近期窗口内"
-        ProfileRecentState.OUTSIDE_WINDOW -> "已超出近期窗口"
+        ProfileRecentState.NOT_APPLICABLE -> "不限近期"
+        ProfileRecentState.IN_WINDOW -> "近期描述"
+        ProfileRecentState.OUTSIDE_WINDOW -> "已超出近期范围"
         ProfileRecentState.UNKNOWN -> "近期状态未知"
     }
 
@@ -737,7 +699,7 @@ class ProfileActivity : ScreenActivity() {
         ProfileCandidateStatus.CANCELLED -> "已取消"
         ProfileCandidateStatus.RETRY_NEEDED -> "需要重试"
         ProfileCandidateStatus.BUDGET_EXHAUSTED -> "预算已用完"
-        ProfileCandidateStatus.NEEDS_RECOVERY -> "有在途调用待恢复"
+        ProfileCandidateStatus.NEEDS_RECOVERY -> "上次整理中断"
         ProfileCandidateStatus.STALE -> "任务来源已失效"
         ProfileCandidateStatus.EXPIRED -> "任务已过期"
         ProfileCandidateStatus.CLOCK_ROLLBACK -> "时钟回拨"
@@ -748,7 +710,7 @@ class ProfileActivity : ScreenActivity() {
     private fun dispositionLabel(value: ProfileCandidateDisposition) = when (value) {
         ProfileCandidateDisposition.PENDING_REVIEW -> "待核对"
         ProfileCandidateDisposition.AWAITING_CONFIRMATION -> "待用户确认"
-        ProfileCandidateDisposition.READY_TO_MATERIALIZE -> "可保存为画像候选"
+        ProfileCandidateDisposition.READY_TO_MATERIALIZE -> "可以保存"
         ProfileCandidateDisposition.REVIEW_UNSUPPORTED -> "核对未支持"
         ProfileCandidateDisposition.REVIEW_CONTRADICTED -> "核对发现矛盾"
         ProfileCandidateDisposition.REVIEW_INSUFFICIENT_CONTEXT -> "核对上下文不足"
@@ -758,11 +720,11 @@ class ProfileActivity : ScreenActivity() {
         ProfileCandidateDisposition.PROFILE_DELETED -> "画像已删除"
         ProfileCandidateDisposition.EXISTING_PROFILE -> "已有画像条目"
         ProfileCandidateDisposition.PROFILE_CONFLICT -> "与既有画像冲突"
-        ProfileCandidateDisposition.MAINTENANCE_REQUIRED -> "须经跨任务维护"
+        ProfileCandidateDisposition.MAINTENANCE_REQUIRED -> "需要与已有描述比较"
     }
 
     private fun verdictLabel(value: ReviewVerdict) = when (value) {
-        ReviewVerdict.SUPPORTED -> "有限证据下支持（不是事实认证）"
+        ReviewVerdict.SUPPORTED -> "现有记录支持"
         ReviewVerdict.UNSUPPORTED -> "未支持"
         ReviewVerdict.CONTRADICTED -> "存在矛盾"
         ReviewVerdict.INSUFFICIENT_CONTEXT -> "上下文不足"
@@ -770,8 +732,8 @@ class ProfileActivity : ScreenActivity() {
 
     private fun issueLabel(value: ReviewIssue) = when (value) {
         ReviewIssue.USER_REPORT_AS_FACT -> "自述被当作事实"
-        ReviewIssue.SCOPE_OVERGENERALIZATION -> "范围过度泛化"
-        ReviewIssue.CAUSAL_OVERREACH -> "因果过度推断"
+        ReviewIssue.SCOPE_OVERGENERALIZATION -> "局部扩大为整体"
+        ReviewIssue.CAUSAL_OVERREACH -> "相关扩大为因果"
         ReviewIssue.COUNTEREVIDENCE_OMISSION -> "遗漏反例"
         ReviewIssue.INSUFFICIENT_CONTEXT -> "上下文不足"
         ReviewIssue.OTHER -> "其他"
@@ -779,8 +741,8 @@ class ProfileActivity : ScreenActivity() {
 
     private fun integrationLabel(value: SynthesisIntegration) = when (value) {
         SynthesisIntegration.INCOMPLETE -> "尚未完成整合"
-        SynthesisIntegration.SINGLE_CALL_ALL_AVAILABLE_TEXT -> "单次调用覆盖全部可用文字"
-        SynthesisIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED -> "多批尚未整合"
+        SynthesisIntegration.SINGLE_CALL_ALL_AVAILABLE_TEXT -> "本次已查看全部可用文字"
+        SynthesisIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED -> "分次结果尚未合并"
         SynthesisIntegration.NO_TEXT -> "没有可用文字"
     }
 

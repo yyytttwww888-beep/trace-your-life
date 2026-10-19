@@ -1,8 +1,6 @@
 package dev.tracelife.ui
 
 import android.content.Intent
-import android.text.InputFilter
-import android.text.InputType
 import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
@@ -44,24 +42,16 @@ class KnowledgeActivity : ScreenActivity() {
         detailId = null
         detailRevision = null
         beginScreen("index", "知识库", showBack = false)
-        Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "知识来源")
-            Ui.note(card, "知识只能从核对页中已核对的陈述发布，本页不提供新建。")
-            Ui.button(card, "前往核对与整理", "navReview") { if (!busy) startActivity(Intent(this, ReviewActivity::class.java)) }
-        }
-        Ui.card(root).also { card ->
-            Ui.sectionTitle(card, "筛选")
-            Ui.note(card, "日期筛选定位分析适用范围，不是陈述的精确发生日期。目录不含正文，点开条目查看。")
+        Ui.disclosure(root, "筛选知识", "knowledgeFilters", expanded = filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank() || includeInvalid) { filters ->
+            Ui.note(filters, "按分析所涉及的日期和主题查找。")
             filterFields.clear()
-            filterFields["from"] = fieldIn(card, "起始日期（可留空，YYYY-MM-DD）", filterFrom)
-            filterFields["through"] = fieldIn(card, "结束日期（可留空，YYYY-MM-DD）", filterThrough)
-            filterFields["topic"] = fieldIn(card, "主题（填写一个主题，可留空）", filterTopic)
-            includeInvalidCheck = checkIn(card, "包含已失效条目", includeInvalid)
-            Ui.button(card, "应用筛选", "applyFilter") {
-                if (!busy) {
-                    captureFilters()
-                    loadIndex()
-                }
+            filterFields["from"] = labeledFieldIn(filters, "从哪天起", "YYYY-MM-DD · 可留空", filterFrom)
+            filterFields["through"] = labeledFieldIn(filters, "到哪天", "YYYY-MM-DD · 可留空", filterThrough)
+            filterFields["topic"] = labeledFieldIn(filters, "主题", "可留空", filterTopic)
+            includeInvalidCheck = checkIn(filters, "也看已失效的条目", includeInvalid)
+            primaryIn(filters, "应用筛选", "applyFilter") {
+                captureFilters()
+                loadIndex()
             }
         }
         loadIndex()
@@ -105,7 +95,7 @@ class KnowledgeActivity : ScreenActivity() {
             }
         }) { next ->
             if (next == null) {
-                toast("知识目录已变化，已从首页重新读取")
+                toast("内容有更新，已刷新列表")
                 loadIndex()
             } else {
                 currentPage = next
@@ -119,13 +109,22 @@ class KnowledgeActivity : ScreenActivity() {
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "knowledgeResults" }
         root.addView(results)
         val summary = StringBuilder("共 ${page.total} 条")
-        if (page.omittedInvalid > 0) summary.append("；另有 ${page.omittedInvalid} 条已失效未显示（勾选「包含已失效条目」可查看）")
+        if (page.omittedInvalid > 0) summary.append(" · ${page.omittedInvalid} 条已失效，筛选中可查看")
         Ui.note(results, summary.toString())
-        if (page.items.isEmpty()) Ui.note(results, "当前范围没有知识条目。")
+        if (page.items.isEmpty()) {
+            val empty = Ui.card(results)
+            emptyState(empty, "还没有积累到这里。\n从日常记录中整理出的观察与经验，会保存在知识库。")
+            addButton(empty, "去整理记录", "navReview") { startActivity(Intent(this, ReviewActivity::class.java)) }
+        } else {
+            Ui.disclosure(results, "整理更多记录", "knowledgeOrganize") { organize ->
+                Ui.note(organize, "整理并核对记录后，可以保存新的知识。")
+                addButton(organize, "去整理记录", "navReview") { startActivity(Intent(this, ReviewActivity::class.java)) }
+            }
+        }
         page.items.forEach { item ->
             listRow(
                 results,
-                "${categoryLabel(item.category)} · ${evidenceStateLabel(item.evidenceState)}\n主题：${item.topics.joinToString("、").ifEmpty { "未设置" }} · 适用范围 ${item.from} 至 ${item.through}",
+                "${item.topics.joinToString("、").ifEmpty { "未分类" }} · ${categoryLabel(item.category)}\n${item.from} — ${item.through} · ${evidenceStateLabel(item.evidenceState)}",
                 "knowledge:${item.id}",
             ) {
                 showDetail(item.id)
@@ -137,62 +136,61 @@ class KnowledgeActivity : ScreenActivity() {
     private fun showDetail(id: String, revision: Int? = null) {
         detailId = id
         detailRevision = revision
-        beginScreen("detail", if (revision == null) "知识详情" else "历史修订 · $revision")
+        beginScreen("detail", if (revision == null) "知识详情" else "历史版本 · $revision")
         runIo({
             requireNotNull(app.knowledge.get(id, revision)) { "知识条目不存在或已被删除" }
         }) { view ->
             val value = view.value
             Ui.card(root).also { card ->
-                Ui.sectionTitle(card, "条目")
-                if (!view.isCurrentRevision) Ui.note(card, "这是历史修订，不是当前版本；当前状态请以最新修订为准。")
+                Ui.note(card, "${categoryLabel(value.category)} · ${value.topics.joinToString("、").ifEmpty { "未分类" }}")
+                if (!view.isCurrentRevision) Ui.note(card, "正在查看历史版本。")
+                Ui.body(card, value.claim.text)
                 chipsRow(card).also { row ->
                     chip(row, evidenceStateLabel(view.evidenceState), evidenceStateTone(view.evidenceState))
-                    chip(row, categoryLabel(value.category), Ui.Tone.NEUTRAL)
                     chip(row, kindLabel(value.claim.kind), Ui.Tone.NEUTRAL)
                 }
-                Ui.body(card, "主题：${value.topics.joinToString("、").ifEmpty { "未设置" }}")
-                Ui.sectionTitle(card, "正文")
-                Ui.body(card, value.claim.text)
-                Ui.note(card, "适用范围：${value.scope.from} 至 ${value.scope.through}（时区 ${value.scope.zoneId}）")
-                Ui.note(card, "这是分析适用范围，不是陈述的精确发生日期。")
-                Ui.note(card, "适用期限：${value.expiresAt?.toString() ?: "无固定期限"}")
-                Ui.note(card, "发布于：${value.publishedAt} · 首次发布：${value.createdAt} · 修订 ${value.revision}")
-            }
-            Ui.card(root).also { card ->
-                Ui.sectionTitle(card, "模型核对")
-                Ui.note(card, "模型核对是有限证据下的质量检查，不是事实认证。")
-                chipsRow(card).also { row ->
-                    chip(row, "结论：${verdictLabel(value.review.verdict)}", verdictTone(value.review.verdict))
-                    chip(row, "用户反馈决定：${view.userDecision?.let { decisionLabel(it) } ?: "无反馈记录"}",
-                        view.userDecision?.let { decisionTone(it) } ?: Ui.Tone.NEUTRAL)
-                }
-                if (value.review.issues.isNotEmpty()) Ui.note(card, "问题：${value.review.issues.joinToString("、") { issueLabel(it) }}")
-                if (value.review.unknowns.isNotEmpty()) {
-                    Ui.note(card, "未知项：")
-                    value.review.unknowns.forEach { Ui.note(card, "· $it") }
+                Ui.note(card, "涉及 ${value.scope.from} — ${value.scope.through} 的记录")
+                Ui.disclosure(card, "时间与版本", "knowledgeMetadata") { details ->
+                    Ui.note(details, "日期表示分析范围，不是每件事的发生日期。时区 ${value.scope.zoneId}。")
+                    Ui.note(details, "适用至 ${value.expiresAt?.toString() ?: "无固定期限"}")
+                    Ui.note(details, "第 ${value.revision} 版 · 发布于 ${value.publishedAt}")
                 }
             }
-            Ui.card(root).also { card ->
-                Ui.sectionTitle(card, "证据引用")
-                Ui.note(card, "共 ${value.evidence.size} 条；本页不读取原文分片。")
-                value.evidence.forEach { receipt ->
-                    Ui.note(card, "证据 ${receipt.id}\n记录 ${receipt.recordId} · 修订 ${receipt.revision} · 字段 ${receipt.field}\n码点范围 [${receipt.start}, ${receipt.end})，该字段共 ${receipt.totalCodePoints} 码点")
+            Ui.disclosure(root, "核对结果与我的意见", "knowledgeReview") { card ->
+                Ui.note(card, "核对仅依据当前资料，仍可能有遗漏。")
+                chip(card, verdictLabel(value.review.verdict), verdictTone(value.review.verdict))
+                chip(card, view.userDecision?.let { decisionLabel(it) } ?: "尚未反馈",
+                    view.userDecision?.let { decisionTone(it) } ?: Ui.Tone.NEUTRAL)
+                if (view.userDecision == ClaimFeedbackDecision.CORRECTED) {
+                    Ui.note(card, "你的纠正单独保存在反馈中，没有覆盖这条知识的原文。")
+                }
+                if (value.review.issues.isNotEmpty()) Ui.note(card, "需要留意：${value.review.issues.joinToString("、") { issueLabel(it) }}")
+                value.review.unknowns.forEach { Ui.note(card, "· $it") }
+            }
+            Ui.disclosure(root, "来源线索 · ${value.evidence.size} 处", "knowledgeEvidence") { card ->
+                Ui.note(card, "保留原始记录的位置，便于追溯。本页只展示引用位置。")
+                value.evidence.forEachIndexed { index, receipt ->
+                    Ui.note(card, "来源 ${index + 1} · 第 ${receipt.revision} 版 · 第 ${receipt.start + 1}–${receipt.end} 字")
+                    Ui.disclosure(card, "查看引用标识", "knowledgeReceipt:${receipt.id}") { identity ->
+                        Ui.note(identity, "记录 ${receipt.recordId}\n内容 ${receipt.field}\n引用 ${receipt.id}")
+                    }
                 }
             }
-            Ui.card(root).also { card ->
-                Ui.sectionTitle(card, "操作")
-                Ui.button(card, "查看修订历史", "history") { if (!busy) showHistory(id) }
+            card().also { actions ->
+                addButton(actions, "版本历史", "history") { showHistory(id) }
                 if (view.isCurrentRevision) {
-                    Ui.dangerButton(card, "永久删除这条知识", "deleteKnowledge") {
-                        if (!busy) confirm("永久删除这条知识？", "整个条目与全部修订会被永久删除并保留删除标记，同一 ID 不可复用。此操作不能撤销。用户独立的反馈文字不随知识删除。", "永久删除") {
-                            runIo({ app.knowledge.delete(id, value.revision) }) {
-                                toast("知识已删除")
-                                showIndex()
+                    Ui.disclosure(actions, "管理这条知识", "knowledgeManagement") { management ->
+                        dangerIn(management, "永久删除", "deleteKnowledge") {
+                            confirm("永久删除这条知识？", "这条知识及全部历史版本都会被删除，无法撤销。你独立写下的反馈会保留。", "永久删除") {
+                                runIo({ app.knowledge.delete(id, value.revision) }) {
+                                    toast("知识已删除")
+                                    showIndex()
+                                }
                             }
                         }
                     }
                 } else {
-                    Ui.button(card, "查看最新修订", "currentRevision") { if (!busy) showDetail(id) }
+                    addButton(actions, "查看最新版本", "currentRevision") { showDetail(id) }
                 }
             }
         }
@@ -200,13 +198,13 @@ class KnowledgeActivity : ScreenActivity() {
 
     private fun showHistory(id: String, offset: Int = 0) {
         detailId = id
-        beginScreen("history", "修订历史")
+        beginScreen("history", "版本历史")
         runIo({ app.knowledge.history(id, offset, PAGE_SIZE) }) { revisions ->
-            if (revisions.isEmpty()) note("没有更多修订。")
+            if (revisions.isEmpty()) emptyState(Ui.card(root), "没有更多版本了。")
             revisions.forEach { view ->
                 listRow(
                     root,
-                    "修订 ${view.value.revision} · ${evidenceStateLabel(view.evidenceState)}${if (view.isCurrentRevision) " · 当前修订" else ""}\n发布于：${view.value.publishedAt}",
+                    "第 ${view.value.revision} 版${if (view.isCurrentRevision) " · 当前版本" else ""}\n${evidenceStateLabel(view.evidenceState)} · ${view.value.publishedAt}",
                     "revision:${view.value.revision}",
                 ) {
                     showDetail(id, view.value.revision)
@@ -219,30 +217,6 @@ class KnowledgeActivity : ScreenActivity() {
 
     private fun chipsRow(parent: LinearLayout): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        parent.addView(this)
-    }
-
-    private fun fieldIn(parent: LinearLayout, hint: String, value: String = ""): EditText {
-        val input = EditText(this).apply {
-            this.hint = hint
-            inputType = InputType.TYPE_CLASS_TEXT
-            gravity = android.view.Gravity.TOP or android.view.Gravity.START
-            setText(value)
-            setFreezesText(false)
-            isSaveEnabled = false
-        }
-        Ui.styleField(this, input)
-        parent.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            setMargins(0, dp(4), 0, dp(8))
-        })
-        input.filters = arrayOf(InputFilter.LengthFilter(2_000))
-        return input
-    }
-
-    private fun checkIn(parent: LinearLayout, label: String, checked: Boolean) = CheckBox(this).apply {
-        text = label
-        isChecked = checked
-        Ui.styleCheck(this@KnowledgeActivity, this)
         parent.addView(this)
     }
 
@@ -266,7 +240,7 @@ class KnowledgeActivity : ScreenActivity() {
 
     private fun categoryLabel(category: KnowledgeCategory) = when (category) {
         KnowledgeCategory.OBSERVATION -> "观察"
-        KnowledgeCategory.KNOWLEDGE_NOTE -> "知识条目"
+        KnowledgeCategory.KNOWLEDGE_NOTE -> "知识"
         KnowledgeCategory.INSIGHT -> "洞察"
     }
 
@@ -277,14 +251,14 @@ class KnowledgeActivity : ScreenActivity() {
 
     private fun evidenceStateLabel(state: KnowledgeEvidenceState) = when (state) {
         KnowledgeEvidenceState.CURRENT -> "当前有效"
-        KnowledgeEvidenceState.STALE -> "已失效（来源已变化，保守失效不自动重算）"
-        KnowledgeEvidenceState.EXPIRED -> "已过期（适用期限已到）"
-        KnowledgeEvidenceState.FEEDBACK_CHANGED -> "已失效（反馈已变化）"
-        KnowledgeEvidenceState.REVIEW_CHANGED -> "已失效（核对已变化）"
+        KnowledgeEvidenceState.STALE -> "来源变化 · 待更新"
+        KnowledgeEvidenceState.EXPIRED -> "已过期"
+        KnowledgeEvidenceState.FEEDBACK_CHANGED -> "反馈变化 · 待更新"
+        KnowledgeEvidenceState.REVIEW_CHANGED -> "核对变化 · 待更新"
     }
 
     private fun verdictLabel(verdict: ReviewVerdict) = when (verdict) {
-        ReviewVerdict.SUPPORTED -> "有限证据下支持"
+        ReviewVerdict.SUPPORTED -> "现有资料支持"
         ReviewVerdict.UNSUPPORTED -> "未获支持"
         ReviewVerdict.CONTRADICTED -> "与证据矛盾"
         ReviewVerdict.INSUFFICIENT_CONTEXT -> "上下文不足"
@@ -301,7 +275,7 @@ class KnowledgeActivity : ScreenActivity() {
 
     private fun decisionLabel(decision: ClaimFeedbackDecision) = when (decision) {
         ClaimFeedbackDecision.CONFIRMED -> "已确认"
-        ClaimFeedbackDecision.CORRECTED -> "已纠正（纠正文字独立保存在反馈中，不是本条正文）"
+        ClaimFeedbackDecision.CORRECTED -> "已纠正"
         ClaimFeedbackDecision.REJECTED -> "已否定"
         ClaimFeedbackDecision.WITHDRAWN -> "已撤回"
     }

@@ -28,6 +28,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import org.robolectric.annotation.SQLiteMode
 import org.robolectric.shadows.ShadowAlertDialog
+import org.robolectric.shadows.ShadowDialog
 import java.time.LocalDate
 import java.util.concurrent.TimeUnit
 
@@ -56,10 +57,13 @@ class MainActivityTest {
     @Test fun `draft recreation preserves occurrence topics and body before saving once`() {
         click("newRecord")
         input("body", "合成资料：周末实践了新的学习方法")
+        click("recordMetadata")
         input("topics", "学习，工作")
         view<Spinner>("dateMode").setSelection(1)
         input("start", "2026-10-01")
         input("end", "2026-10-03")
+        click("recordMetadata")
+        assertEquals(View.GONE, view<View>("recordMetadata:content").visibility)
         controller.recreate()
         drain()
         assertEquals("合成资料：周末实践了新的学习方法", view<EditText>("body").text.toString())
@@ -191,6 +195,7 @@ class MainActivityTest {
         val overlap = app.repository.createRecord(RecordDraft("合成资料：区间记录", Occurrence(LocalDate.parse("2026-10-01"), LocalDate.parse("2026-10-03")), setOf("学习")))
         val unknown = app.repository.createRecord(RecordDraft("合成资料：未知日期", topics = setOf("学习")))
         val excluded = app.repository.createRecord(RecordDraft("合成资料：其他主题", Occurrence(LocalDate.parse("2026-10-02")), setOf("运动")))
+        click("recordFilters")
         input("filterFrom", "2026-10-02")
         input("filterThrough", "2026-10-02")
         input("filterTopic", "学习")
@@ -200,6 +205,40 @@ class MainActivityTest {
         assertNull(activity.window.decorView.findViewWithTag<View>("record:${excluded.id}"))
         val results = activity.window.decorView.findViewWithTag<android.view.ViewGroup>("recordResults")
         assertTrue((results.getChildAt(0) as TextView).text.contains("发生日期未知 1 条"))
+    }
+
+    @Test fun `home keeps records visible and sidebar reaches settings without a long navigation list`() {
+        val record = app.repository.createRecord(RecordDraft("合成资料：记录应该直接可见"))
+        controller.recreate()
+        drain()
+        assertEquals(View.GONE, view<View>("recordFilters:content").visibility)
+        assertTrue(view<View>("record:${record.id}").isShown)
+        assertNull(activity.window.decorView.findViewWithTag<View>("navSettings"))
+        click("navigation")
+        val menu = ShadowDialog.getLatestDialog()
+        assertTrue(menu.isShowing)
+        listOf("navDashboard", "navReview", "navKnowledge", "navActions", "navPeriod", "navProfile", "navTransfer", "navSettings")
+            .forEach { assertNotNull(menu.findViewById<View>(android.R.id.content).findViewWithTag<View>(it)) }
+        menu.findViewById<View>(android.R.id.content).findViewWithTag<View>("navSettings").performClick()
+        assertFalse(menu.isShowing)
+        assertEquals(SettingsActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
+    }
+
+    @Test fun `clearing collapsed filters restores other records without changing data`() {
+        val learning = app.repository.createRecord(RecordDraft("合成资料：学习记录", topics = setOf("学习")))
+        val work = app.repository.createRecord(RecordDraft("合成资料：工作记录", topics = setOf("工作")))
+        click("recordFilters")
+        input("filterTopic", "学习")
+        click("applyFilter")
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("record:${learning.id}"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("record:${work.id}"))
+        click("recordFilters")
+        click("recordFilters")
+        assertEquals("学习", view<EditText>("filterTopic").text.toString())
+        click("clearFilters")
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("record:${work.id}"))
+        assertEquals(View.GONE, view<View>("recordFilters:content").visibility)
+        assertEquals(2, app.repository.listRecords().total)
     }
 
     private fun input(tag: String, value: String) { view<EditText>(tag).setText(value) }
