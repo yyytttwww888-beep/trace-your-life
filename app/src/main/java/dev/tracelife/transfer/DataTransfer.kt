@@ -1,6 +1,9 @@
 package dev.tracelife.transfer
 
 import android.content.Context
+import dev.tracelife.dashboard.DashboardRequest
+import dev.tracelife.dashboard.DashboardService
+import dev.tracelife.dashboard.DashboardSnapshot
 import dev.tracelife.model.RecordFilter
 import dev.tracelife.metrics.RecordMetricEvidenceService
 import dev.tracelife.reports.PeriodReport
@@ -94,6 +97,25 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         reports.assertCurrent(report)
         publish(archive, target, directory) { adjacent, published ->
             repository.publishDerivedFile(report.source, report.analysisGeneration, report.validUntil, adjacent, published)
+        }
+        result.copy(bytes = target.length())
+    }
+
+    /** Fixed dashboard values and paged metadata only; no model call or source body export. */
+    fun exportDashboard(destination: File, request: DashboardRequest): ExportResult =
+        exportDashboard(destination, DashboardService(repository, clock).open(request))
+
+    /** Publishes the same dashboard the caller read; midnight and changed dependencies reject it. */
+    fun exportDashboard(destination: File, dashboard: DashboardSnapshot): ExportResult = workspace { directory ->
+        val target = destinationFor(destination)
+        val dashboards = DashboardService(repository, clock)
+        dashboards.assertCurrent(dashboard)
+        val archive = File(directory, "dashboard.zip")
+        val result = DashboardArchive.write(dashboards, dashboard, archive)
+        dashboards.assertCurrent(dashboard)
+        publish(archive, target, directory) { adjacent, published ->
+            repository.publishDerivedFile(dashboard.source, dashboard.analysisGeneration, dashboard.validUntil, adjacent, published,
+                validFrom = dashboard.evaluatedAt)
         }
         result.copy(bytes = target.length())
     }
