@@ -129,6 +129,7 @@ class KnowledgeBackupTest {
             put("formatVersion", 3); put("sourceSchemaVersion", 4)
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
             remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
+                remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")
         }
         assertEquals(snapshot.copy(sourceSchemaVersion = 4), SnapshotJsonCodec.read(old.toString().byteInputStream()))
         old.put("knowledgeRevisions", JSONArray())

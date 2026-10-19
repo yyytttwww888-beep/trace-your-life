@@ -163,13 +163,16 @@ class ActionStorageTest {
         assertTrue(stage.exists())
     }
 
-    @Test fun `version five migrates to six while preserving records tasks identities and generations`() {
+    @Test fun `version five migrates to current schema while preserving records tasks identities and generations`() {
         val record = repository.createRecord(RecordDraft("合成旧版本原文。", Occurrence(day)), "source")
         val run = ControlledAnalysis(repository, clock).start(AnalysisRequest("合成迁移分析", AnalysisQuery(day, day, "Asia/Shanghai")), "run")
         val source = repository.analysisSourceStamp()
         val generation = repository.currentAnalysisGeneration()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            execSQL("DROP TABLE profile_heads")
+            execSQL("DROP TABLE profile_revisions")
+            execSQL("DROP TABLE deleted_profiles")
             execSQL("DROP TABLE action_heads")
             execSQL("DROP TABLE action_revisions")
             execSQL("DROP TABLE deleted_actions")
@@ -181,7 +184,7 @@ class ActionStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(record, repository.record(record.id))
         assertEquals(run.stored, repository.analysisRun("run"))
-        assertEquals(6, snapshot().sourceSchemaVersion)
+        assertEquals(7, snapshot().sourceSchemaVersion)
         assertTrue(repository.actionHeads().isEmpty())
         actions.create(draft(), "after-upgrade")
         assertEquals(source, repository.analysisSourceStamp())

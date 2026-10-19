@@ -4,6 +4,7 @@ import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.actions.StoredActionRevision
+import dev.tracelife.profile.ProfileDimension
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
@@ -17,6 +18,7 @@ import java.nio.file.Files
 import java.nio.file.Paths
 import java.security.MessageDigest
 import java.time.LocalDate
+import java.time.Instant
 import java.time.YearMonth
 import java.time.temporal.IsoFields
 import java.util.zip.ZipEntry
@@ -41,7 +43,16 @@ object KnowledgeArchive {
         attachmentDirectory: File,
         destination: File,
         options: ReadingExportOptions,
-    ): ExportResult {
+    ): ExportResult = writeForPublication(snapshot, attachmentDirectory, destination, options).result
+
+    internal data class Publication(val result: ExportResult, val profileValidUntil: Instant?)
+
+    internal fun writeForPublication(
+        snapshot: RepositorySnapshot,
+        attachmentDirectory: File,
+        destination: File,
+        options: ReadingExportOptions,
+    ): Publication {
         require(!destination.exists()) { "导出暂存文件已存在，不能覆盖" }
         require(snapshot.records.size <= MAX_SOURCE_REVISIONS && snapshot.templates.size <= MAX_SOURCE_TEMPLATE_VERSIONS) {
             "来源快照超过 100000 条记录修订或 10000 个模板版本的读取上限；范围筛选不能绕过此上限"
@@ -65,6 +76,7 @@ object KnowledgeArchive {
         require(included.size <= MAX_CURRENT_RECORDS) { "阅读包最多支持 10000 条当前记录，请分批导出" }
         val knowledge = PublishedKnowledgeExport.select(snapshot, current, included, options)
         val actions = ActionExport.select(snapshot, options)
+        val profiles = ProfileExport.select(snapshot, options, knowledge)
         val unknownEligible = current.count { record ->
             record.draft.occurrence.startDate == null &&
                 (options.scope.includeArchived || !record.archived) &&
@@ -101,6 +113,7 @@ object KnowledgeArchive {
                 }
                 writeKnowledge(archive, knowledge, knowledgePaths, paths)
                 writeActions(archive, actions)
+                writeProfiles(archive, profiles, knowledgePaths)
                 boundTemplates.forEach { template ->
                     val path = templatePaths.getValue(template.id to template.version)
                     archive.text(path, templateText(template))
@@ -118,13 +131,14 @@ object KnowledgeArchive {
                 )
                 if (knowledge.entries.isNotEmpty()) rootLinks += Nav("已发布知识（非原始证据）", "notes/index.md")
                 if (actions.entries.isNotEmpty()) rootLinks += Nav("用户选定行动（不是执行证据）", "actions/index.md")
+                if (profiles.entries.isNotEmpty()) rootLinks += Nav("已采用画像（引用共享知识）", "profile/index.md")
                 archive.pages("indexes/index.md", "分层索引", rootLinks, "先确定任务、时间和主题；分页枚举范围，再按需读取原文。此包没有执行模型读取预算。")
                 archive.recordPages("indexes/evidence/index.md", "当前范围证据目录", included, paths)
                 archive.pages("templates/index.md", "所绑定的模板版本", boundTemplates.map { Nav("${it.draft.name} · 版本 ${it.version}", templatePaths.getValue(it.id to it.version)) })
                 writeTopics(archive, included, paths, knowledge)
                 writeTimeline(archive, included, paths, knowledge.entries.isNotEmpty())
                 writeIdRoutes(archive, included, paths)
-                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options, knowledge.entries.isNotEmpty(), actions.entries.isNotEmpty())
+                writeMachineData(archive, included, paths, templatePaths, neededAttachments, options, knowledge.entries.isNotEmpty(), actions.entries.isNotEmpty(), profiles.entries.isNotEmpty())
                 val readme = buildString {
                     append("# Trace Life 阅读资料包\n\n")
                     append("这是 capturedAt 时点的固定历史快照阅读包，不能完整恢复，也不会随时间或应用内纠正自动更新。包含所选范围的记录修订、绑定模板版本及清单明确纳入的已发布知识；历史修订、删除台账、变更任务、凭据和未纳入资料均未包含。\n\n")
@@ -142,6 +156,7 @@ object KnowledgeArchive {
                     if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
                     append("\n完整用户反馈及独立文字未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；知识正文仅显示对应决定与版本，不复制用户文字。请通过完整加密备份保留。\n")
                     append("\n已纳入 ${actions.entries.size} 项用户选定行动的当前计划，省略 ${actions.omitted} 项和 ${actions.omittedHistoricalRevisions} 份历史行动修订。日期按当前计划的 reviewOn（计划回看日期）筛选，不代表行为发生时间；行动没有主题字段，指定主题时全部省略。执行结果、回看文字和旧计划仅进入完整备份，阅读包不包含。行动不是已执行、已成长或来源判断仍有效的证明；来源知识只保留身份，不复制机器文字。\n")
+                    append("\n已纳入 ${profiles.entries.size} 项当前可用且已采用的画像组织条目，省略 ${profiles.omitted} 项和 ${profiles.omittedHistoricalRevisions} 份历史修订。画像只链接同包共享知识，不另写陈述或证据；候选、不采用、失效和范围外来源不进入当前画像。近期窗口为 ${profiles.recentDays} 天，按 ${escape(profiles.zoneId)} 的 capturedAt 当地日期与知识范围交集判断。采用不等于证实人格稳定性；本包未生成新的画像总结或发布版本。画像独立用户文字与完整修订历史仅进入加密备份。\n")
                     if (options.question != null) append("\n任务问题（用户资料）：\n").append(fenced(options.question))
                 }
                 archive.text("README.md", readme)
@@ -171,6 +186,8 @@ object KnowledgeArchive {
                         .put("knowledgeRevisionsIncluded", knowledge.entries.size).put("omittedHistoricalKnowledgeRevisions", knowledge.omittedHistoricalRevisions)
                         .put("actionRevisionsIncluded", actions.entries.size).put("omittedHistoricalActionRevisions", actions.omittedHistoricalRevisions)
                         .put("actionReviewsIncluded", false)
+                        .put("profileRevisionsIncluded", profiles.entries.size).put("omittedHistoricalProfileRevisions", profiles.omittedHistoricalRevisions)
+                        .put("profileUserTextIncluded", false).put("profileReleaseHistoryIncluded", false)
                         .put("analysisGap", "analysis_not_included"))
                     .put("knowledge", JSONObject().put("sourceHeads", knowledge.sourceHeads).put("included", knowledge.entries.size)
                         .put("omitted", knowledge.omitted).put("omittedByReason", JSONObject(knowledge.omittedByReason as Map<*, *>))
@@ -179,21 +196,30 @@ object KnowledgeArchive {
                         .put("omitted", actions.omitted).put("omittedByReason", JSONObject(actions.omittedByReason as Map<*, *>))
                         .put("selectionDate", "current_draft_reviewOn").put("topicSupport", false)
                         .put("originalEvidence", false).put("executionEvidence", false).put("reviewHistoryIncluded", false))
+                    .put("profile", JSONObject().put("sourceHeads", profiles.sourceHeads).put("included", profiles.entries.size)
+                        .put("omitted", profiles.omitted).put("omittedByReason", JSONObject(profiles.omittedByReason as Map<*, *>))
+                        .put("zoneId", profiles.zoneId).put("recentDays", profiles.recentDays)
+                        .put("validAt", snapshot.capturedAt.toString()).put("validUntil", profiles.validUntil?.toString() ?: JSONObject.NULL)
+                        .put("originalEvidence", false).put("userTextIncluded", false).put("claimBodiesDuplicated", false))
                     .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json")
                         .put("knowledge", if (knowledge.entries.isNotEmpty()) "notes/index.md" else JSONObject.NULL)
                         .put("knowledgeIds", if (knowledge.entries.isNotEmpty()) "indexes/note-ids/index.json" else JSONObject.NULL)
                         .put("actions", if (actions.entries.isNotEmpty()) "actions/index.md" else JSONObject.NULL)
-                        .put("actionIds", if (actions.entries.isNotEmpty()) "indexes/action-ids/index.json" else JSONObject.NULL))
+                        .put("actionIds", if (actions.entries.isNotEmpty()) "indexes/action-ids/index.json" else JSONObject.NULL)
+                        .put("profile", if (profiles.entries.isNotEmpty()) "profile/index.md" else JSONObject.NULL)
+                        .put("profileIds", if (profiles.entries.isNotEmpty()) "indexes/profile-ids/index.json" else JSONObject.NULL))
                     .put("inventory", JSONObject().put("path", inventoryRoot.path).put("sha256", inventoryRoot.sha256)
                         .put("excludes", JSONArray(listOf("manifest.json", "inventory/"))))
                 listOf("README.md", "indexes/index.md", "indexes/ids/index.json", inventoryRoot.path).forEach { archive.reference("manifest.json", it) }
                 if (knowledge.entries.isNotEmpty()) listOf("notes/index.md", "indexes/note-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 if (actions.entries.isNotEmpty()) listOf("actions/index.md", "indexes/action-ids/index.json").forEach { archive.reference("manifest.json", it) }
+                if (profiles.entries.isNotEmpty()) listOf("profile/index.md", "indexes/profile-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 archive.text("manifest.json", manifest.toString(2), index = true)
                 archive.validateReferences()
             }
             completed = true
-            return ExportResult(snapshot.snapshotId, included.size, if (options.includeAttachments) neededAttachments.size else 0, writer.fileCount, destination.length())
+            return Publication(ExportResult(snapshot.snapshotId, included.size, if (options.includeAttachments) neededAttachments.size else 0,
+                writer.fileCount, destination.length()), profiles.validUntil)
         } finally {
             if (!completed) destination.delete()
         }
@@ -302,6 +328,7 @@ object KnowledgeArchive {
         options: ReadingExportOptions,
         hasKnowledge: Boolean,
         hasActions: Boolean,
+        hasProfiles: Boolean,
     ) {
         val pages = mutableListOf<Nav>()
         val lines = mutableListOf<String>()
@@ -351,7 +378,82 @@ object KnowledgeArchive {
         val dataLinks = mutableListOf(Nav("当前记录 JSONL", "data/records/index.md"), Nav("附件元数据", "data/attachments/index.md"))
         if (hasKnowledge) dataLinks += Nav("已发布知识 JSONL（非原始证据）", "data/knowledge/index.md")
         if (hasActions) dataLinks += Nav("当前行动计划 JSONL（非执行证据）", "data/actions/index.md")
+        if (hasProfiles) dataLinks += Nav("当前采用画像 JSONL（共享知识定位）", "data/profiles/index.md")
         archive.pages("data/index.md", "结构化资料入口", dataLinks, "历史修订和恢复所需台账未包含；不可完整恢复。")
+    }
+
+    private fun writeProfiles(archive: ArchiveWriter, selection: ProfileExport.Selection, knowledgePaths: Map<String, String>) {
+        if (selection.entries.isEmpty()) return
+        val entries = selection.entries
+        val paths = entries.associate { it.id to "profile/entries/${hash(it.id)}-r${it.revision}.md" }
+        entries.forEach { value ->
+            val path = paths.getValue(value.id)
+            val ref = value.draft.knowledge
+            archive.text(path, buildString {
+                append("# 已采用画像组织条目\n\nID：${escape(value.id)}；修订：${value.revision}；采用状态：${value.adoption}。\n\n")
+                append("维度：${profileDimensionLabel(value.draft.dimension)}；层次：${value.draft.layer}；更新时间：${value.updatedAt}。\n\n")
+                append("此条目保存组织与采用关系，未生成或复制另一个陈述。内容、适用情境、原始来源及反例请按需读取 ")
+                    .append(archive.link(path, knowledgePaths.getValue(ref.knowledgeId), "共享知识与原证据"))
+                    .append("（${ref.knowledgeId}，修订 ${ref.revision}）。\n\n")
+                append("这是固定历史快照中的采用，不证明长期稳定性，不是新增原始证据。层次由用户选择；独立用户文字和历史修订未纳入此阅读包。\n")
+            })
+        }
+        val dimensions = ProfileDimension.entries.map { dimension ->
+            val selected = entries.filter { it.draft.dimension == dimension }
+            val path = "profile/${dimension.name.lowercase().replace('_', '-')}/index.md"
+            archive.pages(path, profileDimensionLabel(dimension), selected.map { value ->
+                Nav("${value.id} · ${value.draft.layer} · 修订 ${value.revision}", paths.getValue(value.id))
+            }, if (selected.isEmpty()) "当前包内没有可用的已采用条目，此维度保持未知。" else
+                "先按条目定位共享知识，再核对原始来源；条目数量不代表证据强度或画像完整度。")
+            Nav("${profileDimensionLabel(dimension)} · ${selected.size} 项", path)
+        }
+        val shards = entries.groupBy { hash(it.id).take(2) }.toSortedMap().map { (prefix, values) ->
+            val shardPath = "indexes/profile-ids/$prefix/index.json"
+            val pages = values.chunked(archive.pageSize).mapIndexed { index, page ->
+                val path = "indexes/profile-ids/$prefix/profiles-${number(index)}.jsonl"
+                archive.text(path, page.joinToString("\n", postfix = "\n") { value ->
+                    archive.reference(path, paths.getValue(value.id))
+                    JSONObject().put("id", value.id).put("revision", value.revision)
+                        .put("type", "adopted-profile-organization").put("path", paths.getValue(value.id)).toString()
+                }, index = true)
+                JSONObject().put("firstId", page.first().id).put("lastId", page.last().id).put("path", path).put("count", page.size)
+            }
+            archive.jsonPages(shardPath, "profile-id-mapping-pages", pages)
+            JSONObject().put("prefix", prefix).put("path", shardPath).put("count", values.size)
+        }
+        archive.jsonPages("indexes/profile-ids/index.json", "sha256-utf8-prefix-2-profiles", shards)
+        val dataPages = entries.chunked(archive.pageSize).mapIndexed { index, page ->
+            val path = "data/profiles/page-${number(index)}.jsonl"
+            archive.text(path, page.joinToString("\n", postfix = "\n") { value ->
+                val ref = value.draft.knowledge
+                archive.reference(path, paths.getValue(value.id))
+                archive.reference(path, knowledgePaths.getValue(ref.knowledgeId))
+                JSONObject().put("nodeType", "adopted-profile-organization").put("originalEvidence", false)
+                    .put("id", value.id).put("revision", value.revision).put("adoption", value.adoption.name)
+                    .put("dimension", value.draft.dimension.name).put("layer", value.draft.layer.name)
+                    .put("createdAt", value.createdAt.toString()).put("updatedAt", value.updatedAt.toString())
+                    .put("path", paths.getValue(value.id)).put("userTextIncluded", false).put("historyIncluded", false)
+                    .put("knowledge", JSONObject().put("id", ref.knowledgeId).put("revision", ref.revision)
+                        .put("path", knowledgePaths.getValue(ref.knowledgeId))).toString()
+            })
+            Nav("当前采用条目 · 第 ${index + 1} 页 · ${page.size} 项", path)
+        }
+        archive.pages("data/profiles/index.md", "当前采用画像结构化关系", dataPages,
+            "仅包含组织与知识定位；不复制共享陈述、原证据、独立用户文字或完整修订历史。")
+        archive.pages("profile/index.md", "当前已采用画像入口", dimensions + listOf(
+            Nav("精确画像 ID", "indexes/profile-ids/index.json"), Nav("结构化采用关系", "data/profiles/index.md")),
+            "本包仅呈现已保存的采用，不生成新的个人总结。近期层次按 ${escape(selection.zoneId)} 的 ${selection.recentDays} 天窗口判断；候选、不采用、失效及未纳入知识的条目省略。")
+    }
+
+    private fun profileDimensionLabel(dimension: ProfileDimension): String = when (dimension) {
+        ProfileDimension.VALUES_AND_DIRECTION -> "价值与方向"
+        ProfileDimension.ROLES_AND_CONTEXT -> "角色与背景"
+        ProfileDimension.INTERESTS_AND_PREFERENCES -> "兴趣与偏好"
+        ProfileDimension.BEHAVIOR_AND_DECISIONS -> "行为与决策模式"
+        ProfileDimension.ABILITIES_AND_STRATEGIES -> "能力与有效策略"
+        ProfileDimension.ENERGY_AND_RECOVERY -> "精力、压力与恢复"
+        ProfileDimension.RELATIONSHIPS_AND_COLLABORATION -> "关系与协作"
+        ProfileDimension.NARRATIVE_AND_CHANGES -> "人生叙事与变化"
     }
 
     private fun writeActions(archive: ArchiveWriter, selection: ActionExport.Selection) {

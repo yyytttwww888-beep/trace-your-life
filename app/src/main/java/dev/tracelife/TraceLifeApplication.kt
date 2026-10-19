@@ -10,6 +10,7 @@ import dev.tracelife.analysis.PeriodReductionProcessor
 import dev.tracelife.analysis.PeriodReductionReviewProcessor
 import dev.tracelife.actions.ActionExperiments
 import dev.tracelife.dashboard.DashboardService
+import dev.tracelife.profile.PersonalProfile
 import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.metrics.RecordMetrics
 import dev.tracelife.metrics.RecordMetricEvidenceService
@@ -37,6 +38,7 @@ class TraceLifeApplication : Application() {
     val periodReview by lazy { PeriodReductionReviewProcessor(analysis) }
     val actions by lazy { ActionExperiments(repository) }
     val dashboard by lazy { DashboardService(repository) }
+    val personalProfile by lazy { PersonalProfile(repository) }
     val periodReports by lazy { PeriodReports(repository) }
     val periodDrafts by lazy { PeriodReductionReports(repository, analysis) }
     val deepSeekCredentials by lazy { DeepSeekCredentials(this) }
