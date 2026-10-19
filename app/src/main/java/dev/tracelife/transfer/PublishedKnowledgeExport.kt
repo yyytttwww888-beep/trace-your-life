@@ -45,6 +45,7 @@ internal object PublishedKnowledgeExport {
         }
         val stamp = SourceStamp(snapshot.storeId, snapshot.generation)
         val validatedMetrics = mutableSetOf<String>()
+        val actionEvidence = ActionEvidenceExport.Validator(snapshot)
         val omitted = linkedMapOf<String, Int>()
         val selected = snapshot.knowledgeHeads.sortedBy { it.id }.mapNotNull { head ->
             val value = revisions.getValue(head.id to head.revision)
@@ -62,7 +63,6 @@ internal object PublishedKnowledgeExport {
             }
             val reason = when {
                 options.kind == ReadingPackageKind.EVIDENCE -> "evidence_package"
-                value.actionPlan != null -> "action_evidence_not_in_reading_package"
                 value.id in deleted -> "deleted"
                 value.source != stamp -> "stale_source"
                 value.publishedAt > snapshot.capturedAt -> "not_yet_published"
@@ -78,7 +78,7 @@ internal object PublishedKnowledgeExport {
                 allSources.any { (id, revision) -> records[id]?.revision != revision } -> "evidence_not_current"
                 value.metricEvidence.any { !MetricExportScope.contains(options.scope, it.scope) } -> "metric_scope_not_contained"
                 allSources.any { (id, _) -> id !in included } -> "evidence_out_of_scope"
-                else -> null
+                else -> actionEvidence.omission(value, options.scope)
             }
             if (reason != null) {
                 omitted[reason] = omitted.getOrDefault(reason, 0) + 1

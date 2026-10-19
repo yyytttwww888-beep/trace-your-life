@@ -73,7 +73,7 @@ class ControlledReductionTest {
         assertNull(call.proposal)
         assertTrue(call.evidence.isEmpty())
         assertEquals(output, call.reductionOutput)
-        assertEquals(10, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(11, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(listOf(first, second), analysis.reductionNode("run", "root").leafRefs)
         assertEquals(3, analysis.reductionNode("run", "root").originalEvidence.size)
         assertThrows(IllegalArgumentException::class.java) { analysis.claimRef("run", "root", 0) }

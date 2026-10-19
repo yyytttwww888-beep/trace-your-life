@@ -13,6 +13,9 @@ val result = app.actionPeriodReflection.process(
     task.stored.id, app.deepSeekProvider,
     maxBatches = 3, inputsPerBatch = 16,
 )
+// 原文和行动处理完成后，继续有界分层归并；每轮仍有独立请求上限。
+val reduced = app.actionPeriodReflection.reduce(task.stored.id, app.deepSeekProvider,
+    maxRequests = 3, fanIn = 4)
 val progress = app.actionPeriodReflection.inspect(task.stored.id)
 ```
 
@@ -50,12 +53,23 @@ analysis.synthesizeActions(runId, batchKey, recordSelections, actionReceipts, pr
 | --- | --- |
 | `INCOMPLETE` | 有输入未处理，或来源／预算／任务状态阻止继续 |
 | `SINGLE_CALL_ALL_AVAILABLE_INPUTS` | 某一次成功调用包含本范围全部可读原文和全部已登记行动来源 |
-| `MULTIPLE_BATCHES_NOT_INTEGRATED` | 已分批读取全部输入，但这些批次尚未合成统一判断 |
+| `MULTIPLE_BATCHES_NOT_INTEGRATED` | 已分批读取全部输入，尚需显式归并 |
+| `TREE_INTEGRATED` | 全部成功批次已进入当前有效根草稿；`root` 可供查看、逐项核对及明确发布 |
 | `NO_INPUTS` | 当前范围没有可读取的原文和行动来源 |
 
-任何状态都不等于完整生活资料或模型理解无误。日期未知、跨期记录、附件和不可读资料继续单独报告。自动反例搜索完整性固定为 `false`；不能将多个局部提案包装成已经完整核对的整月结论。
+任何状态都不等于完整生活资料或模型理解无误。日期未知、跨期记录、附件和不可读资料继续单独报告。自动反例搜索完整性固定为 `false`；树归并完成与原文核对完成分别报告，不能将局部提案或尚未核对的根草稿包装成正式整月结论。
 
 成功提案均为 `POSSIBLE_INTERPRETATION`。通过已有 `analysis.reviewClaim` 核对时重新读取**该次综合全部原文和全部行动来源**，包括提案未选为支持的部分。用户确认后必须进行对应反馈版本的最新核对；只有 `SUPPORTED` 才能用 `KnowledgeLibrary.publish(..., INSIGHT, ...)` 明确发布。核对意见、用户确认和实际行动选择三者独立。
+
+## 跨批报告与完整来源核对
+
+`reduce` 复用 [分层归并](PERIOD_REDUCTION.md)；低层仍可使用 `app.periodReduction`。`ACTION_SYNTHESIS` 为行动任务的叶节点，包含空提案和未知项；每次归并仅读取 2–4 个完整子节点草稿，不重复装入全部原文。记录覆盖和行动目录均完成后，才能声明根已覆盖当前全范围。新增批次会使旧根失去全范围资格。
+
+对根中明确选定的陈述，使用 [周期原文核对](PERIOD_REVIEW.md) 的 `reductionStatementRef`、`respondReduction`、`periodReview.process` 与 `publishReduction`。沿全部祖先取得记录和行动两类来源清单，包括最终陈述未引用的上下文。扫描逐项分类；最终核对重新读取全部非无关记录与行动。两类输入合计每次最多 32 项，最终相关来源超过 32 或请求字节／token 预算不足时明确停止，不抽样发布；没有日记、只有行动也可以分析和核对。
+
+正式发布仍要求用户明确确认、最新 `SUPPORTED` 核对、全部祖先反馈版本和范围来源当前有效。叶提案或中间草稿被纠正、否定、撤回或永久删除时，根及相关正式知识失效／清理；用户独立文字保留。分层完成不代表所有陈述已经支持，多个局部支持不能直接替代最终核对。
+
+通过 `periodDrafts.open(runId, root)` 查看草稿后，可用 `actionEvidence(draft, offset, limit)` 分页定位行动凭据，再调用 `actionOriginal(draft, evidenceId)` 读取一个完整行动叶；记录继续使用 `evidence` 与 `original`。来源、任务或反馈变化使旧阅读句柄拒绝读取，需重新打开。这些是应用界面接口，不提供给模型任意查询。
 
 ## 恢复、修改、删除与迁移
 
@@ -65,6 +79,6 @@ analysis.synthesizeActions(runId, batchKey, recordSelections, actionReceipts, pr
 
 永久删除行动会清理引用该行动目录的分析任务、正式知识，以及经画像维护引用它们的后代机器内容；独立用户反馈、其他行动和画像独立文字保留。完整备份保存原行动修订与分析／知识中的纯引用，不复制行动原文为额外证据副本。恢复时本地行动完整链与双方删除决定优先；若导入机器结果所依据的行动修订已缺失或正文不同，清理该结果并保留删除标记。
 
-任务内部载荷写入 v10、兼容 v1–v9，新增 `actionPeriod`、`actionPlan`、`ACTION_SYNTHESIS` 与 `actionEvidence`；知识载荷写入 v5、兼容 v1–v4，保存固定行动目录和全部核对输入。恢复校验每个行动身份、修订、种类、范围和内容哈希。
+任务内部载荷写入 v11、兼容 v1–v10，新增 `actionPeriod`、`actionPlan`、`ACTION_SYNTHESIS` 与 `actionEvidence`；知识载荷写入 v6、兼容 v1–v5，保存固定行动目录和全部核对输入。归并证明新增 `originalActionEvidence` 与各扫描的 `actionEvidence`；知识顶层 `actionEvidence` 保留最终相关输入子集，证明保留完整行动上下文。旧纯记录证明的序列化形状不变；旧格式不能通过改标签承载行动归并证明。恢复校验每个行动身份、修订、种类、范围和内容哈希。
 
-通用知识阅读包目前不携带行动完整回看原文，因此明确省略行动复盘知识，原因计数为 `action_evidence_not_in_reading_package`；周期材料同样返回 `omittedActionEvidenceKnowledge` 并在包内登记。完整恢复备份保存这类知识及其行动证据，应用内仍可查阅。该省略规则不应被误解为通用阅读包已经提供完整行动复盘报告。
+通用知识阅读包已纳入通过上述门槛正式发布的单批与归并行动洞察，并携带带索引的完整来源链行动叶及范围限制；详见[数据转移接口](DATA_TRANSFER.md)。未确认草稿不自动导出为正式知识。现有周期材料 ZIP 仍返回 `omittedActionEvidenceKnowledge` 并在包内登记；它与通用知识阅读包是不同接口。完整恢复备份保存行动修订和全部分析／知识证明。

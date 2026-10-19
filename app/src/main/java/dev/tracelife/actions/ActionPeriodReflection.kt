@@ -5,12 +5,13 @@ import dev.tracelife.model.RevisionConflictException
 import dev.tracelife.storage.SourceStamp
 import dev.tracelife.transfer.StaleSnapshotException
 
-enum class ActionPeriodIntegration { INCOMPLETE, SINGLE_CALL_ALL_AVAILABLE_INPUTS, MULTIPLE_BATCHES_NOT_INTEGRATED, NO_INPUTS }
+enum class ActionPeriodIntegration { INCOMPLETE, SINGLE_CALL_ALL_AVAILABLE_INPUTS, MULTIPLE_BATCHES_NOT_INTEGRATED, TREE_INTEGRATED, NO_INPUTS }
 data class ActionPeriodBatch(val batchKey: String, val originalFragments: Int, val actionEvents: Int,
     val claims: List<ClaimRef>, val containsAllAvailableInputs: Boolean)
 data class ActionPeriodProgress(val runId: String, val status: SynthesisProcessingStatus, val source: SourceStamp?,
     val taskVersion: Int?, val recordCoverage: AnalysisProcessingCoverage?, val actionEvents: Int,
-    val processedActionEvents: Int, val integration: ActionPeriodIntegration, val batches: List<ActionPeriodBatch>) {
+    val processedActionEvents: Int, val integration: ActionPeriodIntegration, val batches: List<ActionPeriodBatch>,
+    val root: ReductionNodeRef? = null) {
     val counterevidenceSearchExhaustive: Boolean get() = false
 }
 data class ActionPeriodProcessingReport(val status: SynthesisProcessingStatus, val modelRequestsThisPass: Int,
@@ -74,6 +75,13 @@ class ActionPeriodReflection(private val analysis: ControlledAnalysis) {
             throw error
         }
     }
+    /** Continue bounded cross-batch integration; confirmation/publication remain explicit. */
+    fun reduce(runId: String, provider: AnalysisProvider, maxRequests: Int = 3, fanIn: Int = 4,
+        cancelled: () -> Boolean = { false }): ReductionProcessingReport {
+        require(analysis.task(runId).state.request.actionPeriod)
+        return PeriodReductionProcessor(analysis).process(runId, provider, maxRequests, fanIn, cancelled)
+    }
+
     private fun snapshot(runId: String, limit: Int): Pair<ActionPeriodProgress, List<Input>> {
         val task = analysis.task(runId)
         val plan = requireNotNull(task.state.actionPlan) { "任务不是行动周期复盘" }
@@ -102,16 +110,20 @@ class ActionPeriodReflection(private val analysis: ControlledAnalysis) {
             coverage.textCodePoints == 0L && plan.entries.isEmpty() -> SynthesisProcessingStatus.NO_TEXT
             else -> SynthesisProcessingStatus.INPUTS_PROCESSED
         }
+        val reduction = if (remaining.isEmpty() && coverage.remainingTextFragments == 0L && successful.size > 1)
+            PeriodReductionProcessor(analysis).inspect(runId) else null
+        val root = reduction?.takeIf { it.status == ReductionProcessingStatus.TREE_INTEGRATED }?.root
         val integration = when {
             remaining.isNotEmpty() || coverage.remainingTextFragments > 0 -> ActionPeriodIntegration.INCOMPLETE
             coverage.textCodePoints == 0L && plan.entries.isEmpty() -> ActionPeriodIntegration.NO_INPUTS
+            root != null -> ActionPeriodIntegration.TREE_INTEGRATED
             batches.any { it.containsAllAvailableInputs } -> ActionPeriodIntegration.SINGLE_CALL_ALL_AVAILABLE_INPUTS
             else -> ActionPeriodIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED
         }
         val latest = analysis.task(runId)
         if (latest.stored.version != task.stored.version || latest.status != task.status) throw AnalysisConflictException("行动周期进度已变化")
         return ActionPeriodProgress(runId, status, task.stored.source, task.stored.version, coverage,
-            plan.entries.size, processed.size, integration, batches) to selected
+            plan.entries.size, processed.size, integration, batches, root) to selected
     }
     private fun key(values: List<Input>) = "action-period-v1-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(values.map {
         it.action?.let(ActionEvidenceProtocol::receiptMap) ?: it.record!!.let { r -> mapOf("recordId" to r.recordId, "field" to r.field, "start" to r.start) }

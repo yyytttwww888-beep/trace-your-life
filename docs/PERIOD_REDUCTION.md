@@ -19,7 +19,7 @@ val progress = app.periodReduction.inspect(task.stored.id)
 
 `PeriodReductionProcessor` 通过原文元数据目录核对综合覆盖；尚有未处理文字时返回 `NEEDS_INPUT_PROCESSING`，不把局部结果包装为完整周期。附件、不可读资料、时间未知和跨期记录等缺口继续保留。提取覆盖与综合覆盖仍各自计算。
 
-成功 `SYNTHESIS` 批次按台账顺序成为叶节点，包括空陈述及其未知项。每次归并 2–4 个子节点，逐层继续；同层末尾只有一个节点时携带到下一层。成功子树可复用，修改每组数量不强制重做已成功的小组。根节点必须覆盖完整成功叶清单；之后新增叶批次，旧根不会被认为已包含新增内容。
+普通任务的成功 `SYNTHESIS`、[行动周期任务](ACTION_PERIOD_REFLECTION.md)的成功 `ACTION_SYNTHESIS` 批次按台账顺序成为叶节点，包括空陈述及其未知项。每次归并 2–4 个子节点，逐层继续；同层末尾只有一个节点时携带到下一层。成功子树可复用，修改每组数量不强制重做已成功的小组。根节点必须覆盖完整成功叶清单；之后新增叶批次，旧根不会被认为已包含新增内容。
 
 每轮默认最多 3 次请求，可配置 1–100 次；每组默认 4 个子节点，可配置 2–4 个。完整供应商请求超预算时先减少子节点数，两个仍不能容纳则停止。没有截断摘要、自动扩大预算或付费压缩重试。所有原文综合、归并、提取和核对共享同一任务的累计调用及字节额度。
 
@@ -27,7 +27,7 @@ val progress = app.periodReduction.inspect(task.stored.id)
 
 | 状态 | 含义 |
 | --- | --- |
-| `NEEDS_INPUT_PROCESSING` | 还有原文文字未完成综合 |
+| `NEEDS_INPUT_PROCESSING` | 还有记录文字或行动目录来源未完成综合 |
 | `READY` / `PASS_LIMIT_REACHED` | 有待归并节点；可以按当前预算显式继续 |
 | `TREE_INTEGRATED` | 所有成功叶批次已进入同一个当前有效根；不表示原文语义已核对 |
 | `SINGLE_BATCH` | 只有一个原文批次，直接查原提案，不增加一次归并调用 |
@@ -38,17 +38,17 @@ val progress = app.periodReduction.inspect(task.stored.id)
 | `STALE` / `EXPIRED` | 来源变化或任务期限已到，旧任务不能继续 |
 | `CANCELLED` / `CONFLICT` / `TASK_UNAVAILABLE` | 已取消、并发变化或任务已删除 |
 
-`leafCount` 是成功原文批次数，`originalEvidenceFragments` 按片段身份去重；重复原文不会因为多次总结而增加独立证据。完整处理与生活记录完整分别说明，`originalEvidenceVerified` 和 `counterevidenceSearchExhaustive` 始终为 `false`。
+`leafCount` 是成功原文批次数，`originalEvidenceFragments` 按片段身份去重，`originalActionEvents` 按行动凭据去重，`remainingActionEvents` 单独报告尚未处理的行动来源；重复原文不会因为多次总结而增加独立证据。完整处理与生活记录完整分别说明，`originalEvidenceVerified` 和 `counterevidenceSearchExhaustive` 始终为 `false`。
 
 ## 派生输入与依赖
 
 低层入口为 `analysis.reduce(runId, batchKey, children, provider)`，其中 `children` 是 2–4 个 `ReductionNodeRef`。低层允许归并一个明确子集，不替调用方宣称全周期完成；完整范围判断由上述处理器完成。
 
-新增调用目的 `REDUCTION`。每个输入固定父批次键、尝试号、完整输出摘要、请求摘要及全部祖先综合与归并陈述的反馈版本（含无反馈的版本 0）。父节点只能来自同一任务中此前成功的 `SYNTHESIS` 或 `REDUCTION` 调用；拒绝缺父、失败父节点、循环、前向引用、同组重复节点及祖先重叠。
+新增调用目的 `REDUCTION`。每个输入固定父批次键、尝试号、完整输出摘要、请求摘要及全部祖先综合与归并陈述的反馈版本（含无反馈的版本 0）。父节点只能来自同一任务中此前成功的 `SYNTHESIS`／`ACTION_SYNTHESIS` 叶或 `REDUCTION` 调用；拒绝缺父、失败父节点、循环、前向引用、同组重复节点及祖先重叠。
 
 模型每次只接收所选子节点的完整成果和未知项、依赖身份及有限来源计数／清单摘要。完整原文引用及反馈 token 留在本地台账，通过依赖图回查；高层不会再次携带全部祖先正文或引用清单。所有父节点都是依赖，不仅是最终文字选作支持的节点。范围计数由程序计算，仅说明材料覆盖，不作为成长或健康指标。
 
-本次 `AnalysisCall.evidence` 为空，因为没有读取原文；`proposal` 也为空。响应保存为独立 `ReductionDigest(statements, unknowns)`，每条 `ReductionStatement` 的 `inputIds` 只能引用本次派生输入。DeepSeek 传输复用有限 JSON 结构，传输字段 `evidenceIds` 在此目的下只表示派生输入 ID，执行层转换后保存为 `inputIds`；不能填写祖先原文 ID。所有响应仍须通过结构、引用和输出预算校验。
+本次 `AnalysisCall.evidence` 与 `actionEvidence` 均为空，因为没有读取原文；`proposal` 也为空。响应保存为独立 `ReductionDigest(statements, unknowns)`，每条 `ReductionStatement` 的 `inputIds` 只能引用本次派生输入。DeepSeek 传输复用有限 JSON 结构，传输字段 `evidenceIds` 在此目的下只表示派生输入 ID，执行层转换后保存为 `inputIds`；不能填写祖先原文 ID。所有响应仍须通过结构、引用和输出预算校验。
 
 无反馈或当前确认的父陈述可以参与草稿归并；确认不代表事实成立。父反馈 token 改变时旧子树失效，确认状态下可建立新节点；纠正、否定、撤回和删除会阻止该分支继续参与。生成前、成功复用、派发、写回和当前正文读取均检查依赖。同任务的反馈写入递增任务版本，阻止在途旧结果写回。反馈文字不发送到归并模型。
 
@@ -65,7 +65,7 @@ if (progress.status == ReductionProcessingStatus.TREE_INTEGRATED) {
 }
 ```
 
-`PeriodDraft` 是带任务版本的元数据句柄，正文经 `body` 单独读取。来源目录默认每页 25，最大 100；原文默认每次 1,024 个 Unicode 码点，最大 4,096。`start` 相对于登记片段，不能越界读取整条记录；目录包含所有祖先上下文，不只保留模型选中的支持引用。原文读取检查来源版本和片段边界，完整片段同时验证哈希。
+`PeriodDraft` 是带任务版本的元数据句柄，正文经 `body` 单独读取。来源目录默认每页 25，最大 100；原文默认每次 1,024 个 Unicode 码点，最大 4,096。`start` 相对于登记片段，不能越界读取整条记录；目录包含所有祖先上下文，不只保留模型选中的支持引用。行动任务另提供 `actionEvidence(draft, offset, limit)`，分页上限相同；`actionOriginal(draft, id)` 只读取登记的一个完整行动叶，不通过记录片段接口混用两种凭据。原文读取检查来源版本和片段边界，完整片段同时验证哈希。
 
 追加任务进度、来源或反馈变化后，旧句柄需要重新打开；每次正文、目录与原文读取都执行前后检查。已经交给调用者的字符串无法撤回，调用者刷新显示时应重新调用服务。此服务供可信应用界面使用，不暴露为模型的任意读取工具。
 
@@ -73,8 +73,8 @@ if (progress.status == ReductionProcessingStatus.TREE_INTEGRATED) {
 
 ## 保存、导出与后续边界
 
-分析任务载荷写入 v6，兼容 v1–v5；数据库仍为 v6，完整加密备份仍为 v5。完整备份保存依赖图与草稿，恢复后按原来源身份作为失效历史保存。资源上限见[数据转移接口](DATA_TRANSFER.md)，达到上限明确失败，不丢弃批次。
+分析任务当前写入 v11、兼容 v1–v10；数据库与备份外层版本以[数据转移接口](DATA_TRANSFER.md)为准。行动归并复用任务内图，不新增数据库表。完整备份保存依赖图与草稿，恢复后按原来源身份作为失效历史保存。资源上限见[数据转移接口](DATA_TRANSFER.md)，达到上限明确失败，不丢弃批次。
 
 普通知识阅读包、原文证据包和已有周期材料 ZIP 标记 `reductionDraftsIncluded=false`。本阶段通过草稿接口读取，尚无专用草稿文件导出；不能把已有材料包误认为包含归并草稿。
 
-草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；归并陈述通过专用目标身份、原文扫描、最终独立核对和明确确认进入 `publishReduction`，见[周期原文核对与发布](PERIOD_REVIEW.md)。不能把多个局部 `SUPPORTED` 直接合并为整体支持。程序指标引用使用[独立受控接口](METRIC_ANALYSIS.md)，当前归并图仍只处理原文综合叶；自动检索来源链外反例、跨任务反馈合并、自动重建和前端仍待实现。
+草稿不进入 `claimRef`、普通 `reviewClaim`、`AutomaticOrganizer` 或 `KnowledgeLibrary.publish`。现有正式知识路径继续核对原文综合陈述；归并陈述通过专用目标身份、原文扫描、最终独立核对和明确确认进入 `publishReduction`，见[周期原文核对与发布](PERIOD_REVIEW.md)。不能把多个局部 `SUPPORTED` 直接合并为整体支持。程序指标引用使用[独立受控接口](METRIC_ANALYSIS.md)，当前归并图处理记录综合与行动综合叶，指标／画像任务仍使用独立路径；自动检索来源链外反例、跨任务反馈合并、自动重建和前端仍待实现。

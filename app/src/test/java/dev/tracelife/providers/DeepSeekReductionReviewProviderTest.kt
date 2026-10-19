@@ -103,6 +103,72 @@ class DeepSeekReductionReviewProviderTest {
         assertEquals(ReviewVerdict.SUPPORTED, provider.reviewPrepared(prepared).review.verdict)
     }
 
+    @Test fun `mixed action scan sends both source types through the measured request`() {
+        val actionId = "b".repeat(64)
+        val envelope = JSONObject(request.payloadJson).put("actionPeriod", true).put("actionEvidence",
+            org.json.JSONArray().put(JSONObject().put("id", actionId).put("kind", "USER_REVIEW")
+                .put("execution", "UNKNOWN").put("observedText", "合成回看：执行情况未知")))
+        val mixed = request.copy(payloadJson = envelope.toString())
+        val result = mapOf("findings" to listOf(
+            mapOf("receiptId" to receipt, "classification" to "SUPPORT", "reason" to "合成记录提供支持", "issues" to emptyList<String>()),
+            mapOf("receiptId" to actionId, "classification" to "CONTEXT", "reason" to "合成回看保留未知", "issues" to emptyList<String>()),
+        ), "unknowns" to listOf("合成资料，未知不表示失败"))
+        var sent = ""
+        val provider = provider(AnalysisRunCodec.json(result)) { sent = it }
+        val prepared = provider.prepareScan(mixed)
+        val prompt = systemPrompt(prepared)
+        assertTrue(prompt.contains("evidence 和 actionEvidence"))
+        assertTrue(prompt.contains("两者合计1至32项"))
+        assertTrue(prompt.contains("UNKNOWN 和未回看不等于失败"))
+        assertTrue(prompt.contains("reviewedPlan"))
+        assertTrue(prompt.contains("nextPlan"))
+        assertEquals(setOf(receipt, actionId), provider.scanPrepared(prepared).result.findings.map { it.receiptId }.toSet())
+        assertEquals(prepared.payloadJson, sent)
+        assertEquals(mixed.payloadJson, JSONObject(sent).getJSONArray("messages").getJSONObject(1).getString("content"))
+    }
+
+    @Test fun `legacy record scan and final prompts retain persisted retry identities`() {
+        // Golden hashes from the pre-action-reduction provider: failed calls bind the full wire request.
+        val provider = provider("{}")
+        assertEquals("2dd9d2a987a729f9de844cd63da48be85a5f7ccb8c6f5079de44966335468a6f",
+            AnalysisRunCodec.sha256(systemPrompt(provider.prepareScan(request))))
+        val final = request.copy(payloadJson = request.payloadJson.replace("REDUCTION_SCAN", "REDUCTION_REVIEW"))
+        assertEquals("ef66626fe7a36666253e175dd88fc60d3cfa77e7b49ed175e21dc805d94faa97",
+            AnalysisRunCodec.sha256(systemPrompt(provider.prepareReview(final))))
+    }
+
+    @Test fun `action final review keeps scan obligations even when all action originals were irrelevant`() {
+        val provider = provider("{}")
+        listOf(emptyList<Map<String, String>>(), listOf(mapOf("id" to "b".repeat(64), "kind" to "USER_REVIEW"))).forEach { actions ->
+            val final = ModelRequest(AnalysisRunCodec.json(mapOf("purpose" to "REDUCTION_REVIEW", "actionPeriod" to true,
+                "actionEvidence" to actions, "evidence" to listOf(mapOf("id" to receipt, "text" to "合成原文")))),
+                "synthetic-action-final", 1_000)
+            val prompt = systemPrompt(provider.prepareReview(final))
+            assertTrue(prompt.contains("最终独立核对"))
+            assertTrue(prompt.contains("扫描意见不是证据"))
+            assertTrue(prompt.contains("不能把多个局部 SUPPORT 相加"))
+            assertTrue(prompt.contains("计划不等于执行"))
+            assertTrue(prompt.contains("UNKNOWN 和未回看不等于失败"))
+            assertTrue(prompt.contains("旧计划"))
+        }
+    }
+
+    @Test fun `action reduction only cites derived inputs and retains action distinctions`() {
+        val provider = provider("{}")
+        val reduction = ModelRequest(AnalysisRunCodec.json(mapOf("purpose" to "REDUCTION", "actionPeriod" to true,
+            "derivedInputs" to emptyList<Any>())), "synthetic-action-reduction", 1_000)
+        val prompt = systemPrompt(provider.prepare(reduction))
+        assertTrue(prompt.contains("本次没有提供原文"))
+        assertTrue(prompt.contains("引用仅用本次派生输入id"))
+        assertTrue(prompt.contains("不能计为独立实验"))
+        assertTrue(prompt.contains("不能用新计划解释旧结果"))
+        val malformed = reduction.copy(payloadJson = reduction.payloadJson.replace("\"actionPeriod\":true", "\"actionPeriod\":\"true\""))
+        assertThrows(IllegalArgumentException::class.java) { provider.prepare(malformed) }
+    }
+
+    private fun systemPrompt(prepared: PreparedModelRequest) =
+        JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+
     private fun scan(classification: String = "SUPPORT"): Map<String, Any> = mapOf(
         "findings" to listOf(mapOf("receiptId" to receipt, "classification" to classification,
             "reason" to "合成片段提到周一练习", "issues" to emptyList<Any>())), "unknowns" to listOf("合成自述，非独立测量"))

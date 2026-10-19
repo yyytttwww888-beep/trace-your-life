@@ -84,19 +84,24 @@ data class ReductionFinding(val receiptId: String, val classification: Reduction
     val issues: List<ReviewIssue> = emptyList())
 data class ReductionScanResult(val findings: List<ReductionFinding>, val unknowns: List<String> = emptyList())
 data class ReductionScanRef(val batchKey: String, val attempt: Int, val requestSha256: String, val outputSha256: String)
-data class ReductionScanProof(val ref: ReductionScanRef, val providerId: String, val evidence: List<EvidenceReceipt>, val result: ReductionScanResult)
+data class ReductionScanProof(val ref: ReductionScanRef, val providerId: String, val evidence: List<EvidenceReceipt>, val result: ReductionScanResult,
+    val actionEvidence: List<ActionEvidenceReceipt> = emptyList())
 data class ReductionReviewProof(val target: ReductionStatementRef, val statement: ReductionStatement,
     val dependencyTokens: List<ReductionFeedbackToken>, val originalEvidence: List<EvidenceReceipt>,
-    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>)
+    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>,
+    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList())
 data class ReductionReviewContext(val target: ReductionStatementRef, val feedbackVersion: Int,
     val dependencyTokens: List<ReductionFeedbackToken>, val originalEvidence: List<EvidenceReceipt>,
-    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>, val latestReview: AnalysisCall?)
+    val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>, val latestReview: AnalysisCall?,
+    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList())
 data class ReductionStatement(val text: String, val inputIds: List<String>)
 data class ReductionDigest(val statements: List<ReductionStatement>, val unknowns: List<String> = emptyList())
 data class ReductionDependencies(val ref: ReductionNodeRef, val leafRefs: List<ReductionNodeRef>,
-    val originalEvidence: List<EvidenceReceipt>, val feedbackTokens: List<ReductionFeedbackToken>)
+    val originalEvidence: List<EvidenceReceipt>, val feedbackTokens: List<ReductionFeedbackToken>,
+    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList())
 data class ReductionNodeView(val ref: ReductionNodeRef, val inputs: List<ReductionInput>, val digest: ReductionDigest,
-    val leafRefs: List<ReductionNodeRef>, val originalEvidence: List<EvidenceReceipt>)
+    val leafRefs: List<ReductionNodeRef>, val originalEvidence: List<EvidenceReceipt>,
+    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList())
 enum class ReviewVerdict { SUPPORTED, UNSUPPORTED, CONTRADICTED, INSUFFICIENT_CONTEXT }
 enum class ReviewIssue { USER_REPORT_AS_FACT, SCOPE_OVERGENERALIZATION, CAUSAL_OVERREACH, COUNTEREVIDENCE_OMISSION, INSUFFICIENT_CONTEXT, OTHER }
 /** A bounded model quality check, never an independent truth or permission to publish. */

@@ -24,7 +24,7 @@ import java.time.LocalDate
 
 /** A self-contained immutable publication, independent of the mutable analysis task ledger. */
 object KnowledgeCodec {
-    const val FORMAT_VERSION = 5
+    const val FORMAT_VERSION = 6
 
     fun encode(value: StoredKnowledgeRevision): String {
         KnowledgeValidation.validate(value)
@@ -124,6 +124,8 @@ object KnowledgeCodec {
             require(format >= 5L || value.profileMaintenanceProof?.plan?.profileTarget?.layer != dev.tracelife.profile.ProfileLayer.LONG_TERM) {
                 "旧知识格式不支持纵向画像凭据"
             }
+            require(format >= 6L || value.actionPlan == null || value.reductionProof == null) { "旧知识格式不支持行动归并证明" }
+            require(format >= 6L || value.reductionProof?.originalActionEvidence.isNullOrEmpty()) { "旧知识格式不支持行动归并证明" }
             KnowledgeValidation.validate(value)
         }
     }

@@ -274,6 +274,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 val parent = ReductionGraph.resolve(task.state.calls, input.node)
                 val leaves = ReductionGraph.leafRefs(task.state, input.node)
                 val evidence = ReductionGraph.originalEvidence(task.state, input.node)
+                val actions = ReductionGraph.originalActionEvidence(task.state, input.node)
                 mapOf("id" to input.id, "type" to "DERIVED_DRAFT", "node" to ReductionGraph.nodeMap(input.node),
                     "requestSha256" to input.requestSha256,
                     "feedbackClaimCount" to input.feedbackTokens.size,
@@ -281,12 +282,14 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                     "provenance" to mapOf("leafBatches" to leaves.size, "originalFragments" to evidence.size,
                         "originalRecords" to evidence.map { it.recordId }.distinct().size,
                         "manifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(mapOf(
-                            "leaves" to leaves.map(ReductionGraph::nodeMap), "evidence" to evidence.map(AnalysisRunCodec::receiptMap))))),
-                    "content" to if (parent.purpose == CallPurpose.SYNTHESIS) requireNotNull(parent.proposal).let {
+                            "leaves" to leaves.map(ReductionGraph::nodeMap), "evidence" to evidence.map(AnalysisRunCodec::receiptMap)) +
+                            if (task.state.request.actionPeriod) mapOf("actionEvidence" to actions.map(ActionEvidenceProtocol::receiptMap)) else emptyMap()))) +
+                        (if (task.state.request.actionPeriod) mapOf("actionEvents" to actions.size) else emptyMap()),
+                    "content" to if (ReductionGraph.isLeaf(parent.purpose)) requireNotNull(parent.proposal).let {
                         mapOf("claims" to it.claims.map(AnalysisRunCodec::claimMap), "unknowns" to it.unknowns)
                     } else ReductionGraph.digestMap(requireNotNull(parent.reductionOutput)))
             },
-        ))
+        ) + if (task.state.request.actionPeriod) mapOf("actionPeriod" to true) else emptyMap())
         val request = modelRequest(id, batchKey, payload, task.state.request.limits)
         val call = execute(task, batchKey, emptyList(), providerId, provider.contextWindowTokens, request,
             provider.prepare(request), CallPurpose.REDUCTION, reductionInputs = inputs) { prepared ->
@@ -308,7 +311,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val ref = ReductionGraph.nodeRef(call)
         val dependencies = reductionDependencies(task, ref)
         ensureRegistered(task.stored)
-        return ReductionNodeView(ref, call.reductionInputs, requireNotNull(call.reductionOutput), dependencies.leafRefs, dependencies.originalEvidence)
+        return ReductionNodeView(ref, call.reductionInputs, requireNotNull(call.reductionOutput), dependencies.leafRefs, dependencies.originalEvidence, dependencies.originalActionEvidence)
     }
 
     fun currentReduction(id: String, node: ReductionNodeRef): ReductionDigest = reductionNode(id, node.batchKey).also {
@@ -322,7 +325,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
         ensureReductionFeedback(task.stored.id, tokens)
         ensureReductionFeedback(task.stored.id, ReductionGraph.ancestorTokens(task.state.calls, node))
-        return ReductionDependencies(node, ReductionGraph.leafRefs(task.state, node), ReductionGraph.originalEvidence(task.state, node), tokens)
+        return ReductionDependencies(node, ReductionGraph.leafRefs(task.state, node), ReductionGraph.originalEvidence(task.state, node), tokens, ReductionGraph.originalActionEvidence(task.state, node))
     }
 
     private fun ensureReductionFeedback(id: String, tokens: List<ReductionFeedbackToken>) {
@@ -369,14 +372,16 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         ReductionGraph.statement(task.state.calls, target)
         val leaves = try { ReductionReviewProtocol.requireWholeRoot(task.state, target) }
             catch (_: IllegalArgumentException) { throw AnalysisDependencyBlockedException("核对根节点未覆盖当前全部综合批次") }
-        if (TextAnalysisInventory(this).build(task, CallPurpose.SYNTHESIS, 0).coverage.remainingTextFragments != 0L)
+        if (TextAnalysisInventory(this).build(task, ReductionGraph.leafPurpose(task.state), 0).coverage.remainingTextFragments != 0L)
             throw AnalysisDependencyBlockedException("仍有原文未完成综合，不能开始周期整体核对")
+        if (task.state.actionPlan?.entries?.toSet()?.let { it != dependencies.originalActionEvidence.toSet() } == true)
+            throw AnalysisDependencyBlockedException("仍有行动来源未完成综合，不能开始周期整体核对")
         val version = repository.claimFeedbackVersion(AnalysisRunCodec.feedbackId(task.stored.id, ReductionGraph.feedbackRef(target)))
         val scans = ReductionReviewProtocol.compatibleScans(task.state, target, version, dependencies.feedbackTokens)
         val latest = task.state.calls.lastOrNull { it.purpose == CallPurpose.REDUCTION_REVIEW && it.status == CallStatus.SUCCEEDED &&
             it.reductionTarget == target && it.feedbackVersion == version && it.reductionReviewTokens == dependencies.feedbackTokens }
         return ReductionReviewContext(target, version, dependencies.feedbackTokens, dependencies.originalEvidence, leaves,
-            scans.map(ReductionReviewProtocol::scanProof), latest)
+            scans.map(ReductionReviewProtocol::scanProof), latest, dependencies.originalActionEvidence)
     }
 
     fun scanReduction(id: String, batchKey: String, target: ReductionStatementRef, receiptIds: List<String>,
@@ -386,16 +391,19 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         require(receiptIds.size in 1..32 && receiptIds.distinct().size == receiptIds.size)
         val task = current(id)
         val context = reductionReviewContext(task, target)
-        val refs = receiptIds.map { receiptId -> requireNotNull(context.originalEvidence.singleOrNull { it.id == receiptId }) { "扫描原文不属于固定根节点" } }
-        val previous = context.scans.filter { it.ref.batchKey != batchKey }.flatMap { it.evidence }.map { it.id }.toSet()
-        require(refs.none { it.id in previous }) { "当前核对条件下，同一原文不能重复成功扫描以替换既有分类" }
+        val refs = receiptIds.mapNotNull { receiptId -> context.originalEvidence.singleOrNull { it.id == receiptId } }
+        val actions = receiptIds.mapNotNull { receiptId -> context.originalActionEvidence.singleOrNull { it.id == receiptId } }
+        require(refs.size + actions.size == receiptIds.size) { "扫描来源不属于固定根节点" }
+        val previous = context.scans.filter { it.ref.batchKey != batchKey }.flatMap { it.result.findings }.map { it.receiptId }.toSet()
+        require(receiptIds.none { it in previous }) { "当前核对条件下，同一原文不能重复成功扫描以替换既有分类" }
         val fragments = reread(task, refs)
         val payload = reductionReviewPayload(task, target, context, "REDUCTION_SCAN", SCAN_INSTRUCTIONS) +
-            mapOf("evidence" to fragments.zip(refs).map { (fragment, ref) -> evidenceMap(task, fragment, ref) })
+            mapOf("evidence" to fragments.zip(refs).map { (fragment, ref) -> evidenceMap(task, fragment, ref) }) +
+                if (task.state.request.actionPeriod) mapOf("actionEvidence" to actions.map(repository::actionEvidenceBody)) else emptyMap()
         val request = modelRequest(id, batchKey, AnalysisRunCodec.json(payload), task.state.request.limits)
         val call = execute(task, batchKey, refs, providerId, provider.contextWindowTokens, request, provider.prepareScan(request),
             CallPurpose.REDUCTION_SCAN, feedbackVersion = context.feedbackVersion, reductionTarget = target,
-            reductionReviewTokens = context.dependencyTokens) { prepared ->
+            reductionReviewTokens = context.dependencyTokens, actionEvidence = actions) { prepared ->
             provider.scanPrepared(prepared).let { Completion(scan = it.result, usage = it.usage) }
         }
         requireNotNull(call.reductionScan)
@@ -407,28 +415,32 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val task = current(id)
         val context = reductionReviewContext(task, target)
         val findings = context.scans.flatMap { it.result.findings }
-        require(findings.size == context.originalEvidence.size && findings.map { it.receiptId }.toSet() == context.originalEvidence.map { it.id }.toSet()) {
+        val allIds = context.originalEvidence.map { it.id } + context.originalActionEvidence.map { it.id }
+        require(findings.size == allIds.size && findings.map { it.receiptId }.toSet() == allIds.toSet()) {
             "全部原文须成功扫描一次后才能进行最终核对"
         }
         require(findings.none { it.classification == ReductionRelevance.NEEDS_CONTEXT }) { "仍有缺少上下文的材料，不能最终核对" }
         val irrelevant = findings.filter { it.classification == ReductionRelevance.IRRELEVANT }.map { it.receiptId }.toSet()
         val refs = context.originalEvidence.filter { it.id !in irrelevant }
-        if (refs.size > 32) throw AnalysisBudgetException("全部相关原文超过 32 个片段，不能抽样或截断后发布")
-        require(refs.isNotEmpty()) { "没有相关原文，不能进行支持核对" }
+        val actions = context.originalActionEvidence.filter { it.id !in irrelevant }
+        if (refs.size + actions.size > 32) throw AnalysisBudgetException("全部相关原文与行动超过 32 个输入，不能抽样或截断后发布")
+        require(refs.isNotEmpty() || actions.isNotEmpty()) { "没有相关原文，不能进行支持核对" }
         val fragments = reread(task, refs)
-        val relevantIds = refs.map { it.id }.toSet()
+        val relevantIds = (refs.map { it.id } + actions.map { it.id }).toSet()
         val payload = reductionReviewPayload(task, target, context, "REDUCTION_REVIEW", REDUCTION_REVIEW_INSTRUCTIONS) + mapOf(
             "scans" to context.scans.map { scan -> mapOf("ref" to ReductionReviewProtocol.scanRefMap(scan.ref),
                 "findings" to requireNotNull(ReductionReviewProtocol.scanMap(scan.result.copy(findings = scan.result.findings.filter { it.receiptId in relevantIds }))["findings"]),
                 "allIssues" to scan.result.findings.flatMap { it.issues }.distinct().map { it.name }, "unknowns" to scan.result.unknowns) },
             "coverage" to mapOf("fullyScanned" to true, "originalFragments" to context.originalEvidence.size,
                 "finalOriginals" to refs.size, "omittedAsIrrelevant" to irrelevant.size, "counterevidenceSearchExhaustive" to false,
-                "relevanceClassificationIsModelJudgment" to true, "attachmentsRead" to false),
-            "evidence" to fragments.zip(refs).map { (fragment, ref) -> evidenceMap(task, fragment, ref) })
+                "relevanceClassificationIsModelJudgment" to true, "attachmentsRead" to false) +
+                (if (task.state.request.actionPeriod) mapOf("originalActionEvents" to context.originalActionEvidence.size, "finalActionEvents" to actions.size) else emptyMap()),
+            "evidence" to fragments.zip(refs).map { (fragment, ref) -> evidenceMap(task, fragment, ref) }) +
+            if (task.state.request.actionPeriod) mapOf("actionEvidence" to actions.map(repository::actionEvidenceBody)) else emptyMap()
         val request = modelRequest(id, batchKey, AnalysisRunCodec.json(payload), task.state.request.limits)
         val call = execute(task, batchKey, refs, providerId, provider.contextWindowTokens, request, provider.prepareReview(request),
             CallPurpose.REDUCTION_REVIEW, feedbackVersion = context.feedbackVersion, reductionTarget = target,
-            reductionReviewTokens = context.dependencyTokens, reductionScans = context.scans.map { it.ref }) { prepared ->
+            reductionReviewTokens = context.dependencyTokens, reductionScans = context.scans.map { it.ref }, actionEvidence = actions) { prepared ->
             provider.reviewPrepared(prepared).let { Completion(review = it.review, usage = it.usage) }
         }
         requireNotNull(call.review)
@@ -453,7 +465,9 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             "feedback" to mapOf("version" to context.feedbackVersion),
             "range" to mapOf("records" to route.records, "unknownTimeRecords" to route.unknownTimeRecords,
                 "overlappingRecords" to route.overlappingRecords, "missingExactIds" to route.missingExactIds.sorted()),
-            "originalManifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(context.originalEvidence.map(AnalysisRunCodec::receiptMap))))
+            "originalManifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(context.originalEvidence.map(AnalysisRunCodec::receiptMap)))) +
+            if (task.state.request.actionPeriod) mapOf("actionPeriod" to true,
+                "actionManifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(context.originalActionEvidence.map(ActionEvidenceProtocol::receiptMap)))) else emptyMap()
     }
 
     /** Stable identity for a saved proposal, including text, kind and typed evidence IDs. */
@@ -840,7 +854,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             }
             else if (purpose == CallPurpose.PROFILE_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.profileScan), receipts, limits.maxOutputBytes)
             else if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes)
-            else if (purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.scan), receipts, limits.maxOutputBytes)
+            else if (purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.scan), receipts, limits.maxOutputBytes, actionEvidence)
             else {
                 AnalysisRunCodec.validateReview(requireNotNull(completion.review), receipts, limits.maxOutputBytes, metricEvidence, actionEvidence)
                 state.request.profileTarget?.let { LongitudinalProfileProtocol.validateReview(it, requireNotNull(completion.review), receipts,
@@ -867,7 +881,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
     }
 
     private fun requirePurpose(task: AnalysisTask, purpose: CallPurpose) {
-        require((purpose == CallPurpose.ACTION_SYNTHESIS || purpose == CallPurpose.REVIEW && task.state.request.actionPeriod) == task.state.request.actionPeriod) { "行动复盘必须使用独立受控目的" }
+        require(if (task.state.request.actionPeriod) purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW,
+            CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) else purpose != CallPurpose.ACTION_SYNTHESIS) { "行动复盘必须使用独立受控目的" }
         require(task.state.request.profileTarget == null || purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)) {
             "画像任务只允许原文候选综合与核对"
         }

@@ -54,7 +54,7 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
-新数据库格式通过明确的版本迁移升级；当前为 v8，可从 v1–v7 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询、行动／画像写入或备份快照直接开放给模型。DeepSeek 真实提取、核对、综合、归并、周期原文核对、指标分析、画像候选、画像维护和行动周期联动使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过九项，不读取真实 KEY。
+新数据库格式通过明确的版本迁移升级；当前为 v8，可从 v1–v7 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询、行动／画像写入或备份快照直接开放给模型。DeepSeek 真实提取、核对、综合、归并、周期原文核对、指标分析、画像候选、画像维护和行动周期联动使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过十项，不读取真实 KEY。行动跨批归并、扫描、最终核对及知识包验证使用独立开关，见[本轮计划](plans/2026-10-19-action-report-export.md)。
 
 ## 设备验证与阶段边界
 

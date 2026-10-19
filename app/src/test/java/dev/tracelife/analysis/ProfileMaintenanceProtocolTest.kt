@@ -244,7 +244,7 @@ class ProfileMaintenanceProtocolTest {
         val before = analysis.task("run").state
         val v8 = JSONObject(AnalysisRunCodec.encode(before)).withoutProfileMaintenance().put("formatVersion", 8)
         assertEquals(before, AnalysisRunCodec.decode(v8.toString()))
-        assertEquals(10, JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(v8.toString()))).getInt("formatVersion"))
+        assertEquals(11, JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(v8.toString()))).getInt("formatVersion"))
         analysis.planProfileMaintenance("run", claim)
         val payload = JSONObject(analysis.task("run").stored.payload)
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(payload.put("formatVersion", 8).toString()) }

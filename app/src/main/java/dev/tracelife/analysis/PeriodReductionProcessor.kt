@@ -43,6 +43,8 @@ data class ReductionProgress(
     val nodes: List<ReductionNodeSummary>,
     val attempts: List<ReductionAttemptSummary>,
     val blockedLeaves: List<ReductionNodeRef>,
+    val originalActionEvents: Int = 0,
+    val remainingActionEvents: Int = 0,
 ) {
     val leafCount: Int get() = leafRefs.size
     val counterevidenceSearchExhaustive: Boolean get() = false
@@ -150,8 +152,12 @@ class PeriodReductionProcessor(private val analysis: ControlledAnalysis) {
     private fun snapshot(runId: String, fanIn: Int): Snapshot {
         val task = analysis.task(runId)
         blocked(task)?.let { return Snapshot(empty(task, it)) }
-        val coverage = inventory.build(task, CallPurpose.SYNTHESIS, 0).coverage
-        val leaves = task.state.calls.filter { it.purpose == CallPurpose.SYNTHESIS && it.status == CallStatus.SUCCEEDED }
+        val leafPurpose = ReductionGraph.leafPurpose(task.state)
+        val coverage = inventory.build(task, leafPurpose, 0).coverage
+        val successful = task.state.calls.filter { it.purpose == leafPurpose && it.status == CallStatus.SUCCEEDED }
+        val actions = successful.flatMap { it.actionEvidence }.distinctBy { it.id }
+        val remainingActions = task.state.actionPlan?.entries.orEmpty().count { ref -> ref !in actions }
+        val leaves = successful
             .map(ReductionGraph::nodeRef)
         val manifest = AnalysisRunCodec.sha256(AnalysisRunCodec.json(leaves.map(::refValue)))
         val reductions = task.state.calls.filter { it.purpose == CallPurpose.REDUCTION }
@@ -179,7 +185,7 @@ class PeriodReductionProcessor(private val analysis: ControlledAnalysis) {
         val latest = analysis.task(runId)
         if (latest.stored.version != task.stored.version || latest.status != task.status)
             throw AnalysisConflictException("归并进度在读取期间发生变化")
-        val ready = coverage.remainingTextFragments == 0L && blockedLeaves.isEmpty()
+        val ready = coverage.remainingTextFragments == 0L && remainingActions == 0 && blockedLeaves.isEmpty()
         var plan = if (ready) plan(leaves, nodes, dependencies, fanIn) else Plan(null, leaves, emptyList())
         // A failed budget-shrunk group remains the next explicit retry. Its identity includes the
         // current leaf manifest and feedback, so an obsolete failure never forces old inputs back.
@@ -193,7 +199,7 @@ class PeriodReductionProcessor(private val analysis: ControlledAnalysis) {
         }
         val status = when {
             blockedLeaves.isNotEmpty() -> ReductionProcessingStatus.DEPENDENCY_BLOCKED
-            coverage.remainingTextFragments > 0 -> ReductionProcessingStatus.NEEDS_INPUT_PROCESSING
+            coverage.remainingTextFragments > 0 || remainingActions > 0 -> ReductionProcessingStatus.NEEDS_INPUT_PROCESSING
             leaves.isEmpty() -> ReductionProcessingStatus.NO_TEXT
             leaves.size == 1 -> ReductionProcessingStatus.SINGLE_BATCH
             plan.root != null -> ReductionProcessingStatus.TREE_INTEGRATED
@@ -203,10 +209,9 @@ class PeriodReductionProcessor(private val analysis: ControlledAnalysis) {
                     ReductionProcessingStatus.RETRY_NEEDED else ReductionProcessingStatus.READY
             }
         }
-        val evidence = task.state.calls.filter { it.purpose == CallPurpose.SYNTHESIS && it.status == CallStatus.SUCCEEDED }
-            .flatMap { it.evidence }.distinctBy { it.id }
+        val evidence = successful.flatMap { it.evidence }.distinctBy { it.id }
         val progress = ReductionProgress(runId, status, task.stored.source, task.stored.version, coverage, leaves, manifest,
-            plan.root, if (plan.root != null) leaves.size else 0, evidence.size, plan.frontier, plan.next, nodes, attempts, blockedLeaves)
+            plan.root, if (plan.root != null) leaves.size else 0, evidence.size, plan.frontier, plan.next, nodes, attempts, blockedLeaves, actions.size, remainingActions)
         return Snapshot(progress, plan.next.takeIf { it.isNotEmpty() }?.let(::Work), dependencies)
     }
 
