@@ -1,6 +1,6 @@
 # 受控画像候选生成接口
 
-本阶段从固定范围的原始记录生成近期状态或情境模式提案，随后独立核对，并由用户明确选择保存为画像候选。完整目标见[画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)，范围和验证见[M4 第三阶段计划](plans/2026-10-19-profile-candidates.md)。长期倾向自动推断、跨任务语义治理、画像摘要与定时后台运行仍待实现。
+本阶段从固定范围的原始记录生成近期状态或情境模式提案，随后独立核对，并由用户明确选择保存为画像候选。完整目标见[画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)，范围和验证见[M4 第三阶段计划](plans/2026-10-19-profile-candidates.md)。后续[跨任务画像维护](PROFILE_MAINTENANCE.md)负责历史关系、反馈约束及范围内反例扫描；长期倾向自动推断、画像摘要与定时后台运行仍待实现。
 
 ## 建立任务与分批处理
 
@@ -46,7 +46,7 @@ val progress = app.profileCandidates.inspect(task.stored.id, limit = 25)
 
 生成只能引用本次登记的原文，所有陈述均为 `POSSIBLE_INTERPRETATION`。提示词要求模型保留自述性质、具体情境、支持与反例、替代解释和未知；画像目标、旧画像或用户采用决定不充作新原始证据。
 
-独立核对重读整个生成批次的全部原文，不能只重读模型选择的支持引用。批内重读不代表已经搜索全库反例；`counterevidenceSearchExhaustive=false`。`crossTaskSemanticDeduplication=false`、`manualDeletedSlotTracking=false` 分别说明跨任务语义去重和已永久删除的手工组织位置尚未跟踪。多批处理明确报告尚未跨批整合，不将若干局部提案包装成完整周期或长期画像。
+独立核对重读整个生成批次的全部原文，不能只重读模型选择的支持引用。批内重读不代表已经搜索全库反例；`counterevidenceSearchExhaustive=false`。生成流程自身的 `crossTaskSemanticDeduplication=false`、`manualDeletedSlotTracking=false` 分别说明此步骤没有完成跨任务比较，也未跟踪已永久删除的手工组织位置；后续维护通过独立计划检查当前可用历史。多批处理明确报告尚未跨批整合，不将若干局部提案包装成完整周期或长期画像。
 
 ## 明确确认与保存
 
@@ -67,7 +67,7 @@ val saved = app.profileCandidates.materialize(
 )
 ```
 
-`materialize` 重新检查任务范围、来源、版本、期限、确认与最新支持核对，条件成立才将陈述发布为共享 `INSIGHT` 并保存为 `CANDIDATE`。机器正文和证据仍只由共享知识维护。候选默认不进入当前画像；用户另行通过 `personalProfile.adopt` 采用。
+存在适用历史画像或纠正反馈时，`materialize` 会阻止直接新建，须改用[维护与明确应用](PROFILE_MAINTENANCE.md)。没有适用历史时，`materialize` 重新检查任务范围、来源、版本、期限、确认与最新支持核对，条件成立才将陈述发布为共享 `INSIGHT` 并保存为 `CANDIDATE`。机器正文和证据仍只由共享知识维护。候选默认不进入当前画像；用户另行通过 `personalProfile.adopt` 采用。
 
 重复保存使用稳定身份，不重复增加知识或画像修订。已有条目的采用决定、独立文字和当前修订保留；不会把 `DECLINED` 或 `SUPERSEDED` 重置成候选，也不自动改绑另一个知识版本。发布与创建的仓储桥接保持事务一致，条件变化或容量失败不留下部分保存。
 
@@ -79,6 +79,8 @@ val saved = app.profileCandidates.materialize(
 
 任务期间来源修订、补记、删除或到期，会阻止旧任务继续生成或保存；时钟回拨到任务更新时间之前也不能派发或物化。反馈变化使相关旧核对失效；确认后的新版本须重新核对，否定、纠正、撤回或永久删除反馈会阻止对应候选保存，其余未处理批次仍可继续。已发布知识与画像继续使用现有失效传播，用户独立文字按原规则保留。当前由调用方显式启动和续跑，没有 Android 定时任务，也不会在保存日记后自动联网。
 
-分析载荷 v8 保存目标及已有调用台账，严格读取 v1–v7；旧版本不能夹带新字段。数据库仍为 schema v7，外层备份仍为逻辑 v6，画像载荷仍为 v1。完整加密备份保留候选任务；恢复后按历史来源处理，不自动重跑或重新确认。普通阅读包省略分析提案和未采用画像；只有已采用、仍有效且共享知识也被纳入的条目进入画像阅读目录。
+分析载荷 v9 保存目标、调用台账及后续维护计划，严格读取 v1–v8；旧版本不能夹带新字段。数据库仍为 schema v7，外层备份仍为逻辑 v6，画像载荷 v2 兼容 v1。完整加密备份保留候选任务；恢复后按历史来源处理，不自动重跑或重新确认。普通阅读包省略分析提案和未采用画像；只有已采用、仍有效且共享知识也被纳入的条目进入画像阅读目录。
 
 真实 DeepSeek 验证采用独立默认关闭的开关，只使用合成资料；命令和实际边界见[DeepSeek 接入](DEEPSEEK.md)。接口自动化测试、真实模型小样本和真机验收分别记录。
+
+新候选已确认、局部核对支持、尚未物化且适用历史目录非空时，状态返回 `MAINTENANCE_REQUIRED`；必须经[跨任务维护](PROFILE_MAINTENANCE.md)比较、扫描并明确应用，普通局部核对通过仍不能直接物化。

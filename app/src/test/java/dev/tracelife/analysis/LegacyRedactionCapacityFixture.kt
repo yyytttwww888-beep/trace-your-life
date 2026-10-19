@@ -10,7 +10,7 @@ object LegacyRedactionCapacityFixture {
         val state = AnalysisRunCodec.decode(run.payload)
         require(state.calls.isNotEmpty() && state.calls.size <= 5 && state.request.limits.maxCalls == 100)
         require(state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
-        val root = JSONObject(run.payload).put("formatVersion", 5)
+        val root = JSONObject(run.payload).withoutProfileMaintenance().put("formatVersion", 5)
         root.getJSONObject("request").remove("profileTarget")
         val calls = root.getJSONArray("calls")
         repeat(calls.length()) { stripNew(calls.getJSONObject(it)) }
@@ -49,6 +49,6 @@ object LegacyRedactionCapacityFixture {
     }
 
     private fun stripNew(call: JSONObject) {
-        listOf("metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(call::remove)
+        listOf("profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof", "metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(call::remove)
     }
 }

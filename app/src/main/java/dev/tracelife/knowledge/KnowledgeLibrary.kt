@@ -163,7 +163,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
         val state = when {
             value.source != source -> KnowledgeEvidenceState.STALE
             value.expiresAt != null && !now.isBefore(value.expiresAt) -> KnowledgeEvidenceState.EXPIRED
-            !feedbackCurrent(value) ->
+            !feedbackCurrent(value) || value.profileMaintenanceProof?.let { !repository.profileMaintenanceDependenciesCurrent(it) } == true ->
                 KnowledgeEvidenceState.FEEDBACK_CHANGED
             !reviewCurrent(value, states) -> KnowledgeEvidenceState.REVIEW_CHANGED
             else -> KnowledgeEvidenceState.CURRENT

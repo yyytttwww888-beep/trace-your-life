@@ -65,7 +65,7 @@ class ProfileCandidateTransferTest {
         val json = JSONObject(encoded.toString(Charsets.UTF_8))
         assertEquals(6, json.getInt("formatVersion"))
         assertEquals(7, json.getInt("sourceSchemaVersion"))
-        assertEquals(8, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
+        assertEquals(9, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(encoded.inputStream()))
         val archive = File(workspace, "pending.tlb")
         BackupArchive.write(snapshot, directory(), archive, password)
@@ -93,10 +93,11 @@ class ProfileCandidateTransferTest {
         analysis.start(request().copy(profileTarget = null), "legacy")
         val snapshot = capture()
         val row = snapshot.analysisRuns.single()
-        (1..7).forEach { version ->
+        (1..8).forEach { version ->
             val payload = JSONObject(row.payload).apply {
                 put("formatVersion", version)
-                getJSONObject("request").remove("profileTarget")
+                if (version < 8) getJSONObject("request").remove("profileTarget")
+                remove("profileMaintenancePlans")
             }.toString()
             val legacy = snapshot.copy(analysisRuns = listOf(row.copy(payload = payload)))
             val decoded = SnapshotJsonCodec.read(encode(legacy).inputStream())

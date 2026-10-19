@@ -303,13 +303,19 @@ class ProfileCandidateGeneratorTest {
         provider.claimCount = 2
         start(); val claims = process().progress.candidates.map { it.claim }
         claims.forEach { confirm(it) }; process()
-        materialize(claims[0])
+        val first = materialize(claims[0])
+        // Keep the existing entry in another dimension so the capacity path is exercised after
+        // the cross-task governance gate, rather than failing early for an unreviewed duplicate.
+        val stored = repository.profileRevision(first.profile!!.id)!!
+        PersonalProfile(repository, clock).update(stored.id, stored.revision, "move-synthetic-dimension",
+            stored.draft.copy(dimension = ProfileDimension.ENERGY_AND_RECOVERY))
         val otherId = generator.inspect("run").candidates[1].knowledgeId
         context.openOrCreateDatabase(database, Context.MODE_PRIVATE, null).use { db ->
             db.execSQL("UPDATE profile_revisions SET encoded_bytes = ?", arrayOf(ProfileValidation.MAX_BYTES))
         }
         val before = repository.currentAnalysisGeneration()
-        assertThrows(IllegalArgumentException::class.java) { materialize(claims[1]) }
+        val error = assertThrows(IllegalArgumentException::class.java) { materialize(claims[1]) }
+        assertEquals("画像修订超过保存上限", error.message)
         assertNull(repository.knowledgeRevision(otherId))
         assertEquals(1, repository.profileHeads().size)
         assertEquals(before, repository.currentAnalysisGeneration())

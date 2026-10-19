@@ -5,6 +5,10 @@ import dev.tracelife.storage.SourcePage
 import dev.tracelife.storage.StoredAnalysisRun
 import dev.tracelife.metrics.RecordMetricReceipt
 import dev.tracelife.profile.ProfileAnalysisTarget
+import dev.tracelife.profile.ProfileMaintenancePlan
+import dev.tracelife.profile.ProfileMaintenanceReference
+import dev.tracelife.profile.ProfileRelationResult
+import dev.tracelife.profile.ProfileMaintenanceProof
 import java.time.Instant
 
 data class AnalysisLimits(
@@ -59,7 +63,7 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS;
+    EXTRACTION, SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN;
 
     val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS || this == METRIC_ANALYSIS
 }
@@ -128,9 +132,15 @@ data class AnalysisCall(
     val reductionScan: ReductionScanResult? = null,
     val reductionScans: List<ReductionScanRef> = emptyList(),
     val metricEvidence: List<RecordMetricReceipt> = emptyList(),
+    val profileMaintenancePlanSha256: String? = null,
+    val profileReference: ProfileMaintenanceReference? = null,
+    val profileRelation: ProfileRelationResult? = null,
+    val profileScan: ReductionScanResult? = null,
+    val profileMaintenanceProof: ProfileMaintenanceProof? = null,
 )
 
-data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList())
+data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),
+    val profileMaintenancePlans: List<ProfileMaintenancePlan> = emptyList())
 enum class AnalysisStatus { READY, NEEDS_REVIEW, NEEDS_RETRY, IN_FLIGHT, STALE, EXPIRED }
 data class AnalysisTask(val stored: StoredAnalysisRun, val state: AnalysisRunState, val status: AnalysisStatus)
 

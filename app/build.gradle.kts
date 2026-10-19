@@ -36,7 +36,8 @@ android {
             val periodReviewEnabled = providers.gradleProperty("traceLifeDeepSeekPeriodReview").orNull == "true"
             val metricEnabled = providers.gradleProperty("traceLifeDeepSeekMetric").orNull == "true"
             val profileEnabled = providers.gradleProperty("traceLifeDeepSeekProfile").orNull == "true"
-            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled) {
+            val maintenanceEnabled = providers.gradleProperty("traceLifeDeepSeekMaintenance").orNull == "true"
+            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled) {
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
                 if (synthesisEnabled) it.systemProperty("traceLife.deepSeekSynthesis", "true")
@@ -44,6 +45,7 @@ android {
                 if (periodReviewEnabled) it.systemProperty("traceLife.deepSeekPeriodReview", "true")
                 if (metricEnabled) it.systemProperty("traceLife.deepSeekMetric", "true")
                 if (profileEnabled) it.systemProperty("traceLife.deepSeekProfile", "true")
+                if (maintenanceEnabled) it.systemProperty("traceLife.deepSeekMaintenance", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
             }

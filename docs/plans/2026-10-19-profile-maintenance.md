@@ -50,4 +50,21 @@
 
 ## 验证记录
 
-完成后记录实际命令、结果、调用次数及未验证范围。
+2026-10-19：新增 47 项离线行为测试及 1 项默认关闭的真实测试。全量运行的 669 项离线测试全部通过；真实调用诊断后补充扫描规则，相关 18 项离线协议／适配器测试再次通过，最终真实案例 1 项通过。lint 无错误，保留 2 项既有依赖升级提示；调试 APK 构建通过。普通测试和 CI 默认跳过 8 项真实 API 测试。
+
+实际验证命令：
+
+```bash
+./gradlew testDebugUnitTest lintDebug assembleDebug -PtraceLifeDeepSeekMaintenance=true
+./gradlew testDebugUnitTest \
+  --tests 'dev.tracelife.analysis.ProfileMaintenanceProtocolTest' \
+  --tests 'dev.tracelife.providers.DeepSeekMaintenanceProtocolTest' \
+  --tests 'dev.tracelife.providers.DeepSeekMaintenanceLiveTest' \
+  lintDebug assembleDebug -PtraceLifeDeepSeekMaintenance=true
+```
+
+第一条全量命令中离线项目全部通过，真实案例曾失败；最终修改后使用第二条命令验证受影响协议及真实案例。另有一次单独真实诊断。三轮真实验证各 3 次，共 9 次请求；前两轮最终核对遭协议拒绝，没有修改画像，第三轮完成关系、扫描、最终重读及原身份更新。具体判定、修正与用量见[DeepSeek 验证](../DEEPSEEK.md#跨任务画像维护真实调用验证)。
+
+旧格式测试覆盖分析 v1–v8、知识 v1–v3 和画像 v1；删除与恢复验证包括相关依赖闭包、无关任务保留、本地较短画像链优先、缺失固定参照及裁掉任务后仍保留非法维护知识的拒绝。稳定操作重试保留后续采用决定，容量失败不留下部分知识或画像。
+
+GitHub CI 由本阶段草稿 PR 记录全量测试、lint 和 APK 的最终提交验证。所有资料均为合成内容，KEY 和完整日志保存在仓库外。前端、实体手机、华为授权健康数据、长期倾向推断及自动后台运行尚未验收；扫描分类和关系判断不承诺零漏判。

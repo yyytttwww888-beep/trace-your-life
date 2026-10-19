@@ -61,7 +61,7 @@ object KnowledgeValidation {
         val value = StoredKnowledgeRevision(idFor(run.id, claimRef), revision, run.id, claimRef, run.source,
             state.request.scope, run.expiresAt, category, claim,
             call.batchKey, call.attempt, call.providerId, call.requestSha256, requireNotNull(call.review), call.evidence,
-            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof, call.metricEvidence)
+            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof, call.metricEvidence, call.profileMaintenanceProof)
         validate(value)
         return value
     }
@@ -73,6 +73,11 @@ object KnowledgeValidation {
         require(value.id == idFor(value.runId, value.claimRef) && value.revision in 1 until Int.MAX_VALUE) { "知识身份或修订无效" }
         require(value.claimRef.claimIndex in 0..19 && digest.matches(value.claimRef.claimSha256)) { "知识陈述身份无效" }
         val proof = value.reductionProof
+        value.profileMaintenanceProof?.let { maintenance ->
+            require(proof == null && value.metricEvidence.isEmpty() && value.category == KnowledgeCategory.INSIGHT)
+            require(maintenance.plan.target == value.claimRef)
+            dev.tracelife.profile.ProfileMaintenanceProtocol.validateProof(maintenance, value.evidence, value.review)
+        }
         require(value.metricEvidence.isEmpty() || value.metricEvidence.size == 1 && value.evidence.isEmpty() && proof == null &&
             value.category == KnowledgeCategory.INSIGHT && value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION) {
             "指标知识只能保存独立指标核对后的可能解释"
@@ -115,14 +120,14 @@ object KnowledgeValidation {
     /** Direct proofs survive an absent task. Reduction publications retain their historical proof,
      * but need the graph to establish that all ancestor feedback dependencies are still present. */
     fun reviewStillCurrent(value: StoredKnowledgeRevision, run: StoredAnalysisRun?): Boolean {
-        if (run == null) return value.reductionProof == null
+        if (run == null) return value.reductionProof == null && value.profileMaintenanceProof == null
         if (run.id != value.runId || run.source != value.source) return false
         return reviewMatchesState(value, AnalysisRunCodec.decode(run.payload))
     }
 
     /** Callers examining a page can decode each retained task once. Null means no retained task. */
     fun reviewMatchesState(value: StoredKnowledgeRevision, state: AnalysisRunState?): Boolean {
-        if (state == null) return value.reductionProof == null
+        if (state == null) return value.reductionProof == null && value.profileMaintenanceProof == null
         val proof = value.reductionProof
         val latest = state.calls.lastOrNull {
             it.status == CallStatus.SUCCEEDED && it.feedbackVersion == value.feedbackVersion &&
@@ -131,7 +136,8 @@ object KnowledgeValidation {
         } ?: return false
         if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
             latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
-            latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence) return false
+            latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence ||
+            latest.profileMaintenanceProof != value.profileMaintenanceProof) return false
         return proof == null || try {
             ReductionReviewProtocol.proof(state, latest) == proof
         } catch (_: IllegalArgumentException) { false }
@@ -149,7 +155,7 @@ object KnowledgeValidation {
 
     /** Every scanned original is retained, even those classified irrelevant to the final statement. */
     fun allEvidence(value: StoredKnowledgeRevision): List<EvidenceReceipt> {
-        val receipts = value.reductionProof?.originalEvidence.orEmpty() + value.evidence
+        val receipts = value.reductionProof?.originalEvidence.orEmpty() + value.profileMaintenanceProof?.originalEvidence.orEmpty() + value.evidence
         require(receipts.groupBy { it.id }.values.all { group -> group.distinct().size == 1 }) { "知识原文引用身份冲突" }
         return receipts.distinctBy { it.id }
     }

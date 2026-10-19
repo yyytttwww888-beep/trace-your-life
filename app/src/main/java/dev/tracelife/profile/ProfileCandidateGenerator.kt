@@ -189,6 +189,7 @@ class ProfileCandidateGenerator(
                     feedback == null -> ProfileCandidateDisposition.AWAITING_CONFIRMATION
                     profile != null && !matches -> ProfileCandidateDisposition.PROFILE_CONFLICT
                     profile != null -> ProfileCandidateDisposition.EXISTING_PROFILE
+                    repository.profileMaintenanceCatalog(target, runId, claim).isNotEmpty() -> ProfileCandidateDisposition.MAINTENANCE_REQUIRED
                     else -> ProfileCandidateDisposition.READY_TO_MATERIALIZE
                 }
                 ProfileCandidateItem(claim, disposition, version, review?.verdict, knowledgeId, linked?.value?.revision,
