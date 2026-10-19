@@ -51,8 +51,8 @@ class ActionTransferTest {
         val snapshot = snapshot(listOf(first, second), listOf(Deletion("synthetic-deleted-action", 2, time)))
         val bytes = encode(snapshot)
         val encoded = JSONObject(bytes.toString(Charsets.UTF_8))
-        assertEquals(5, encoded.getInt("formatVersion"))
-        assertEquals(6, encoded.getInt("sourceSchemaVersion"))
+        assertEquals(6, encoded.getInt("formatVersion"))
+        assertEquals(7, encoded.getInt("sourceSchemaVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(bytes.inputStream()))
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val destination = File(directory, "actions.tlb")
@@ -66,6 +66,7 @@ class ActionTransferTest {
             val json = JSONObject(encode(current).toString(Charsets.UTF_8)).apply {
                 put("formatVersion", version); put("sourceSchemaVersion", version + 1)
                 remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
+                remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")
                 if (version < 4) { remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge") }
                 if (version < 3) { remove("claimFeedback"); remove("deletedClaimFeedback") }
                 if (version < 2) { remove("analysisRuns"); remove("analysisGeneration"); remove("deletedAnalysisRuns") }

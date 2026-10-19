@@ -38,6 +38,7 @@ data class RestorePreview(
     val claimFeedback: Int,
     val knowledge: Int,
     val actions: Int,
+    val profiles: Int,
 )
 
 /**
@@ -77,9 +78,13 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val snapshot = repository.captureSnapshot(attachments)
         val archive = File(directory, "knowledge.zip")
-        val result = KnowledgeArchive.write(snapshot, attachments, archive, options)
-        publish(archive, target, directory) { adjacent, published -> repository.publishSnapshot(snapshot, adjacent, published) }
-        result.copy(bytes = target.length())
+        val written = KnowledgeArchive.writeForPublication(snapshot, attachments, archive, options)
+        publish(archive, target, directory) { adjacent, published ->
+            if (written.profileValidUntil == null) repository.publishSnapshot(snapshot, adjacent, published)
+            else repository.publishDerivedFile(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
+                snapshot.analysisGeneration, written.profileValidUntil, adjacent, published, validFrom = snapshot.capturedAt)
+        }
+        written.result.copy(bytes = target.length())
     }
 
     /** Derived materials only: no whole-store snapshot, model call, record bodies or attachments. */
@@ -130,7 +135,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         val hasData = repository.listRecords(RecordFilter(includeArchived = true, limit = 1)).total > 0 ||
             repository.listTemplates(includeArchived = true).isNotEmpty() || repository.analysisRuns(0, 1).isNotEmpty() ||
             repository.claimFeedbacks(0, 1).isNotEmpty() || repository.knowledgeHeads(0, 1).isNotEmpty() ||
-            repository.actionHeads(0, 1).isNotEmpty()
+            repository.actionHeads(0, 1).isNotEmpty() || repository.profileHeads(0, 1).isNotEmpty()
         if (repository.currentGeneration() != generation || repository.currentAnalysisGeneration() != analysisGeneration) {
             throw StaleSnapshotException("资料在预览期间发生变化，请重新预览")
         }
@@ -140,7 +145,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
             snapshot.attachments.size, snapshot.attachments.sumOf { it.sizeBytes },
             snapshot.deletedRecords.size, snapshot.deletedTemplates.size, digest,
             repository.currentStoreId(), generation, hasData,
-            snapshot.analysisRuns.size, analysisGeneration, snapshot.claimFeedback.size, snapshot.knowledgeHeads.size, snapshot.actionHeads.size,
+            snapshot.analysisRuns.size, analysisGeneration, snapshot.claimFeedback.size, snapshot.knowledgeHeads.size, snapshot.actionHeads.size, snapshot.profileHeads.size,
         )
     }
 

@@ -10,8 +10,11 @@ import dev.tracelife.storage.StoredKnowledgeRevision
 import dev.tracelife.storage.KnowledgeHead
 import dev.tracelife.actions.ActionHead
 import dev.tracelife.actions.StoredActionRevision
+import dev.tracelife.profile.ProfileHead
+import dev.tracelife.profile.StoredProfileRevision
 import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 
 /** Trusted app transfer data, never an unrestricted model-reading interface. */
 data class RepositorySnapshot(
@@ -25,7 +28,7 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 6,
+    val sourceSchemaVersion: Int = 7,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
@@ -37,6 +40,9 @@ data class RepositorySnapshot(
     val actionRevisions: List<StoredActionRevision> = emptyList(),
     val actionHeads: List<ActionHead> = emptyList(),
     val deletedActions: List<Deletion> = emptyList(),
+    val profileRevisions: List<StoredProfileRevision> = emptyList(),
+    val profileHeads: List<ProfileHead> = emptyList(),
+    val deletedProfiles: List<Deletion> = emptyList(),
 )
 
 data class Deletion(val id: String, val lastRevision: Int, val deletedAt: Instant)
@@ -74,11 +80,15 @@ data class ReadingExportOptions(
     val includeAttachments: Boolean = false,
     val pageSize: Int = 50,
     val question: String? = null,
+    val profileZoneId: String = "UTC",
+    val profileRecentDays: Int = 30,
 ) {
     init {
         require(pageSize in 1..100) { "索引分页须为 1 至 100 条" }
         require(question == null || question.length <= 2_000) { "问题过长" }
         require(kind != ReadingPackageKind.EVIDENCE || !question.isNullOrBlank()) { "证据包须注明任务问题" }
+        ZoneId.of(profileZoneId)
+        require(profileRecentDays in 1..366) { "画像近期窗口须为 1 至 366 天" }
     }
 }
 

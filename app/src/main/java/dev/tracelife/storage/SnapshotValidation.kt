@@ -4,6 +4,8 @@ import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.AnalysisRedactionCapacityException
 import dev.tracelife.actions.ActionValidation
+import dev.tracelife.profile.ProfileValidation
+import dev.tracelife.profile.StoredProfileRevision
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.model.TemplateDraft
@@ -19,11 +21,12 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..6) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..7) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
             require(snapshot.sourceSchemaVersion >= 6 || snapshot.actionRevisions.isEmpty() && snapshot.actionHeads.isEmpty() && snapshot.deletedActions.isEmpty()) { "旧版资料不能包含行动" }
+            require(snapshot.sourceSchemaVersion >= 7 || snapshot.profileRevisions.isEmpty() && snapshot.profileHeads.isEmpty() && snapshot.deletedProfiles.isEmpty()) { "旧版资料不能包含画像" }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
             require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
@@ -153,9 +156,27 @@ internal object SnapshotValidation {
             require(snapshot.actionHeads.map { it.id }.toSet().intersect(snapshot.deletedActions.map { it.id }.toSet()).isEmpty()) { "备份同时包含行动及其删除标记" }
             // Actions and follow-up text are independently authored. A missing or deleted
             // origin is a navigation gap, never grounds for discarding the user's text.
+            ProfileValidation.validateCollection(snapshot.profileRevisions, snapshot.profileHeads)
+            require(snapshot.deletedProfiles.size <= ProfileValidation.MAX_DELETIONS &&
+                snapshot.deletedProfiles.map { it.id }.distinct().size == snapshot.deletedProfiles.size) { "画像删除标记过多或重复" }
+            snapshot.deletedProfiles.forEach { id(it.id); require(it.lastRevision in 1 until Int.MAX_VALUE) { "画像删除版本无效" } }
+            require(snapshot.profileHeads.map { it.id }.toSet().intersect(snapshot.deletedProfiles.map { it.id }.toSet()).isEmpty()) { "备份同时包含画像及其删除标记" }
+            validateProfileReferences(snapshot.profileRevisions, snapshot.knowledgeRevisions)
+            // Fixed references can outlive knowledge deletion or a restore that retains a different
+            // local knowledge chain. Missing revisions stay unavailable; independent user text stays.
         } catch (failure: IllegalArgumentException) {
             if (failure is InvalidBackupException) throw failure
             throw InvalidBackupException(failure.message ?: "备份资料无效", failure)
+        }
+    }
+
+    fun validateProfileReferences(profiles: List<StoredProfileRevision>, knowledge: List<StoredKnowledgeRevision>) {
+        val byRevision = knowledge.associateBy { it.id to it.revision }
+        profiles.forEach { profile ->
+            val ref = profile.draft.knowledge
+            byRevision[ref.knowledgeId to ref.revision]?.let { value ->
+                ProfileValidation.validateKnowledge(profile, value)
+            }
         }
     }
 

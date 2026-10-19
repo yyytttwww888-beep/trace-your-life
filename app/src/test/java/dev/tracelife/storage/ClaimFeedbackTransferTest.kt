@@ -100,6 +100,7 @@ class ClaimFeedbackTransferTest {
             remove("claimFeedback"); remove("deletedClaimFeedback")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
             remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
+                remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")
         }
         val expected = snapshot.copy(sourceSchemaVersion = 3, claimFeedback = emptyList(), deletedClaimFeedback = emptyList())
         assertEquals(expected, SnapshotJsonCodec.read(legacy.toString().byteInputStream()))

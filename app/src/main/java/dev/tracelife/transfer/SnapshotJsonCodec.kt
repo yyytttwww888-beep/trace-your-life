@@ -26,6 +26,10 @@ import dev.tracelife.actions.ActionCodec
 import dev.tracelife.actions.ActionHead
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.actions.StoredActionRevision
+import dev.tracelife.profile.ProfileCodec
+import dev.tracelife.profile.ProfileHead
+import dev.tracelife.profile.ProfileValidation
+import dev.tracelife.profile.StoredProfileRevision
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
@@ -36,7 +40,7 @@ import java.time.LocalDate
 
 /** Versioned logical transfer format. Streams belong to the caller; no credentials are serialized. */
 object SnapshotJsonCodec {
-    const val FORMAT_VERSION = 5
+    const val FORMAT_VERSION = 6
     private const val MAX_DEPTH = 16
     internal const val MAX_NODES = 2_000_000L
     private const val MAX_STRING_CHARACTERS = 1_048_576
@@ -65,6 +69,10 @@ object SnapshotJsonCodec {
             } }
             array("actionRevisions", snapshot.actionRevisions) { value(ActionCodec.encode(it)) }
             array("actionHeads", snapshot.actionHeads) { head -> objectValue {
+                field("id", head.id); field("revision", head.revision)
+            } }
+            array("profileRevisions", snapshot.profileRevisions) { value(ProfileCodec.encode(it)) }
+            array("profileHeads", snapshot.profileHeads) { head -> objectValue {
                 field("id", head.id); field("revision", head.revision)
             } }
             array("records", snapshot.records) { record -> objectValue {
@@ -107,6 +115,7 @@ object SnapshotJsonCodec {
             deletions("deletedClaimFeedback", snapshot.deletedClaimFeedback)
             deletions("deletedKnowledge", snapshot.deletedKnowledge)
             deletions("deletedActions", snapshot.deletedActions)
+            deletions("deletedProfiles", snapshot.deletedProfiles)
             array("changes", snapshot.changes) { change -> objectValue {
                 field("id", change.id); field("entityId", change.entityId); field("revision", change.revision)
                 field("kind", change.kind); field("createdAt", change.createdAt.toString())
@@ -132,6 +141,8 @@ object SnapshotJsonCodec {
         checkBackup(if (format < 4) knowledgeFields.none(root::containsKey) else knowledgeFields.all(root::containsKey), "知识字段与资料版本不一致")
         val actionFields = setOf("actionRevisions", "actionHeads", "deletedActions")
         checkBackup(if (format < 5) actionFields.none(root::containsKey) else actionFields.all(root::containsKey), "行动字段与资料版本不一致")
+        val profileFields = setOf("profileRevisions", "profileHeads", "deletedProfiles")
+        checkBackup(if (format < 6) profileFields.none(root::containsKey) else profileFields.all(root::containsKey), "画像字段与资料版本不一致")
         RepositorySnapshot(
             snapshotId = root.string("snapshotId"), storeId = root.string("storeId"), generation = root.long("generation"), capturedAt = root.instant("capturedAt"),
             sourceSchemaVersion = root.int("sourceSchemaVersion"),
@@ -152,6 +163,9 @@ object SnapshotJsonCodec {
             actionRevisions = if (format < 5) emptyList() else root.array("actionRevisions").map { it as StoredActionRevision },
             actionHeads = if (format < 5) emptyList() else root.array("actionHeads").map { it as ActionHead },
             deletedActions = if (format < 5) emptyList() else root.array("deletedActions").map { it as Deletion },
+            profileRevisions = if (format < 6) emptyList() else root.array("profileRevisions").map { it as StoredProfileRevision },
+            profileHeads = if (format < 6) emptyList() else root.array("profileHeads").map { it as ProfileHead },
+            deletedProfiles = if (format < 6) emptyList() else root.array("deletedProfiles").map { it as Deletion },
         )
     } catch (failure: InvalidBackupException) {
         throw failure
@@ -190,10 +204,11 @@ object SnapshotJsonCodec {
     private object AnalysisPayloadShape : Shape
     private object KnowledgePayloadShape : Shape
     private object ActionPayloadShape : Shape
+    private object ProfilePayloadShape : Shape
     private object FeedbackTextShape : Shape
     private data class FeedbackShape(val value: Shape) : Shape
     private class NodeBudget(var remaining: Long = MAX_NODES, var analysisBytes: Long = 0, var feedbackBytes: Long = 0,
-        var knowledgeBytes: Long = 0, var actionBytes: Long = 0)
+        var knowledgeBytes: Long = 0, var actionBytes: Long = 0, var profileBytes: Long = 0)
     private fun obj(vararg fields: Pair<String, Shape>) = ObjectShape(linkedMapOf(*fields))
 
     // Convert each record/template before reading the next item: never retain an entire JSON AST.
@@ -234,6 +249,10 @@ object SnapshotJsonCodec {
             "actionHeads" to ArrayShape(MappedShape(obj("id" to string, "revision" to number)) { value ->
                 value.objectFields().let { ActionHead(it.string("id"), it.int("revision")) }
             }, ActionValidation.MAX_REVISIONS),
+            "profileRevisions" to ArrayShape(ProfilePayloadShape, ProfileValidation.MAX_REVISIONS),
+            "profileHeads" to ArrayShape(MappedShape(obj("id" to string, "revision" to number)) { value ->
+                value.objectFields().let { ProfileHead(it.string("id"), it.int("revision")) }
+            }, ProfileValidation.MAX_REVISIONS),
             "records" to ArrayShape(MappedShape(record, ::parseRecord), 100_000), "templates" to ArrayShape(MappedShape(template, ::parseTemplate), 10_000),
             "attachments" to ArrayShape(MappedShape(attachment) { value -> value.objectFields().let { Attachment(it.string("id"), it.string("displayName"), it.string("mimeType"), it.long("sizeBytes"), it.string("sha256")) } }, 10_000),
             "deletedRecords" to ArrayShape(mappedDeletion(), 100_000), "deletedTemplates" to ArrayShape(mappedDeletion(), 10_000),
@@ -241,9 +260,11 @@ object SnapshotJsonCodec {
             "deletedClaimFeedback" to ArrayShape(mappedDeletion(), ClaimFeedbackValidation.MAX_DELETIONS),
             "deletedKnowledge" to ArrayShape(mappedDeletion(), KnowledgeValidation.MAX_DELETIONS),
             "deletedActions" to ArrayShape(mappedDeletion(), ActionValidation.MAX_DELETIONS),
+            "deletedProfiles" to ArrayShape(mappedDeletion(), ProfileValidation.MAX_DELETIONS),
             "changes" to ArrayShape(MappedShape(change) { value -> value.objectFields().let { ChangeEvent(it.long("id"), it.string("entityId"), it.int("revision"), it.string("kind"), it.instant("createdAt")) } }, 200_000))
             .copy(optional = setOf("analysisGeneration", "analysisRuns", "deletedAnalysisRuns", "claimFeedback", "deletedClaimFeedback",
-                "knowledgeRevisions", "knowledgeHeads", "deletedKnowledge", "actionRevisions", "actionHeads", "deletedActions"))
+                "knowledgeRevisions", "knowledgeHeads", "deletedKnowledge", "actionRevisions", "actionHeads", "deletedActions",
+                "profileRevisions", "profileHeads", "deletedProfiles"))
     }
 
     private fun readValue(reader: JsonReader, depth: Int, shape: Shape, budget: NodeBudget): Any? {
@@ -314,6 +335,16 @@ object SnapshotJsonCodec {
                 checkBackup(budget.actionBytes <= ActionValidation.MAX_BYTES, "行动修订总量超过 16 MiB")
                 ActionCodec.decode(payload)
             }
+            ProfilePayloadShape -> {
+                checkBackup(reader.peek() == JsonToken.STRING, "画像修订须为版本化 JSON 文字")
+                val payload = reader.nextString()
+                checkBackup(payload.length <= ProfileValidation.MAX_REVISION_BYTES, "画像修订过长")
+                val bytes = payload.toByteArray(Charsets.UTF_8).size
+                checkBackup(bytes <= ProfileValidation.MAX_REVISION_BYTES, "画像修订超过大小上限")
+                budget.profileBytes += bytes
+                checkBackup(budget.profileBytes <= ProfileValidation.MAX_BYTES, "画像修订总量超过保存上限")
+                ProfileCodec.decode(payload)
+            }
             Primitive.INTEGER -> {
                 checkBackup(reader.peek() == JsonToken.NUMBER, "资料字段须为整数")
                 reader.nextString().let { value ->
@@ -328,21 +359,23 @@ object SnapshotJsonCodec {
     }
 
     private fun validateWriteBudget(snapshot: RepositorySnapshot) {
-        checkBackup(snapshot.sourceSchemaVersion == 6, "新建备份必须使用当前来源数据库版本")
+        checkBackup(snapshot.sourceSchemaVersion == 7, "新建备份必须使用当前来源数据库版本")
         ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
         checkBackup(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS, "反馈删除标记过多")
         KnowledgeValidation.validateCollection(snapshot.knowledgeRevisions, snapshot.knowledgeHeads)
         checkBackup(snapshot.deletedKnowledge.size <= KnowledgeValidation.MAX_DELETIONS, "知识删除标记过多")
         ActionValidation.validateCollection(snapshot.actionRevisions, snapshot.actionHeads)
         checkBackup(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS, "行动删除标记过多")
+        ProfileValidation.validateCollection(snapshot.profileRevisions, snapshot.profileHeads)
+        checkBackup(snapshot.deletedProfiles.size <= ProfileValidation.MAX_DELETIONS, "画像删除标记过多")
         checkBackup(snapshot.analysisRuns.size <= 100 && snapshot.analysisGeneration >= 0 && snapshot.deletedAnalysisRuns.size <= 100_000, "分析任务数量或代数无效")
         checkBackup(snapshot.analysisRuns.all { it.payload.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024 } &&
             snapshot.analysisRuns.sumOf { it.payload.toByteArray(Charsets.UTF_8).size.toLong() } <= 16L * 1024 * 1024, "分析任务内容超过大小上限")
         checkBackup(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 && snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000, "资料列表过大")
         checkBackup(snapshot.records.all { it.draft.topics.size <= 30 && it.draft.answers.size <= 100 && it.draft.attachmentIds.size <= 20 } && snapshot.templates.all { it.draft.questions.size <= 100 }, "资料字段过多")
-        val nodes = 24L + snapshot.analysisRuns.size * 10L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size +
-            3L * (snapshot.knowledgeHeads.size + snapshot.actionHeads.size) + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
-            snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size + snapshot.deletedClaimFeedback.size + snapshot.deletedKnowledge.size + snapshot.deletedActions.size) + 6L * snapshot.changes.size
+        val nodes = 27L + snapshot.analysisRuns.size * 10L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size + snapshot.profileRevisions.size +
+            3L * (snapshot.knowledgeHeads.size + snapshot.actionHeads.size + snapshot.profileHeads.size) + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
+            snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size + snapshot.deletedClaimFeedback.size + snapshot.deletedKnowledge.size + snapshot.deletedActions.size + snapshot.deletedProfiles.size) + 6L * snapshot.changes.size
         checkBackup(nodes <= MAX_NODES, "资料 JSON 超出结构预算")
     }
 

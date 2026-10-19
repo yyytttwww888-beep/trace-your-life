@@ -27,6 +27,9 @@ import dev.tracelife.model.TemplateDraft
 import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
+import dev.tracelife.profile.ProfileHead
+import dev.tracelife.profile.ProfileValidation
+import dev.tracelife.profile.StoredProfileRevision
 import dev.tracelife.transfer.Deletion
 import dev.tracelife.transfer.InvalidBackupException
 import dev.tracelife.transfer.RepositorySnapshot
@@ -729,6 +732,33 @@ class LifeRepository(
         transaction(db) { ActionStore.delete(db, id, expectedRevision, clock.instant()) }
     }
 
+    fun profileRevision(id: String, revision: Int? = null): StoredProfileRevision? = access { db ->
+        transaction(db) { ProfileStore.revision(db, id, revision) }
+    }
+    fun profileHeads(offset: Int = 0, limit: Int = 100): List<ProfileHead> = access { db -> ProfileStore.heads(db, offset, limit) }
+    fun profileHistory(id: String, offset: Int = 0, limit: Int = 25): List<StoredProfileRevision> = access { db ->
+        transaction(db) { ProfileStore.history(db, id, offset, limit) }
+    }
+    internal fun profileOperation(id: String, operationId: String): StoredProfileRevision? = access { db ->
+        ProfileStore.operation(db, id, operationId)
+    }
+    internal fun saveProfile(value: StoredProfileRevision, expectedRevision: Int?): StoredProfileRevision = access { db ->
+        transaction(db) {
+            ProfileStore.save(db, value, expectedRevision) { ref ->
+                val evaluatedAt = clock.instant()
+                val knowledge = KnowledgeLibrary(this, Clock.fixed(evaluatedAt, clock.zone)).get(ref.knowledgeId, ref.revision)
+                require(knowledge != null && knowledge.isCurrentRevision && knowledge.evidenceState == KnowledgeEvidenceState.CURRENT &&
+                    knowledge.value.publishedAt <= evaluatedAt &&
+                    knowledge.value.category in setOf(KnowledgeCategory.OBSERVATION, KnowledgeCategory.INSIGHT)) {
+                    "画像来源须为当前有效的观察或洞察，请重新查看后选择"
+                }
+            }
+        }
+    }
+    internal fun deleteProfile(id: String, expectedRevision: Int) = access { db ->
+        transaction(db) { ProfileStore.delete(db, id, expectedRevision, clock.instant()) }
+    }
+
     fun deleteKnowledge(id: String, expectedRevision: Int) = access { db ->
         validateId(id)
         require(expectedRevision > 0)
@@ -758,7 +788,8 @@ class LifeRepository(
                     analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"),
                     claimFeedback = allClaimFeedback(db), deletedClaimFeedback = deletions(db, "deleted_claim_feedback"),
                     knowledgeRevisions = allKnowledgeRevisions(db), knowledgeHeads = allKnowledgeHeads(db), deletedKnowledge = deletions(db, "deleted_knowledge"),
-                    actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"))
+                    actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"),
+                    profileRevisions = ProfileStore.allRevisions(db), profileHeads = ProfileStore.allHeads(db), deletedProfiles = deletions(db, "deleted_profiles"))
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -816,9 +847,18 @@ class LifeRepository(
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
         if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1"))) {
-            throw IllegalStateException("目标已有记录、模板、分析、反馈、知识或行动，须明确允许替换后恢复")
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1"))) {
+            throw IllegalStateException("目标已有记录、模板、分析、反馈、知识、行动或画像，须明确允许替换后恢复")
         }
+        val mergedProfileDeletions = mergeDeletions(deletions(db, "deleted_profiles"), snapshot.deletedProfiles)
+        require(mergedProfileDeletions.size <= ProfileValidation.MAX_DELETIONS) { "画像删除标记超过上限" }
+        val deletedProfileIds = mergedProfileDeletions.map { it.id }.toSet()
+        // Metadata and independent user wording survive removal of the referenced knowledge.
+        // Preserve the whole local chain rather than rolling decisions back to imported versions.
+        val profileRevisions = (snapshot.profileRevisions.groupBy { it.id } + ProfileStore.allRevisions(db).groupBy { it.id })
+            .filterKeys { it !in deletedProfileIds }.toSortedMap().values.flatten()
+        val profileHeads = profileRevisions.groupBy { it.id }.map { (id, values) -> ProfileHead(id, values.maxOf { it.revision }) }
+        ProfileValidation.validateCollection(profileRevisions, profileHeads)
         val mergedActionDeletions = mergeDeletions(deletions(db, "deleted_actions"), snapshot.deletedActions)
         require(mergedActionDeletions.size <= ActionValidation.MAX_DELETIONS) { "行动删除标记超过上限" }
         val deletedActionIds = mergedActionDeletions.map { it.id }.toSet()
@@ -926,6 +966,7 @@ class LifeRepository(
         require(mergedKnowledgeDeletions.size <= KnowledgeValidation.MAX_DELETIONS) { "知识删除标记超过上限" }
         val retainedKnowledgeHeads = retainedKnowledge.groupBy { it.id }.map { (id, versions) -> KnowledgeHead(id, versions.maxOf { it.revision }) }
         KnowledgeValidation.validateCollection(retainedKnowledge, retainedKnowledgeHeads)
+        SnapshotValidation.validateProfileReferences(profileRevisions, retainedKnowledge)
         val createdFiles = mutableListOf<File>()
         var committed = false
         try {
@@ -1012,6 +1053,7 @@ class LifeRepository(
                 retainedKnowledgeHeads.forEach { db.insertOrThrow("knowledge_heads", null, values("id" to it.id, "revision" to it.revision)) }
                 mergedKnowledgeDeletions.forEach { insertDeletion(db, "deleted_knowledge", it) }
                 ActionStore.replace(db, actionRevisions, actionHeads, mergedActionDeletions)
+                ProfileStore.replace(db, profileRevisions, profileHeads, mergedProfileDeletions)
                 // A same-store backup may carry a source generation ahead of the target. Move
                 // beyond every imported stamp, not merely +1, so no restored task becomes current
                 // by numeric coincidence. Even empty→empty restore invalidates publication.
@@ -1335,13 +1377,16 @@ class LifeRepository(
         ensureFeedbackBounds(db)
         ensureKnowledgeBounds(db)
         ActionStore.ensureBounds(db)
+        ProfileStore.ensureBounds(db)
         val rowLimits = mapOf("record_revisions" to 100_000, "template_versions" to 10_000,
             "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to 100,
             "deleted_analysis_runs" to 100_000, "claim_feedback" to ClaimFeedbackValidation.MAX_ROWS,
             "deleted_claim_feedback" to ClaimFeedbackValidation.MAX_DELETIONS, "knowledge_revisions" to KnowledgeValidation.MAX_REVISIONS,
             "knowledge_heads" to KnowledgeValidation.MAX_REVISIONS, "deleted_knowledge" to KnowledgeValidation.MAX_DELETIONS,
             "action_revisions" to ActionValidation.MAX_REVISIONS, "action_heads" to ActionValidation.MAX_REVISIONS,
-            "deleted_actions" to ActionValidation.MAX_DELETIONS)
+            "deleted_actions" to ActionValidation.MAX_DELETIONS,
+            "profile_revisions" to ProfileValidation.MAX_REVISIONS, "profile_heads" to ProfileValidation.MAX_REVISIONS,
+            "deleted_profiles" to ProfileValidation.MAX_DELETIONS)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }
@@ -1359,6 +1404,8 @@ class LifeRepository(
             "claim_feedback" to listOf("id", "run_id", "batch_key", "claim_sha256", "source_store_id", "decision", "user_text"),
             "deleted_claim_feedback" to listOf("id"),
             "knowledge_revisions" to listOf("id", "run_id", "feedback_id", "payload"), "knowledge_heads" to listOf("id"), "deleted_knowledge" to listOf("id"),
+            "profile_revisions" to listOf("id", "operation_id", "payload"),
+            "profile_heads" to listOf("id", "knowledge_id", "dimension", "layer"), "deleted_profiles" to listOf("id"),
         )
         var textBytes = 0L
         textColumns.forEach { (table, columns) ->

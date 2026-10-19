@@ -22,7 +22,7 @@
 | 模型指标引用、统计凭据或指标说明发布 | [受控指标分析](docs/METRIC_ANALYSIS.md)、[第九阶段计划](docs/plans/2026-10-19-metric-evidence.md)；保存与导出同时读数据转移接口 |
 | 看板趋势、图表下钻、行动时间线或看板导出 | [看板接口](docs/DASHBOARD.md)、[M4 第一阶段计划](docs/plans/2026-10-19-dashboard-data.md)；导出同时读数据转移接口 |
 | DeepSeek、密钥、网络或自动分批处理 | [DeepSeek 接入](docs/DEEPSEEK.md)、[第二阶段计划](docs/plans/2026-10-17-deepseek-analysis.md)；接口事实变更时核验[官方研究](docs/research/2026-10-17-deepseek-integration.md) |
-| 画像维度、更新、用户反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)；涉及生成和维护时同时读检索协议 |
+| 画像维度、采用、历史、反馈或长期判断 | [画像设计](docs/superpowers/specs/2026-10-16-long-term-personal-profile-design.md)、[画像接口](docs/PERSONAL_PROFILE.md)、[M4 第二阶段计划](docs/plans/2026-10-19-personal-profile.md)；生成和维护同时读检索协议，迁移同时读数据转移接口 |
 | 数据主存、迁移或索引边界 | [ADR 0001](docs/adr/0001-local-source-of-truth.md)、[ADR 0002](docs/adr/0002-controlled-evidence-retrieval.md) |
 | 华为接入、饮食依据、复盘方法或画像研究 | 从[研究导航](docs/README.md)读取对应笔记，再核验会变化的官方资料 |
 | 新功能排期、验收、提交或协作 | [开发路线](docs/ROADMAP.md)、[贡献约定](CONTRIBUTING.md) |

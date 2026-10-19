@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 6) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 7) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -20,15 +20,37 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionFour(db)
         upgradeToVersionFive(db)
         upgradeToVersionSix(db)
+        upgradeToVersionSeven(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..5 && newVersion == 6) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..6 && newVersion == 7) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
         if (oldVersion < 5) upgradeToVersionFive(db)
-        upgradeToVersionSix(db)
+        if (oldVersion < 6) upgradeToVersionSix(db)
+        upgradeToVersionSeven(db)
+    }
+
+    private fun upgradeToVersionSeven(db: SQLiteDatabase) {
+        // No foreign key to knowledge: deleting machine content must preserve user profile notes.
+        db.execSQL("""CREATE TABLE profile_revisions (
+            id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0), operation_id TEXT,
+            payload TEXT NOT NULL, encoded_bytes INTEGER NOT NULL CHECK(encoded_bytes > 0),
+            PRIMARY KEY(id, revision), UNIQUE(id, operation_id))""")
+        db.execSQL("""CREATE TABLE profile_heads (
+            id TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0),
+            knowledge_id TEXT NOT NULL, dimension TEXT NOT NULL, layer TEXT NOT NULL,
+            UNIQUE(knowledge_id, dimension, layer),
+            FOREIGN KEY(id, revision) REFERENCES profile_revisions(id, revision))""")
+        db.execSQL("CREATE TABLE deleted_profiles (id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL, deleted_at TEXT NOT NULL)")
+        listOf("profile_revisions", "profile_heads", "deleted_profiles").forEach { table ->
+            listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
+                db.execSQL("""CREATE TRIGGER analysis_generation_${table}_${operation.lowercase()} AFTER $operation ON $table
+                    BEGIN UPDATE store_state SET analysis_generation = analysis_generation + 1 WHERE singleton = 1; END""")
+            }
+        }
     }
 
     private fun upgradeToVersionSix(db: SQLiteDatabase) {
