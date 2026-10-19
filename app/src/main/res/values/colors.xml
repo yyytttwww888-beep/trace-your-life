@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ui_bg">#F5F6F8</color>
+    <color name="ui_surface">#FFFFFF</color>
+    <color name="ui_field_bg">#FFFFFF</color>
+    <color name="ui_border">#E3E6EB</color>
+    <color name="ui_text">#1B1F24</color>
+    <color name="ui_text_secondary">#5A6472</color>
+    <color name="ui_text_tertiary">#8A94A1</color>
+    <color name="ui_accent">#0F766E</color>
+    <color name="ui_accent_soft">#E2F1EF</color>
+    <color name="ui_on_accent">#FFFFFF</color>
+    <color name="ui_danger">#B3261E</color>
+    <color name="ui_danger_soft">#FBEAE8</color>
+    <color name="ui_ok">#2E7D32</color>
+    <color name="ui_ok_soft">#E6F2E7</color>
+    <color name="ui_warn">#9A6200</color>
+    <color name="ui_warn_soft">#F8F0DC</color>
+    <color name="ui_neutral_soft">#EDF0F4</color>
+</resources>
