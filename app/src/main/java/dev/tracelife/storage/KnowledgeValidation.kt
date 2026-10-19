@@ -14,6 +14,7 @@ import dev.tracelife.analysis.ReductionGraph
 import dev.tracelife.analysis.ReductionReviewProtocol
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.knowledge.KnowledgeCodec
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.model.RecordRevision
 import java.time.Instant
 import java.time.ZoneId
@@ -60,7 +61,7 @@ object KnowledgeValidation {
         val value = StoredKnowledgeRevision(idFor(run.id, claimRef), revision, run.id, claimRef, run.source,
             state.request.scope, run.expiresAt, category, claim,
             call.batchKey, call.attempt, call.providerId, call.requestSha256, requireNotNull(call.review), call.evidence,
-            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof)
+            call.feedbackVersion, topics, createdAt, publishedAt, reductionProof, call.metricEvidence)
         validate(value)
         return value
     }
@@ -72,6 +73,11 @@ object KnowledgeValidation {
         require(value.id == idFor(value.runId, value.claimRef) && value.revision in 1 until Int.MAX_VALUE) { "知识身份或修订无效" }
         require(value.claimRef.claimIndex in 0..19 && digest.matches(value.claimRef.claimSha256)) { "知识陈述身份无效" }
         val proof = value.reductionProof
+        require(value.metricEvidence.isEmpty() || value.metricEvidence.size == 1 && value.evidence.isEmpty() && proof == null &&
+            value.category == KnowledgeCategory.INSIGHT && value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION) {
+            "指标知识只能保存独立指标核对后的可能解释"
+        }
+        value.metricEvidence.forEach { RecordMetricProtocol.validate(it, value.scope, value.source) }
         if (proof == null) {
             require(AnalysisRunCodec.claimSha256(value.claim) == value.claimRef.claimSha256) { "知识陈述摘要不一致" }
         } else {
@@ -89,7 +95,7 @@ object KnowledgeValidation {
         require(value.topics.size <= 30 && value.topics.all { it.isNotBlank() && it == it.trim() && it.length <= 80 }) { "知识主题无效" }
         require(value.category != KnowledgeCategory.INSIGHT || value.feedbackVersion > 0) { "洞察缺少用户确认依赖" }
         require((value.category == KnowledgeCategory.INSIGHT) == (value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)) { "知识类别与来源性质不一致" }
-        require(value.evidence.size in 1..32 && value.evidence.map { it.id }.distinct().size == value.evidence.size) { "知识证据数量或身份无效" }
+        require(value.evidence.size + value.metricEvidence.size in 1..32 && value.evidence.map { it.id }.distinct().size == value.evidence.size) { "知识证据数量或身份无效" }
         allEvidence(value).forEach { ref ->
             SnapshotValidation.id(ref.recordId)
             require(digest.matches(ref.id) && digest.matches(ref.sha256) && ref.revision > 0)
@@ -97,8 +103,8 @@ object KnowledgeValidation {
             require(ref.start >= 0 && ref.end > ref.start && ref.end <= ref.totalCodePoints && ref.end - ref.start <= 4096)
             require(ref.id == AnalysisRunCodec.evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
         }
-        AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES)
-        AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES)
+        AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES, value.metricEvidence)
+        AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES, value.metricEvidence)
         require(value.review.verdict == ReviewVerdict.SUPPORTED) { "只有获得支持的核对可以发布" }
         feedbackDependencies(value).forEach { token ->
             SnapshotValidation.id(token.claim.batchKey)
@@ -125,7 +131,7 @@ object KnowledgeValidation {
         } ?: return false
         if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
             latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
-            latest.review != value.review || latest.evidence != value.evidence) return false
+            latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence) return false
         return proof == null || try {
             ReductionReviewProtocol.proof(state, latest) == proof
         } catch (_: IllegalArgumentException) { false }
@@ -147,6 +153,11 @@ object KnowledgeValidation {
         require(receipts.groupBy { it.id }.values.all { group -> group.distinct().size == 1 }) { "知识原文引用身份冲突" }
         return receipts.distinctBy { it.id }
     }
+
+    /** Raw fragments and program metrics own different proof types but share record dependencies. */
+    fun allSourceRevisions(value: StoredKnowledgeRevision): List<Pair<String, Int>> =
+        (allEvidence(value).map { it.recordId to it.revision } +
+            value.metricEvidence.flatMap { metric -> metric.sources.map { it.recordId to it.revision } }).distinct()
 
     fun encodedBytes(value: StoredKnowledgeRevision): Int = KnowledgeCodec.encode(value).toByteArray(Charsets.UTF_8).size
 
@@ -176,6 +187,12 @@ object KnowledgeValidation {
         validateEvidence(value, records.associateBy { it.id to it.revision })
 
     fun validateEvidence(value: StoredKnowledgeRevision, sources: Map<Pair<String, Int>, RecordRevision>) {
+        value.metricEvidence.forEach { metric ->
+            val originals = metric.sources.map { ref ->
+                requireNotNull(sources[ref.recordId to ref.revision]) { "指标知识缺少原始来源修订" }
+            }
+            RecordMetricProtocol.validate(metric, value.scope, value.source, originals)
+        }
         allEvidence(value).forEach { ref ->
             val record = requireNotNull(sources[ref.recordId to ref.revision]) { "知识证据缺少原始修订" }
             val text = if (ref.field == "body") record.draft.body else requireNotNull(record.draft.answers[ref.field.removePrefix("answer:")]) { "知识证据字段缺失" }

@@ -1,6 +1,8 @@
 package dev.tracelife.transfer
 
 import dev.tracelife.knowledge.KnowledgeCodec
+import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.actions.StoredActionRevision
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.RecordRevision
@@ -90,7 +92,7 @@ object KnowledgeArchive {
                 val paths = included.associate { it.id to recordPath(it) }
                 require(paths.values.distinct().size == paths.size) { "记录路径冲突" }
                 val knowledgePaths = knowledge.entries.associate { it.value.id to knowledgePath(it.value) }
-                val relatedKnowledge = knowledge.entries.flatMap { entry -> KnowledgeValidation.allEvidence(entry.value).map { it.recordId }.distinct().map { it to entry.value } }
+                val relatedKnowledge = knowledge.entries.flatMap { entry -> KnowledgeValidation.allSourceRevisions(entry.value).map { it.first }.distinct().map { it to entry.value } }
                     .groupBy({ it.first }, { it.second })
                 val templatePaths = boundTemplates.associate { (it.id to it.version) to templatePath(it) }
                 included.forEach { record ->
@@ -452,6 +454,21 @@ object KnowledgeArchive {
         selection.entries.forEach { entry ->
             val value = entry.value
             val path = paths.getValue(value.id)
+            val metricLinks = value.metricEvidence.map { metric ->
+                val base = "notes/metrics/${hash(value.id)}/${hash(metric.id)}"
+                archive.text("$base/result.json", AnalysisRunCodec.json(RecordMetricProtocol.map(metric)))
+                archive.text("$base/definition.md", "# 记录覆盖指标口径\n\n" +
+                    "record-coverage v1；单位为记录数与日期天数。每个记录 ID 只计当前修订；精确日期进入每日计数，区间及未知日期单列且不摊到每天。\n\n" +
+                    "零条记录只表示没有精确日期记录，不表示零活动、零睡眠或没有成长。模型只接收程序计算结果，未逐条读取这些记录正文。\n\n" +
+                    "范围：${metric.scope.from} 至 ${metric.scope.through}；时区：${escape(metric.scope.zoneId)}；包含归档：${metric.scope.includeArchived}。完整范围、精确 ID 限定、缺失 ID 与来源修订清单保存在结果 JSON。\n")
+                archive.pages("$base/sources/index.md", "指标完整来源清单", metric.sources.map { source ->
+                    Nav("${source.recordId} · 修订 ${source.revision}", recordPaths.getValue(source.recordId))
+                }, "这些资料参与程序计数；目录不代表模型读取过其正文。空清单同样保留完整查询范围。")
+                archive.pages("$base/index.md", "程序计算指标", listOf(
+                    Nav("口径与限制", "$base/definition.md"), Nav("数值及可复算来源凭据", "$base/result.json"),
+                    Nav("分页来源清单", "$base/sources/index.md")), "类型：程序计算结果；引用：${metric.id}。")
+                "$base/index.md"
+            }
             archive.text(path, buildString {
                 append("# 已发布知识\n\n节点：已保存分析；非独立原始证据。仅说明本阅读包 capturedAt 时点的状态，不随应用变化自动更新。\n\n")
                 append("ID：${escape(value.id)}；修订：${value.revision}；类别：${value.category.name}；陈述性质：${value.claim.kind.name}。\n\n")
@@ -469,7 +486,14 @@ object KnowledgeArchive {
                     append("该条来自周期归并：${proof.scans.size} 批原文筛查覆盖 ${proof.originalEvidence.size} 个登记片段；最终核对取得 ${value.evidence.size} 个筛选片段。筛查分类与最终支持判断分别保存；未直接送入最终核对的片段不能表述为最终模型逐条读过。\n\n")
                 }
                 append("用户决定：${entry.feedbackDecision?.name ?: "未提供"}；反馈版本：${value.feedbackVersion}。独立用户文字未复制。\n\n")
-                append("适用范围仅限已提供片段；没有穷尽反例搜索，也未分析附件，不能将以下原文目录解释为完整生活记录。\n\n")
+                if (value.metricEvidence.isEmpty()) {
+                    append("适用范围仅限已提供片段；没有穷尽反例搜索，也未分析附件，不能将以下原文目录解释为完整生活记录。\n\n")
+                } else {
+                    append("本条核对使用重新计算的记录覆盖指标；没有向模型提供记录正文或附件，记录数量不能证明生活行为或成长。\n\n")
+                    append("## 程序计算依据\n\n")
+                    metricLinks.forEach { append("- ").append(archive.link(path, it, "指标结果、口径与完整来源清单")).append("\n") }
+                    append("\n")
+                }
                 append("核对未知项（不是新增证据）：\n").append(fenced(value.review.unknowns.joinToString("\n")))
                 append("\n## 原始证据定位\n\n片段位置采用 Unicode 码点，起点包含、终点不包含；链接指向原始修订，片段未在知识正文重复复制。\n\n")
                 val scanFindings = value.reductionProof?.scans?.flatMap { it.result.findings }?.associateBy { it.receiptId }.orEmpty()
@@ -513,7 +537,7 @@ object KnowledgeArchive {
         archive.pages("notes/timeline/index.md", "知识分析范围入口", listOf(Nav("跨日期范围", "notes/timeline/intervals/index.md")) + yearLinks,
             "此处按分析计划定位，不以发布时间代替原始记录发生时间；未知日期仍以原始记录为准。")
 
-        notes.flatMap { note -> KnowledgeValidation.allEvidence(note).map { it.recordId }.distinct().map { it to note } }
+        notes.flatMap { note -> KnowledgeValidation.allSourceRevisions(note).map { it.first }.distinct().map { it to note } }
             .groupBy({ it.first }, { it.second }).forEach { (recordId, values) ->
                 val path = "notes/sources/${hash(recordId)}/index.md"
                 notePages(path, "与原始记录相关的已发布知识", values,
@@ -551,7 +575,7 @@ object KnowledgeArchive {
             val value = entry.value
             val json = JSONObject(KnowledgeCodec.encode(value)).put("nodeType", "saved-analysis").put("originalEvidence", false)
                 .put("path", paths.getValue(value.id)).put("feedbackDecision", entry.feedbackDecision?.name ?: JSONObject.NULL)
-                .put("recordPaths", JSONArray(KnowledgeValidation.allEvidence(value).map { it.recordId }.distinct().map { id ->
+                .put("recordPaths", JSONArray(KnowledgeValidation.allSourceRevisions(value).map { it.first }.distinct().map { id ->
                     JSONObject().put("id", id).put("path", recordPaths.getValue(id))
                 })).toString()
             val size = json.toByteArray(Charsets.UTF_8).size + 1
@@ -559,7 +583,7 @@ object KnowledgeArchive {
             if (lines.isNotEmpty() && (lines.size == archive.pageSize || bytes + size > JSON_PAGE_BYTES)) flush()
             lines += json
             targets += paths.getValue(value.id)
-            targets += KnowledgeValidation.allEvidence(value).map { recordPaths.getValue(it.recordId) }
+            targets += KnowledgeValidation.allSourceRevisions(value).map { recordPaths.getValue(it.first) }
             bytes += size
         }
         flush()
@@ -567,7 +591,7 @@ object KnowledgeArchive {
         archive.pages("notes/index.md", "已发布知识入口", listOf(
             Nav("知识主题", "notes/topics/index.md"), Nav("分析范围", "notes/timeline/index.md"), Nav("分页目录", "notes/all/index.md"),
             Nav("精确知识 ID 定位", "indexes/note-ids/index.json"),
-        ), "仅包含 capturedAt 时有效且全部核对原文位于本包范围内的知识。已有判断不能重新计算为独立证据。")
+        ), "仅包含 capturedAt 时有效且全部原文依据、指标期间及指标来源位于本包范围内的知识。已有判断不能重新计算为独立证据。")
     }
 
     private fun recordText(

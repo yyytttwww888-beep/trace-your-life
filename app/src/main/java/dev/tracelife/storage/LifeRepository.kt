@@ -669,6 +669,9 @@ class LifeRepository(
             }
             val feedback = readClaimFeedback(db, AnalysisRunCodec.feedbackId(value.runId, value.claimRef))
             require(value.category != KnowledgeCategory.INSIGHT || feedback?.decision == ClaimFeedbackDecision.CONFIRMED) { "洞察需要用户确认" }
+            // Metrics represent a complete query, including negative/zero results. Recompute
+            // while the publication transaction still owns the current source snapshot.
+            value.metricEvidence.forEach { dev.tracelife.metrics.RecordMetricProtocol.validateCurrent(this, it) }
             val current = readKnowledgeRevision(db, value.id, null)
             // A retry may repeat an already switched head, but never bypass current dependencies.
             if (current != null && sameKnowledgePublication(current, value) && value.createdAt == current.createdAt &&
@@ -680,7 +683,7 @@ class LifeRepository(
             require(value.revision == (expectedRevision?.plus(1) ?: 1)) { "知识新修订无效" }
             if (current == null) require(value.createdAt == value.publishedAt) { "首个知识修订时间不一致" }
             else require(value.createdAt == current.createdAt && value.publishedAt >= current.publishedAt) { "知识修订时间不一致" }
-            val sources = KnowledgeValidation.allEvidence(value).map { it.recordId to it.revision }.distinct().map { (id, revision) ->
+            val sources = KnowledgeValidation.allSourceRevisions(value).map { (id, revision) ->
                 requireNotNull(readRecord(db, id, revision)) { "知识原始证据已不存在" }
             }
             KnowledgeValidation.validateEvidence(value, sources)

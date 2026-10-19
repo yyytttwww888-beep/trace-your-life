@@ -202,7 +202,7 @@ class ControlledReductionReviewTest {
             put("formatVersion", 5)
             val array = getJSONArray("calls")
             repeat(array.length()) { index -> array.getJSONObject(index).apply {
-                listOf("redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove)
+                listOf("metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove)
                 val inputs = getJSONArray("reductionInputs")
                 repeat(inputs.length()) { inputs.getJSONObject(it).remove("includeDerivedFeedback") }
             } }
@@ -300,7 +300,7 @@ class ControlledReductionReviewTest {
         put("formatVersion", 5)
         val calls = getJSONArray("calls")
         repeat(calls.length()) { index -> calls.getJSONObject(index).apply {
-            listOf("redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove)
+            listOf("metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove)
             val inputs = getJSONArray("reductionInputs")
             repeat(inputs.length()) { inputs.getJSONObject(it).remove("includeDerivedFeedback") }
         } }

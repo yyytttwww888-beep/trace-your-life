@@ -73,7 +73,7 @@ class ControlledReductionTest {
         assertNull(call.proposal)
         assertTrue(call.evidence.isEmpty())
         assertEquals(output, call.reductionOutput)
-        assertEquals(6, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(7, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(listOf(first, second), analysis.reductionNode("run", "root").leafRefs)
         assertEquals(3, analysis.reductionNode("run", "root").originalEvidence.size)
         assertThrows(IllegalArgumentException::class.java) { analysis.claimRef("run", "root", 0) }
@@ -248,13 +248,13 @@ class ControlledReductionTest {
         val old = JSONObject(AnalysisRunCodec.encode(state)).apply {
             put("formatVersion", 4)
             val calls = getJSONArray("calls")
-            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
+            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("metricEvidence", "reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
         }
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(old.toString()) }
         val oldLeaves = JSONObject(AnalysisRunCodec.encode(state.copy(calls = state.calls.dropLast(1)))).apply {
             put("formatVersion", 4)
             val calls = getJSONArray("calls")
-            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
+            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("metricEvidence", "reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
         }
         assertEquals(state.calls.dropLast(1), AnalysisRunCodec.decode(oldLeaves.toString()).calls)
     }

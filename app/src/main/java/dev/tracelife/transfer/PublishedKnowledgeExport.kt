@@ -3,6 +3,7 @@ package dev.tracelife.transfer
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.model.RecordRevision
+import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.storage.ClaimFeedbackDecision
 import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.KnowledgeValidation
@@ -43,6 +44,7 @@ internal object PublishedKnowledgeExport {
             return KnowledgeValidation.reviewMatchesState(value, state)
         }
         val stamp = SourceStamp(snapshot.storeId, snapshot.generation)
+        val validatedMetrics = mutableSetOf<String>()
         val omitted = linkedMapOf<String, Int>()
         val selected = snapshot.knowledgeHeads.sortedBy { it.id }.mapNotNull { head ->
             val value = revisions.getValue(head.id to head.revision)
@@ -51,7 +53,7 @@ internal object PublishedKnowledgeExport {
             val deletion = deletedFeedback[feedbackId]
             val token = deletion?.let { it.lastRevision.toLong() + 1 } ?: response?.version?.toLong() ?: 0L
             val dependencies = KnowledgeValidation.feedbackDependencies(value)
-            val allEvidence = KnowledgeValidation.allEvidence(value)
+            val allSources = KnowledgeValidation.allSourceRevisions(value)
             val dependencyDeleted = dependencies.any { AnalysisRunCodec.feedbackId(value.runId, it.claim) in deletedFeedback }
             val dependencyChanged = dependencies.any { dependency ->
                 val current = feedback[AnalysisRunCodec.feedbackId(value.runId, dependency.claim)]
@@ -72,15 +74,19 @@ internal object PublishedKnowledgeExport {
                 value.category == KnowledgeCategory.INSIGHT && response?.decision != ClaimFeedbackDecision.CONFIRMED -> "insight_unconfirmed"
                 !reviewCurrent(value) -> "review_changed"
                 options.scope.topics != null && value.topics.none { it in options.scope.topics } -> "topic"
-                allEvidence.any { records[it.recordId]?.revision != it.revision } -> "evidence_not_current"
-                allEvidence.any { it.recordId !in included } -> "evidence_out_of_scope"
+                allSources.any { (id, revision) -> records[id]?.revision != revision } -> "evidence_not_current"
+                value.metricEvidence.any { !MetricExportScope.contains(options.scope, it.scope) } -> "metric_scope_not_contained"
+                allSources.any { (id, _) -> id !in included } -> "evidence_out_of_scope"
                 else -> null
             }
             if (reason != null) {
                 omitted[reason] = omitted.getOrDefault(reason, 0) + 1
                 null
             } else {
-                KnowledgeValidation.validateEvidence(value, allEvidence.map { records.getValue(it.recordId) }.distinctBy { it.id })
+                KnowledgeValidation.validateEvidence(value, allSources.map { (id, _) -> records.getValue(id) }.distinctBy { it.id })
+                value.metricEvidence.forEach { metric ->
+                    if (validatedMetrics.add(metric.id)) RecordMetricProtocol.validateSnapshot(metric, stamp, currentRecords)
+                }
                 Entry(value, response?.decision)
             }
         }
