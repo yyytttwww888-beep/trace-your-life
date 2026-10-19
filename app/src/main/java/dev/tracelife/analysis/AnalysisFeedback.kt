@@ -6,7 +6,7 @@ import dev.tracelife.storage.StoredClaimFeedback
 import java.time.Clock
 
 /** Evidence validity and user agreement are independent; neither establishes objective truth. */
-enum class FeedbackEvidenceState { CURRENT, STALE, EXPIRED, TASK_UNAVAILABLE }
+enum class FeedbackEvidenceState { CURRENT, STALE, EXPIRED, TASK_UNAVAILABLE, DEPENDENCY_CHANGED }
 data class ClaimFeedbackView(
     val feedback: StoredClaimFeedback,
     val evidenceState: FeedbackEvidenceState,
@@ -17,6 +17,9 @@ data class ClaimFeedbackView(
 class AnalysisFeedback(private val repository: LifeRepository, private val clock: Clock = Clock.systemUTC()) {
     fun forClaim(runId: String, claim: ClaimRef): ClaimFeedbackView? =
         get(AnalysisRunCodec.feedbackId(runId, claim))
+
+    fun forReduction(runId: String, target: ReductionStatementRef): ClaimFeedbackView? =
+        forClaim(runId, ReductionGraph.feedbackRef(target))
 
     fun get(id: String): ClaimFeedbackView? = repository.claimFeedback(id)?.let(::view)
 
@@ -43,6 +46,25 @@ class AnalysisFeedback(private val repository: LifeRepository, private val clock
         return view(repository.saveClaimFeedback(feedback, expectedVersion, expectedRunVersion))
     }
 
+    /** The identity includes the complete root output, while storage checks every ancestor fence. */
+    fun respondReduction(
+        runId: String,
+        target: ReductionStatementRef,
+        expectedRunVersion: Int,
+        decision: ClaimFeedbackDecision,
+        userText: String? = null,
+        expectedVersion: Int? = null,
+    ): ClaimFeedbackView {
+        val run = repository.analysisRun(runId) ?: throw AnalysisTaskUnavailableException()
+        val state = AnalysisRunCodec.decode(run.payload)
+        val call = requireNotNull(state.calls.singleOrNull {
+            it.batchKey == target.root.batchKey && it.attempt == target.root.attempt &&
+                it.purpose == CallPurpose.REDUCTION && it.status == CallStatus.SUCCEEDED
+        }) { "归并陈述已不存在或已清除" }
+        require(ReductionGraph.statementRef(call, target.index) == target) { "归并陈述身份已变化" }
+        return respond(runId, ReductionGraph.feedbackRef(target), expectedRunVersion, decision, userText, expectedVersion)
+    }
+
     /** Maintain independent user text after source loss; storage prevents re-confirming stale evidence. */
     fun update(
         id: String,
@@ -66,6 +88,8 @@ class AnalysisFeedback(private val repository: LifeRepository, private val clock
             run == null -> FeedbackEvidenceState.TASK_UNAVAILABLE
             run.source != feedback.source || run.source != repository.analysisSourceStamp() -> FeedbackEvidenceState.STALE
             run.expiresAt != null && !clock.instant().isBefore(run.expiresAt) -> FeedbackEvidenceState.EXPIRED
+            !repository.claimFeedbackDependenciesCurrent(run.id,
+                ClaimRef(feedback.batchKey, feedback.claimIndex, feedback.claimSha256), run.version) -> FeedbackEvidenceState.DEPENDENCY_CHANGED
             else -> FeedbackEvidenceState.CURRENT
         }
         return ClaimFeedbackView(feedback, validity, run?.version)

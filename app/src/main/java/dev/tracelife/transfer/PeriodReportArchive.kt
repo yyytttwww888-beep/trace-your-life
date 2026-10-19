@@ -8,6 +8,7 @@ import dev.tracelife.reports.PeriodReports
 import dev.tracelife.reports.ReportAnswerRef
 import dev.tracelife.reports.ReportSection
 import dev.tracelife.storage.SourceFragment
+import dev.tracelife.storage.KnowledgeValidation
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -162,7 +163,8 @@ object PeriodReportArchive {
                     .put("userDecision", item.view.userDecision?.name ?: JSONObject.NULL)
                     .put("evidenceTimeClasses", JSONArray(item.evidenceTimeClasses.map { it.name }.sorted()))
                     .put("originalEvidence", false).put("evaluatedAt", report.evaluatedAt.toString()).toString(2))
-                val evidenceEntries = value.evidence.map { receipt ->
+                val scanFindings = value.reductionProof?.scans?.flatMap { it.result.findings }?.associateBy { it.receiptId }.orEmpty()
+                val evidenceEntries = KnowledgeValidation.allEvidence(value).map { receipt ->
                     val evidenceBase = "$base/evidence/${hash(receipt.id)}"
                     val fragments = mutableListOf<Nav>()
                     val digest = MessageDigest.getInstance("SHA-256")
@@ -177,11 +179,16 @@ object PeriodReportArchive {
                         relativeStart = fragment.end - receipt.start
                     }
                     require(digest.digest().hex() == receipt.sha256) { "知识引用原文校验失败" }
+                    val usage = if (value.evidence.any { it.id == receipt.id }) "最终核对原文"
+                        else "分批原文筛查 ${scanFindings[receipt.id]?.classification?.name ?: "未标注"}；未直接提供给最终核对"
                     archive.pages("$evidenceBase/index.md", "原始引用片段", fragments,
-                        "引用 SHA-256：${receipt.sha256}。仅包含审核引用的字符区间，不代表整份原文已读取。")
+                        "引用 SHA-256：${receipt.sha256}。$usage。仅包含审核引用的字符区间，不代表整份原文已读取。")
                     Nav("${receipt.recordId} · ${receipt.field} · ${receipt.start}–${receipt.end}", "$evidenceBase/index.md")
                 }
-                archive.text("$base/statement.md", "# 已发布知识（非原始证据）\n\n${fenced(value.claim.text)}\n类别：${value.category}；证据时间分类：${item.evidenceTimeClasses.joinToString()}。\n")
+                val reviewMethod = value.reductionProof?.let { proof ->
+                    "分批原文筛查：${proof.scans.size} 批、${proof.originalEvidence.size} 个登记片段；最终核对：${value.evidence.size} 个筛选片段。筛查与最终支持判断分别保存，不表示最终模型逐条读过所有原文。"
+                } ?: "通过直接原文核对。"
+                archive.text("$base/statement.md", "# 已发布知识（非原始证据）\n\n${fenced(value.claim.text)}\n类别：${value.category}；证据时间分类：${item.evidenceTimeClasses.joinToString()}。\n\n$reviewMethod\n")
                 archive.pages("$base/index.md", "已发布知识及审核依据", listOf(
                     Nav("陈述", "$base/statement.md"), Nav("完整发布审核副本", "$base/publication.json"), Nav("用户决定与时间状态", "$base/status.json"),
                 ) + evidenceEntries, "保存的分析，不是新增原始证据、事实认证或新的周期判断。")

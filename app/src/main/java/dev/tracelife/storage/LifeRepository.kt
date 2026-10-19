@@ -8,6 +8,9 @@ import dev.tracelife.actions.ActionHead
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.actions.StoredActionRevision
 import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.AnalysisRedactionCapacityException
+import dev.tracelife.analysis.ClaimRef
+import dev.tracelife.analysis.ReductionGraph
 import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.knowledge.KnowledgeLibrary
@@ -513,6 +516,15 @@ class LifeRepository(
         }
     }
 
+    /** A statement's ancestry remains a dependency after its own decision is saved. */
+    fun claimFeedbackDependenciesCurrent(runId: String, claim: ClaimRef, expectedRunVersion: Int): Boolean = access { db ->
+        validateId(runId)
+        transaction(db) {
+            val run = readAnalysisRun(db, runId)
+            run != null && run.version == expectedRunVersion && feedbackDependenciesCurrent(db, run, claim)
+        }
+    }
+
     fun claimFeedbacks(offset: Int = 0, limit: Int = 100): List<StoredClaimFeedback> = access { db ->
         require(offset >= 0 && limit in 1..100) { "反馈分页范围无效" }
         transaction(db) {
@@ -540,7 +552,8 @@ class LifeRepository(
             if (expectedRunVersion != null && run?.version != expectedRunVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
             val sourceState = storeState(db)
             val active = run != null && run.source == SourceStamp(sourceState.first, sourceState.second) &&
-                (run.expiresAt == null || clock.instant() < run.expiresAt)
+                (run.expiresAt == null || clock.instant() < run.expiresAt) &&
+                feedbackDependenciesCurrent(db, run, ClaimRef(value.batchKey, value.claimIndex, value.claimSha256))
             if (active) {
                 if (expectedRunVersion == null) throw RevisionConflictException("当前分析反馈需要预期任务版本")
                 ClaimFeedbackValidation.validateTarget(value, requireNotNull(run))
@@ -561,25 +574,47 @@ class LifeRepository(
         }
     }
 
-    fun deleteClaimFeedback(id: String, expectedVersion: Int) = access { db ->
+    fun deleteClaimFeedback(id: String, expectedVersion: Int): FeedbackDeletionResult = access { db ->
         validateId(id)
         require(expectedVersion in 1 until Int.MAX_VALUE) { "反馈预期版本无效" }
         transaction(db) {
             val current = readClaimFeedback(db, id)
             if (current?.version != expectedVersion) throw RevisionConflictException("反馈已有新版本或不存在")
             require(count(db, "SELECT COUNT(*) FROM deleted_claim_feedback", emptyList()) < ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记达到保存上限" }
-            purgeKnowledge(db, strings(db, "SELECT DISTINCT id FROM knowledge_revisions WHERE feedback_id = ?", id))
+            // Every retained revision can contain wording derived from a parent decision.
+            // Deleting only the current head or its own feedback would leave historical copies.
+            ensureKnowledgeBounds(db)
+            purgeKnowledge(db, allKnowledgeRevisions(db).filter { value ->
+                KnowledgeValidation.feedbackDependencies(value).any { dependency ->
+                    AnalysisRunCodec.feedbackId(value.runId, dependency.claim) == id
+                }
+            }.map { it.id }.distinct())
             db.delete("claim_feedback", "id = ?", arrayOf(id))
             insertDeletion(db, "deleted_claim_feedback", Deletion(id, expectedVersion, clock.instant()))
             val run = readAnalysisRun(db, current.runId)
-            if (run != null) {
-                val redacted = AnalysisRunCodec.redactDeletedFeedback(run, setOf(id), clock.instant())
-                if (redacted == run) bumpFeedbackRun(db, run)
-                else {
-                    validateAnalysisRun(redacted)
-                    db.update("analysis_runs", analysisRunValues(redacted), "id = ?", arrayOf(run.id))
+            val purgedRun = if (run != null) {
+                try {
+                    val redacted = AnalysisRunCodec.redactDeletedFeedback(run, setOf(id), clock.instant())
+                    if (redacted == run) bumpFeedbackRun(db, run)
+                    else {
+                        validateAnalysisRun(redacted)
+                        val otherBytes = db.rawQuery("SELECT COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE id <> ?", arrayOf(run.id))
+                            .use { check(it.moveToFirst()); it.getLong(0) }
+                        if (otherBytes + analysisStorageBytes(redacted) > 16L * 1024 * 1024) throw AnalysisRedactionCapacityException()
+                        db.update("analysis_runs", analysisRunValues(redacted), "id = ?", arrayOf(run.id))
+                    }
+                    null
+                } catch (_: AnalysisRedactionCapacityException) {
+                    // A valid near-limit legacy ledger can grow when redaction introduces pure
+                    // identity fences. Removing the whole task is safer than retaining its text.
+                    require(count(db, "SELECT COUNT(*) FROM deleted_analysis_runs", emptyList()) < 100_000) { "分析任务删除标记达到上限" }
+                    purgeKnowledge(db, strings(db, "SELECT DISTINCT id FROM knowledge_revisions WHERE run_id = ?", run.id))
+                    db.delete("analysis_runs", "id = ?", arrayOf(run.id))
+                    insertDeletion(db, "deleted_analysis_runs", Deletion(run.id, run.version, clock.instant()))
+                    run.id
                 }
-            }
+            } else null
+            FeedbackDeletionResult(purgedRun)
         }
     }
 
@@ -623,11 +658,16 @@ class LifeRepository(
                 value.category, value.topics, value.revision, value.createdAt, value.publishedAt)
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
-            val feedbackId = AnalysisRunCodec.feedbackId(value.runId, value.claimRef)
-            require(!exists(db, "deleted_claim_feedback", "id = ?", feedbackId)) { "已删除的反馈阻止发布" }
-            val feedback = readClaimFeedback(db, feedbackId)
-            if ((feedback?.version ?: 0) != value.feedbackVersion) throw RevisionConflictException("用户反馈已变化，须重新核对")
-            require(feedback == null || feedback.decision == ClaimFeedbackDecision.CONFIRMED) { "用户已纠正、否定或撤回该陈述" }
+            KnowledgeValidation.feedbackDependencies(value).forEach { dependency ->
+                val dependencyId = AnalysisRunCodec.feedbackId(value.runId, dependency.claim)
+                require(!exists(db, "deleted_claim_feedback", "id = ?", dependencyId)) { "已删除的自身或祖先反馈阻止发布" }
+                val response = readClaimFeedback(db, dependencyId)
+                if ((response?.version ?: 0) != dependency.version || response != null && response.source != value.source) {
+                    throw RevisionConflictException("自身或祖先反馈已变化，须重新生成并核对")
+                }
+                require(response == null || response.decision == ClaimFeedbackDecision.CONFIRMED) { "用户已纠正、否定或撤回自身或祖先陈述" }
+            }
+            val feedback = readClaimFeedback(db, AnalysisRunCodec.feedbackId(value.runId, value.claimRef))
             require(value.category != KnowledgeCategory.INSIGHT || feedback?.decision == ClaimFeedbackDecision.CONFIRMED) { "洞察需要用户确认" }
             val current = readKnowledgeRevision(db, value.id, null)
             // A retry may repeat an already switched head, but never bypass current dependencies.
@@ -640,7 +680,7 @@ class LifeRepository(
             require(value.revision == (expectedRevision?.plus(1) ?: 1)) { "知识新修订无效" }
             if (current == null) require(value.createdAt == value.publishedAt) { "首个知识修订时间不一致" }
             else require(value.createdAt == current.createdAt && value.publishedAt >= current.publishedAt) { "知识修订时间不一致" }
-            val sources = value.evidence.map { it.recordId to it.revision }.distinct().map { (id, revision) ->
+            val sources = KnowledgeValidation.allEvidence(value).map { it.recordId to it.revision }.distinct().map { (id, revision) ->
                 requireNotNull(readRecord(db, id, revision)) { "知识原始证据已不存在" }
             }
             KnowledgeValidation.validateEvidence(value, sources)
@@ -783,7 +823,8 @@ class LifeRepository(
         ActionValidation.validateCollection(actionRevisions, actionHeads)
         val mergedRecords = mergeDeletions(deletions(db, "deleted_records"), snapshot.deletedRecords)
         val mergedTemplates = mergeDeletions(deletions(db, "deleted_templates"), snapshot.deletedTemplates)
-        val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns)
+        val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns).toMutableList()
+        require(mergedAnalyses.size <= 100_000) { "分析任务删除标记超过上限" }
         val mergedFeedbackDeletions = mergeDeletions(deletions(db, "deleted_claim_feedback"), snapshot.deletedClaimFeedback)
         require(mergedFeedbackDeletions.size <= ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记超过保存上限" }
         val deletedFeedbackIds = mergedFeedbackDeletions.map { it.id }.toSet()
@@ -809,10 +850,20 @@ class LifeRepository(
         val importedTemplateDeletions = snapshot.deletedTemplates.associateBy { it.id }
         val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
             mergedTemplates.any { importedTemplateDeletions[it.id] != it }
-        val deletedAnalysisIds = mergedAnalyses.map { it.id }.toSet()
+        val deletedAnalysisIds = mergedAnalyses.map { it.id }.toMutableSet()
         val feedbackByRun = feedback.groupBy { it.runId }
-        val analyses = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
-            .map { AnalysisRunCodec.redactDeletedFeedback(it, deletedFeedbackIds, clock.instant()) }
+        var capacityPurgedAnalysisRuns = 0
+        val analysisCandidates = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
+        val originalAnalyses = analysisCandidates.associateBy { it.id }
+        fun discardForCapacity(run: StoredAnalysisRun) {
+            require(mergedAnalyses.size < 100_000) { "分析任务删除标记达到上限" }
+            val original = originalAnalyses.getValue(run.id)
+            val lastVersion = maxOf(original.version, readAnalysisRun(db, run.id)?.version ?: 0)
+            mergedAnalyses += Deletion(run.id, lastVersion, clock.instant())
+            deletedAnalysisIds += run.id
+            capacityPurgedAnalysisRuns++
+        }
+        val redactedAnalyses = analysisCandidates
             .filter { run ->
                 // A valid older backup can predate the claim a user has since corrected. Keep
                 // the independent feedback and omit only that incompatible historical task.
@@ -822,6 +873,25 @@ class LifeRepository(
                     related.all { ClaimFeedbackValidation.matchesTarget(it, run, state) }
                 }
             }
+            .mapNotNull { run ->
+                try { AnalysisRunCodec.redactDeletedFeedback(run, deletedFeedbackIds, clock.instant()) }
+                catch (_: AnalysisRedactionCapacityException) { discardForCapacity(run); null }
+            }
+        // Evaluate aggregate capacity only after all redactions and compatibility exclusions.
+        // Later removals may free enough space; input order must not cause needless tombstones.
+        var analysisBytes = redactedAnalyses.sumOf(::analysisStorageBytes)
+        if (analysisBytes > 16L * 1024 * 1024) {
+            redactedAnalyses.map { it to analysisStorageBytes(it) - analysisStorageBytes(originalAnalyses.getValue(it.id)) }
+                .filter { it.second > 0 }.sortedWith(compareByDescending<Pair<StoredAnalysisRun, Long>> { it.second }.thenBy { it.first.id })
+                .forEach { (run, _) ->
+                    if (analysisBytes > 16L * 1024 * 1024) {
+                        discardForCapacity(run)
+                        analysisBytes -= analysisStorageBytes(run)
+                    }
+                }
+        }
+        require(analysisBytes <= 16L * 1024 * 1024) { "分析任务超过本地保存上限" }
+        val analyses = redactedAnalyses.filterNot { it.id in deletedAnalysisIds }
         // Present heads are never rolled back by an older backup. Their entire immutable chain
         // wins; if replacement sources cannot support it, retain a deletion fence instead.
         ensureKnowledgeBounds(db)
@@ -835,7 +905,9 @@ class LifeRepository(
         candidateKnowledge.toSortedMap().forEach { (id, revisions) ->
             if (id !in knownKnowledgeDeletions) {
                 val forbidden = hasAdditionalDeletions || revisions.any { value ->
-                    value.runId in deletedAnalysisIds || AnalysisRunCodec.feedbackId(value.runId, value.claimRef) in deletedFeedbackIds
+                    value.runId in deletedAnalysisIds || KnowledgeValidation.feedbackDependencies(value).any { dependency ->
+                        AnalysisRunCodec.feedbackId(value.runId, dependency.claim) in deletedFeedbackIds
+                    }
                 }
                 val sourcesRetained = !forbidden && revisions.all { value ->
                     try { KnowledgeValidation.validateEvidence(value, recordsByRevision); true } catch (_: IllegalArgumentException) { false }
@@ -943,7 +1015,8 @@ class LifeRepository(
                 require(generationFloor < Long.MAX_VALUE) { "来源代数达到上限，无法安全恢复" }
                 db.execSQL("UPDATE store_state SET generation = ?, analysis_generation = analysis_generation + 1 WHERE singleton = 1", arrayOf(generationFloor + 1))
                 RestoreResult(records.map { it.id }.distinct().size, records.size, templates.map { it.id }.distinct().size,
-                    attachments.size, snapshot.records.map { it.id }.distinct().count { it in recordTombstones }, storeState(db).second)
+                    attachments.size, snapshot.records.map { it.id }.distinct().count { it in recordTombstones }, storeState(db).second,
+                    capacityPurgedAnalysisRuns)
             }
             committed = true
             // Cleanup is recoverable after the authoritative commit; failure here must not report
@@ -1099,6 +1172,9 @@ class LifeRepository(
         AnalysisRunCodec.validateStored(run)
     }
 
+    private fun analysisStorageBytes(run: StoredAnalysisRun): Long =
+        run.payload.toByteArray(Charsets.UTF_8).size.toLong() + AnalysisRunCodec.reservedResponseBytes(run)
+
     private fun analysisRunValues(run: StoredAnalysisRun) = values(
         "id" to run.id, "version" to run.version, "source_store_id" to run.source.storeId, "source_generation" to run.source.generation,
         "created_at" to timestamp(run.createdAt), "updated_at" to timestamp(run.updatedAt), "expires_at" to run.expiresAt?.let(::timestamp), "payload" to run.payload,
@@ -1164,6 +1240,18 @@ class LifeRepository(
 
     private fun sameKnowledgePublication(a: StoredKnowledgeRevision, b: StoredKnowledgeRevision): Boolean =
         a == b.copy(revision = a.revision, createdAt = a.createdAt, publishedAt = a.publishedAt)
+
+    private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
+        val dependencies = try {
+            ReductionGraph.feedbackDependencies(AnalysisRunCodec.decode(run.payload), claim)
+        } catch (_: IllegalArgumentException) { return false }
+        return dependencies.all { dependency ->
+            val id = AnalysisRunCodec.feedbackId(run.id, dependency.claim)
+            val response = readClaimFeedback(db, id)
+            !exists(db, "deleted_claim_feedback", "id = ?", id) && (response?.version ?: 0) == dependency.version &&
+                (response == null || response.source == run.source && response.decision == ClaimFeedbackDecision.CONFIRMED)
+        }
+    }
 
     private fun purgeKnowledge(db: SQLiteDatabase, ids: List<String>) {
         val unique = ids.distinct()

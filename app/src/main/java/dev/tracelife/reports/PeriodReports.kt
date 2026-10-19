@@ -11,6 +11,7 @@ import dev.tracelife.model.Occurrence
 import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.storage.AnalysisQuery
+import dev.tracelife.storage.KnowledgeValidation
 import dev.tracelife.storage.LifeRepository
 import dev.tracelife.storage.SourceDescriptor
 import dev.tracelife.storage.SourceFieldKind
@@ -128,7 +129,7 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
                 invalid++
                 return@scanCurrent
             }
-            val evidenceSources = view.value.evidence.map { sources[it.recordId]?.takeIf { record -> record.revision == it.revision } }
+            val evidenceSources = KnowledgeValidation.allEvidence(view.value).map { sources[it.recordId]?.takeIf { record -> record.revision == it.revision } }
             if (evidenceSources.any { it == null }) {
                 outside++
                 return@scanCurrent
@@ -190,7 +191,7 @@ class PeriodReports(private val repository: LifeRepository, private val clock: C
         val view = knowledge.get(ref.id, ref.revision)
         if (view == null || !view.isCurrentRevision || view.evidenceState != KnowledgeEvidenceState.CURRENT)
             throw StaleSnapshotException("报告知识已失效，请重新生成")
-        val receipt = requireNotNull(view.value.evidence.singleOrNull { it.id == evidenceId }) { "证据不属于本次知识核对" }
+        val receipt = requireNotNull(KnowledgeValidation.allEvidence(view.value).singleOrNull { it.id == evidenceId }) { "证据不属于本次知识核对" }
         require(start < receipt.end - receipt.start) { "证据分片超出引用范围" }
         val absoluteStart = receipt.start + start
         val count = minOf(maxCodePoints, receipt.end - absoluteStart)

@@ -101,7 +101,7 @@ val result = app.analysisProcessor.process(
 | `STALE` / `EXPIRED` | 来源变化或任务过期，建立新任务 |
 | `NO_DATA` / `TASK_UNAVAILABLE` / `CONFLICT` | 无资料、任务已删除或并发冲突，需要对应处理 |
 
-当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，整体原文核对与画像仍待实现。
+当前未安排 Android 定时工作，也不会保存记录后自动联网。上述分批提取输出描述具体观察、方法或可能解释，并保留反例与缺口；提取本身不会发布知识。语义核对与用户纠正通过[独立接口](CLAIM_REVIEW.md)执行，通过检查后再由[知识发布接口](KNOWLEDGE.md)保存。[自动整理器](PERIOD_REFLECTION.md)可在共享请求上限下串起提取、核对和发布；另有[有界综合接口](SYNTHESIS_ACTIONS.md)对照多条原文并提出待确认解释，多个综合批次通过[分层周期草稿](PERIOD_REDUCTION.md)继续归并，归并陈述可继续通过[周期原文核对与发布](PERIOD_REVIEW.md)，长期画像仍待实现。
 
 ## 综合真实调用验证
 
@@ -130,3 +130,17 @@ val result = app.analysisProcessor.process(
 ```
 
 本开关最多启用两次付费请求，普通测试与 CI 默认跳过且不读取 KEY。沿用仓库外密钥文件；JVM 使用临时包装密钥，测试后清理临时数据库和凭据副本，不打印模型正文或 KEY。归并提示词与原文整理提示词分开，完整请求计量相同；接口及限制见[分层周期草稿](PERIOD_REDUCTION.md)。
+
+## 周期原文核对真实调用验证
+
+2026-10-19 显式执行 `DeepSeekPeriodReviewLiveTest`，1 项通过、0 失败、0 跳过。两条合成自述均提到完成一个小练习，并明确不证明方法有效；草稿和原文综合叶由测试构造，测试程序模拟用户明确确认。真实 DeepSeek 扫描两份原文，再独立重读两份相关原文，返回支持，随后通过生产知识发布事务保存一条 `INSIGHT`。
+
+共 2 次真实请求、无重试：扫描实际为 1,339 输入／240 输出 token，最终核对为 2,186 输入／171 输出 token，均在登记预算内。仅验证这组合成资料的扫描、最终核对、确认依赖与发布链；不代表原文提取／归并质量、反例召回率、总体分析准确率或实体手机验收。没有发送真实个人资料。
+
+```bash
+./gradlew testDebugUnitTest \
+  --tests 'dev.tracelife.providers.DeepSeekPeriodReviewLiveTest' \
+  -PtraceLifeDeepSeekPeriodReview=true
+```
+
+本开关最多发起两次付费请求，普通测试与 CI 默认跳过且不读取 KEY。沿用仓库外凭据路径与临时测试包装密钥，结束后清理临时数据库和密钥副本，只记录安全计数和用量。扫描、最终核对分别使用独立提示词及严格输出解析；接口见[周期原文核对与发布](PERIOD_REVIEW.md)。

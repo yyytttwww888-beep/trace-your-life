@@ -7,6 +7,7 @@ import dev.tracelife.analysis.AnalysisFeedback
 import dev.tracelife.analysis.AutomaticOrganizer
 import dev.tracelife.analysis.PeriodSynthesisProcessor
 import dev.tracelife.analysis.PeriodReductionProcessor
+import dev.tracelife.analysis.PeriodReductionReviewProcessor
 import dev.tracelife.actions.ActionExperiments
 import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.metrics.RecordMetrics
@@ -32,6 +33,7 @@ class TraceLifeApplication : Application() {
     val automaticOrganizer by lazy { AutomaticOrganizer(repository, analysis, analysisProcessor, knowledge) }
     val periodSynthesis by lazy { PeriodSynthesisProcessor(analysis) }
     val periodReduction by lazy { PeriodReductionProcessor(analysis) }
+    val periodReview by lazy { PeriodReductionReviewProcessor(analysis) }
     val actions by lazy { ActionExperiments(repository) }
     val periodReports by lazy { PeriodReports(repository) }
     val periodDrafts by lazy { PeriodReductionReports(repository, analysis) }

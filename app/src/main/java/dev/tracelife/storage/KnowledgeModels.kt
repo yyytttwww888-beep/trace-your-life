@@ -4,6 +4,7 @@ import dev.tracelife.analysis.ClaimRef
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.EvidenceReceipt
 import dev.tracelife.analysis.ProposedClaim
+import dev.tracelife.analysis.ReductionReviewProof
 import java.time.Instant
 
 enum class KnowledgeCategory { OBSERVATION, KNOWLEDGE_NOTE, INSIGHT }
@@ -29,6 +30,7 @@ data class StoredKnowledgeRevision(
     val topics: Set<String>,
     val createdAt: Instant,
     val publishedAt: Instant,
+    val reductionProof: ReductionReviewProof? = null,
 )
 
 data class KnowledgeHead(val id: String, val revision: Int)

@@ -3,12 +3,15 @@ package dev.tracelife.storage
 import android.util.JsonWriter
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
-import dev.tracelife.analysis.CallStatus
 import dev.tracelife.analysis.ClaimRef
+import dev.tracelife.analysis.ReductionGraph
 import java.io.StringWriter
 import java.time.Instant
 
 enum class ClaimFeedbackDecision { CONFIRMED, CORRECTED, REJECTED, WITHDRAWN }
+
+/** A full ledger may need task-level removal to guarantee that deleted text stays erased. */
+data class FeedbackDeletionResult(val purgedAnalysisRunId: String? = null)
 
 /** User authority is independent of model wording and survives deletion of its original sources.
  * [userText] is only explicitly submitted user text, never an automatic copy of a model claim. */
@@ -44,14 +47,12 @@ internal object ClaimFeedbackValidation {
     }
 
     fun validateTarget(value: StoredClaimFeedback, run: StoredAnalysisRun, state: AnalysisRunState = AnalysisRunCodec.decode(run.payload)) {
-        require(matchesTarget(value, run, state)) { "反馈来源或目标与已保存的提取结论不一致" }
+        require(matchesTarget(value, run, state)) { "反馈来源或目标与已保存的陈述身份不一致" }
     }
 
     fun matchesTarget(value: StoredClaimFeedback, run: StoredAnalysisRun, state: AnalysisRunState): Boolean {
         if (value.runId != run.id || value.source != run.source) return false
-        val call = state.calls.singleOrNull { it.batchKey == value.batchKey && it.status == CallStatus.SUCCEEDED && it.purpose.producesClaims }
-        val claim = call?.proposal?.claims?.getOrNull(value.claimIndex)
-        return claim != null && AnalysisRunCodec.claimSha256(claim) == value.claimSha256
+        return ReductionGraph.matchesFeedbackTarget(state, ClaimRef(value.batchKey, value.claimIndex, value.claimSha256))
     }
 
     /** Same JSON field order and escaping in storage budgets and portable backup output. */

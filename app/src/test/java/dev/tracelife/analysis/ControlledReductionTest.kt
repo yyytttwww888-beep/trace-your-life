@@ -73,7 +73,7 @@ class ControlledReductionTest {
         assertNull(call.proposal)
         assertTrue(call.evidence.isEmpty())
         assertEquals(output, call.reductionOutput)
-        assertEquals(5, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(6, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(listOf(first, second), analysis.reductionNode("run", "root").leafRefs)
         assertEquals(3, analysis.reductionNode("run", "root").originalEvidence.size)
         assertThrows(IllegalArgumentException::class.java) { analysis.claimRef("run", "root", 0) }
@@ -94,7 +94,7 @@ class ControlledReductionTest {
         assertEquals(listOf(a, b, c), root.leafRefs)
         assertEquals(4, root.originalEvidence.size)
         assertEquals(2, root.inputs.size)
-        assertEquals(2, root.inputs.flatMap { it.feedbackTokens }.size)
+        assertEquals(3, root.inputs.flatMap { it.feedbackTokens }.size)
         val material = JSONObject(provider.requests.single().payloadJson).getJSONArray("derivedInputs").getJSONObject(0)
         assertTrue(material.getJSONObject("content").has("statements"))
         assertEquals(2, material.getJSONObject("provenance").getInt("leafBatches"))
@@ -248,13 +248,13 @@ class ControlledReductionTest {
         val old = JSONObject(AnalysisRunCodec.encode(state)).apply {
             put("formatVersion", 4)
             val calls = getJSONArray("calls")
-            repeat(calls.length()) { calls.getJSONObject(it).apply { remove("reductionInputs"); remove("reductionOutput") } }
+            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
         }
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(old.toString()) }
         val oldLeaves = JSONObject(AnalysisRunCodec.encode(state.copy(calls = state.calls.dropLast(1)))).apply {
             put("formatVersion", 4)
             val calls = getJSONArray("calls")
-            repeat(calls.length()) { calls.getJSONObject(it).apply { remove("reductionInputs"); remove("reductionOutput") } }
+            repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
         }
         assertEquals(state.calls.dropLast(1), AnalysisRunCodec.decode(oldLeaves.toString()).calls)
     }

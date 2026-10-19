@@ -4,6 +4,8 @@ import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.AnalysisTaskUnavailableException
 import dev.tracelife.analysis.ClaimRef
+import dev.tracelife.analysis.ReductionGraph
+import dev.tracelife.analysis.ReductionStatementRef
 import dev.tracelife.storage.ClaimFeedbackDecision
 import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.KnowledgeValidation
@@ -54,6 +56,19 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
     fun publish(
         runId: String, claim: ClaimRef, reviewKey: String, category: KnowledgeCategory,
         expectedRunVersion: Int, expectedRevision: Int? = null, topics: Set<String> = emptySet(),
+    ): StoredKnowledgeRevision = publishValue(runId, claim, reviewKey, category, expectedRunVersion, expectedRevision, topics, null)
+
+    /** Explicitly selected reduction statement; confirmation and complete original review remain
+     * separate requirements. This never approves, rewrites or chooses a statement for the user. */
+    fun publishReduction(
+        runId: String, target: ReductionStatementRef, reviewKey: String,
+        expectedRunVersion: Int, expectedRevision: Int? = null, topics: Set<String> = emptySet(),
+    ): StoredKnowledgeRevision = publishValue(runId, ReductionGraph.feedbackRef(target), reviewKey, KnowledgeCategory.INSIGHT,
+        expectedRunVersion, expectedRevision, topics, target)
+
+    private fun publishValue(
+        runId: String, claim: ClaimRef, reviewKey: String, category: KnowledgeCategory,
+        expectedRunVersion: Int, expectedRevision: Int?, topics: Set<String>, reductionTarget: ReductionStatementRef?,
     ): StoredKnowledgeRevision {
         require(expectedRevision == null || expectedRevision in 1 until Int.MAX_VALUE - 1)
         val run = repository.analysisRun(runId) ?: throw AnalysisTaskUnavailableException()
@@ -61,6 +76,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
         val now = clock.instant()
         val value = KnowledgeValidation.fromRun(run, claim, reviewKey, category, topics,
             (expectedRevision ?: 0) + 1, previous?.createdAt ?: now, now)
+        require(value.reductionProof?.target == reductionTarget) { "归并洞察须通过明确的归并目标发布入口" }
         return repository.publishKnowledge(value, expectedRevision, expectedRunVersion)
     }
 
@@ -142,13 +158,10 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
         states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?> = mutableMapOf()): KnowledgeView {
         val id = AnalysisRunCodec.feedbackId(value.runId, value.claimRef)
         val feedback = repository.claimFeedback(id)
-        val token = repository.claimFeedbackVersion(id)
         val state = when {
             value.source != source -> KnowledgeEvidenceState.STALE
             value.expiresAt != null && !now.isBefore(value.expiresAt) -> KnowledgeEvidenceState.EXPIRED
-            token != value.feedbackVersion || feedback == null && token > 0 ||
-                feedback != null && feedback.decision != ClaimFeedbackDecision.CONFIRMED ||
-                value.category == KnowledgeCategory.INSIGHT && feedback?.decision != ClaimFeedbackDecision.CONFIRMED ->
+            !feedbackCurrent(value) ->
                 KnowledgeEvidenceState.FEEDBACK_CHANGED
             !reviewCurrent(value, states) -> KnowledgeEvidenceState.REVIEW_CHANGED
             else -> KnowledgeEvidenceState.CURRENT
@@ -156,11 +169,20 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
         return KnowledgeView(value, currentRevision, state, feedback?.decision)
     }
 
+    private fun feedbackCurrent(value: StoredKnowledgeRevision): Boolean = KnowledgeValidation.feedbackDependencies(value).all { dependency ->
+        val id = AnalysisRunCodec.feedbackId(value.runId, dependency.claim)
+        val feedback = repository.claimFeedback(id)
+        val token = repository.claimFeedbackVersion(id)
+        token == dependency.version && (feedback != null || token == 0) &&
+            (feedback == null || feedback.source == value.source && feedback.decision == ClaimFeedbackDecision.CONFIRMED) &&
+            (dependency.claim != value.claimRef || value.category != KnowledgeCategory.INSIGHT || feedback?.decision == ClaimFeedbackDecision.CONFIRMED)
+    }
+
     private fun reviewCurrent(value: StoredKnowledgeRevision, states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?>): Boolean {
         if (!states.containsKey(value.runId)) states[value.runId] = repository.analysisRun(value.runId)?.let {
             it.source to AnalysisRunCodec.decode(it.payload)
         }
-        val state = states[value.runId] ?: return true
+        val state = states[value.runId] ?: return KnowledgeValidation.reviewMatchesState(value, null)
         return state.first == value.source && KnowledgeValidation.reviewMatchesState(value, state.second)
     }
 

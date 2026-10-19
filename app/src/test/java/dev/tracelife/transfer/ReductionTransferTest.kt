@@ -67,7 +67,7 @@ class ReductionTransferTest {
         val json = JSONObject(bytes.toString(Charsets.UTF_8))
         assertEquals(5, json.getInt("formatVersion"))
         assertEquals(6, json.getInt("sourceSchemaVersion"))
-        assertEquals(5, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
+        assertEquals(6, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(bytes.inputStream()))
         val archive = File(workspace, "reduction.tlb")
         BackupArchive.write(snapshot, directory(), archive, password)
@@ -206,6 +206,49 @@ class ReductionTransferTest {
         } }
     }
 
+    @Test fun `root feedback keeps independent wording after parent erasure and old backup restoration`() {
+        val parent = fixture()
+        val feedback = AnalysisFeedback(repository, clock)
+        val root = ReductionGraph.statementRef(state().calls.single { it.batchKey == "root" }, 0)
+        val own = feedback.respondReduction("run", root, analysis.task("run").stored.version,
+            ClaimFeedbackDecision.CONFIRMED, "合成周期用户独立确认文字").feedback
+        val old = repository.captureSnapshot(directory())
+        val before = state().calls
+        val erased = feedback.forClaim("run", parent)!!.feedback
+        feedback.delete(erased.id, erased.version)
+        assertDescendantsErased(before)
+        assertEquals(FeedbackEvidenceState.DEPENDENCY_CHANGED, feedback.get(own.id)!!.evidenceState)
+        val maintained = feedback.update(own.id, own.version, null, ClaimFeedbackDecision.WITHDRAWN,
+            "合成周期用户后来独立撤回文字").feedback
+        repository.restoreSnapshot(old, directory(), repository.currentGeneration(), replaceExisting = true)
+        assertEquals(maintained, feedback.get(own.id)!!.feedback)
+        assertFalse(repository.analysisRun("run")!!.payload.contains(derivedMarker))
+        assertIndependentText()
+        val snapshot = repository.captureSnapshot(directory())
+        assertEquals(snapshot, SnapshotJsonCodec.read(ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }
+            .toByteArray().inputStream()))
+    }
+
+    @Test fun `new intermediate feedback invalidates old ancestor zero fence and storage blocks reconfirming root`() {
+        fixture()
+        val feedback = AnalysisFeedback(repository, clock)
+        val root = ReductionGraph.statementRef(state().calls.single { it.batchKey == "root" }, 0)
+        val middle = ReductionGraph.statementRef(state().calls.single { it.batchKey == "intermediate" }, 0)
+        val own = feedback.respondReduction("run", root, analysis.task("run").stored.version,
+            ClaimFeedbackDecision.CONFIRMED, "合成根结论确认").feedback
+        assertEquals(FeedbackEvidenceState.CURRENT, feedback.get(own.id)!!.evidenceState)
+        feedback.respondReduction("run", middle, analysis.task("run").stored.version,
+            ClaimFeedbackDecision.CONFIRMED, "合成中间层后来确认")
+        assertEquals(FeedbackEvidenceState.DEPENDENCY_CHANGED, feedback.get(own.id)!!.evidenceState)
+        val withdrawn = feedback.update(own.id, own.version, analysis.task("run").stored.version,
+            ClaimFeedbackDecision.WITHDRAWN, "合成撤回根结论").feedback
+        assertThrows(IllegalArgumentException::class.java) {
+            repository.saveClaimFeedback(withdrawn.copy(version = withdrawn.version + 1,
+                decision = ClaimFeedbackDecision.CONFIRMED), withdrawn.version, analysis.task("run").stored.version)
+        }
+        assertEquals(withdrawn, repository.claimFeedback(own.id))
+    }
+
     private fun fixture(parentFeedback: Boolean = true): ClaimRef {
         listOf("a", "b", "c").forEach { id -> repository.createRecord(RecordDraft("合成原文 $id：学习练习的观察。", Occurrence(day)), id) }
         analysis.start(AnalysisRequest("合成周期对照", scope), "run")
@@ -239,7 +282,8 @@ class ReductionTransferTest {
             val tokens = ReductionGraph.claimRefs(current.calls, ref).map { claim ->
                 ReductionFeedbackToken(claim, repository.claimFeedbackVersion(AnalysisRunCodec.feedbackId("run", claim)))
             }
-            ReductionGraph.input(ref, parent.requestSha256, tokens)
+            // Exercise compatibility fences for graphs created before derived feedback existed.
+            ReductionGraph.input(ref, parent.requestSha256, tokens, includeDerivedFeedback = false)
         }
         val call = AnalysisCall(key, 1, "synthetic-reduction-provider", AnalysisRunCodec.sha256("synthetic-request-$key"),
             256, 256, emptyList(), now, CallStatus.SUCCEEDED, now, purpose = CallPurpose.REDUCTION,
