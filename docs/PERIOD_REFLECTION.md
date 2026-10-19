@@ -78,3 +78,5 @@ val exported = app.dataTransfer.exportPeriodReport(
 指标仍为[记录覆盖口径](KNOWLEDGE.md)：当前修订按记录 ID 去重；只有精确到单日的记录计入每日数，区间不摊到每天，未知时间单列；零表示没有单日记录，不表示没有睡眠、运动、学习或成长。当前指标证据供应用与导出使用，尚不是模型可以引用的 `EvidenceReceipt`，不能把它放进指令或聊天历史来绕过模型证据协议。
 
 周期 ZIP 的文件结构、一致性和限制见[数据转移接口](DATA_TRANSFER.md#周期复盘材料导出)。它是生成时的历史材料，包含 Markdown、分页 JSON 和指标 CSV，不是完整恢复备份。导出不调用模型。
+
+分层跨批草稿通过[独立接口](PERIOD_REDUCTION.md)生成和查阅；本材料视图仍为 `NOT_GENERATED`，其 ZIP 不包含草稿，也不将归并完成当作原文核对通过。
