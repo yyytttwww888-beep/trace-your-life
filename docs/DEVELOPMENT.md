@@ -1,6 +1,6 @@
 # 开发与验证
 
-当前代码包含 M1 记录、M2 数据转移、M3 受控整理与核对，以及 M4 [看板数据与行动回看](plans/2026-10-19-dashboard-data.md)、[画像采用与维护](plans/2026-10-19-personal-profile.md)、[受控画像候选生成](plans/2026-10-19-profile-candidates.md)、[跨任务画像维护](plans/2026-10-19-profile-maintenance.md)。新增[四项后端闭环](plans/2026-10-19-backend-completion.md)，使用固定 WorkManager 2.11.2。各阶段实现与验证见[路线进度](ROADMAP.md#本轮进度)。按用户要求，新增能力先实现独立接口与验证，前端后续统一接入；已有 M1 使用系统控件提供基本入口。
+当前代码包含 M1 记录、M2 数据转移、M3 受控整理与核对，以及 M4 [看板数据与行动回看](plans/2026-10-19-dashboard-data.md)、[画像采用与维护](plans/2026-10-19-personal-profile.md)、[受控画像候选生成](plans/2026-10-19-profile-candidates.md)、[跨任务画像维护](plans/2026-10-19-profile-maintenance.md)。新增[四项后端闭环](plans/2026-10-19-backend-completion.md)，使用固定 WorkManager 2.11.2。各阶段实现与验证见[路线进度](ROADMAP.md#本轮进度)。首轮页面已接入看板、核对与整理、知识库、行动、周期材料、画像、数据转移与设置；周期综合归并、周期原文核对发布与画像跨任务维护的流程页面仍后置。
 
 ## 环境
 
@@ -51,7 +51,8 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 | `app/src/main/java/dev/tracelife/actions/` | 用户选定行动、版本与回看、到期列表；SQL 由 `storage/ActionStore.kt` 承担，见[接口](SYNTHESIS_ACTIONS.md) |
 | `app/src/main/java/dev/tracelife/dashboard/` | 固定快照的趋势、比较、来源下钻、已发布说明与全局行动；见[看板接口](DASHBOARD.md) |
 | `app/src/main/java/dev/tracelife/profile/` | 画像分类、明确采用、历史、独立文字及证据定位；跨任务比较与更新见[画像维护](PROFILE_MAINTENANCE.md)，生成编排见[画像候选](PROFILE_CANDIDATES.md)；SQL 由 `storage/ProfileStore.kt` 承担，见[画像接口](PERSONAL_PROFILE.md) |
-| `app/src/main/java/dev/tracelife/MainActivity.kt` | 标准控件操作入口、后台存储调用与界面状态 |
+| `app/src/main/java/dev/tracelife/MainActivity.kt` | 记录与模板入口、后台存储调用与界面状态 |
+| `app/src/main/java/dev/tracelife/ui/` | `Ui` 设计系统与 `ScreenActivity` 页面基类；看板、核对与整理、知识库、行动、周期复盘、画像、备份与导出、设置页面 |
 | `app/src/test/java/dev/tracelife/` | 合成数据的功能与失败场景测试 |
 
 新数据库格式通过明确的版本迁移升级；当前为 v8，可从 v1–v7 升级，失败不能删除数据库重新建表。模型执行统一经过 `ControlledAnalysis`；不能把提供给本地界面的知识正文、指标查询、行动／画像写入或备份快照直接开放给模型。DeepSeek 真实提取、核对、综合、归并、周期原文核对、指标分析、画像候选、画像维护和行动周期联动使用各自的显式开关，结果与边界见[接入说明](DEEPSEEK.md#实际验证)；普通测试与 CI 自动跳过十项，不读取真实 KEY。行动跨批归并、扫描、最终核对及知识包验证使用独立开关，见[本轮计划](plans/2026-10-19-action-report-export.md)。
@@ -60,8 +61,20 @@ adb shell am start -n dev.tracelife.app/dev.tracelife.MainActivity
 
 Robolectric 使用 Android 框架测试环境与原生 SQLite；它不等同于实体手机测试。安装、系统文件选择器、厂商备份／迁移行为，以及华为授权仍需在目标手机验证。
 
-M2 后端已提供备份恢复接口，但调试 APK 尚无调用它们的页面和系统文件选择入口。手机上卸载或清除数据仍会失去未另行备份的资料；前端接入及真实恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
+M2 备份恢复接口已接入备份与导出页面（含系统文件选择与恢复确认）。手机上卸载或清除数据仍会失去未另行备份的资料；真机恢复链路验收前，继续使用合成资料验证。真实个人资料始终不进入 Git。
 
-M3 任务创建、分批执行、核对、反馈、正式知识发布、自动整理、记录指标、周期材料、有界综合、分层周期草稿、周期原文核对与发布、受控指标分析及行动实验同样只有后端接口。[后台调度](BACKGROUND_ANALYSIS.md)、[跨周期长期候选](LONGITUDINAL_PROFILE.md)已实现，健康指标仍待数据源；模型指标引用见[受控指标分析](METRIC_ANALYSIS.md)。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。当前 `File` 导出需要目标文件系统支持同目录硬链接创建，详情见[发布限制](DATA_TRANSFER.md#一致性与中断)；系统文档 provider 的发布机制仍待接入。
+M3 任务创建、核对、反馈与知识发布已接入核对与整理页面，知识查阅见知识库页面，周期材料查阅与导出见周期复盘页面；周期综合归并与周期原文核对发布的编排页面仍后置。[后台调度](BACKGROUND_ANALYSIS.md)策略与任务管理已接入设置页面；[跨周期长期候选](LONGITUDINAL_PROFILE.md)页面未接入。语义核对和正式保存都不是事实认证，模型质量和真机行为需分别验证。系统文档 provider 的发布机制仍待接入，导出文件保存在应用专属外部目录；`File` 导出需要目标文件系统支持同目录硬链接创建，详情见[发布限制](DATA_TRANSFER.md#一致性与中断)。
 
-M4 已有看板数据、独立导出、画像采用／维护、受控候选生成及跨任务维护接口，图表渲染与页面导航后置，关注项偏好已持久化。健康卡片不返回推测数值；可立即验证的是记录覆盖趋势、已有指标洞察、行动回看，以及固定知识版本的画像组织、失效传播和迁移。画像生成复用受控原文综合与核对；普通自动化验证不需要 DeepSeek KEY，显式真实测试有独立开关。餐食照片分析按用户要求暂缓。
+M4 已有看板数据、独立导出、画像采用／维护、受控候选生成及跨任务维护接口；看板、画像采用与候选生成已接入页面，跨任务维护页面与图表渲染仍后置，关注项偏好已持久化并可在看板页面修改。健康卡片不返回推测数值；可立即验证的是记录覆盖趋势、已有指标洞察、行动回看，以及固定知识版本的画像组织、失效传播和迁移。画像生成复用受控原文综合与核对；普通自动化验证不需要 DeepSeek KEY，显式真实测试有独立开关。餐食照片分析按用户要求暂缓。
+
+## Android 预览版
+
+`v0.1.0-preview.1` 对应首轮前端的签名调试 APK，供个人手机验收；应用内版本为 `0.1.0`（版本号 1），包名为 `dev.tracelife.app`，最低 Android 8.0，目标 API 36。[GitHub Release](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.1) 提供 APK 与 SHA-256 校验文件，源码由同名 Git 标签固定。
+
+安装：手机浏览器下载 Release 中的 `.apk`，按系统提示允许该浏览器安装应用。打开应用，在首页「更多功能」→「设置」配置自己的 DeepSeek KEY；离线记录不需要 KEY，安装包不携带开发机凭据或个人资料。
+
+2026-10-19 执行 `testDebugUnitTest lintDebug assembleDebug` 成功，Gradle 复用了有效的已有任务输出；测试报告合计 776 项，其中 766 项通过、10 项显式联网测试默认跳过，失败与错误均为 0。lint 为 0 错误、4 项依赖升级提示；APK 签名验证通过，包内包含全部八个新增页面。未在本轮调用真实模型，尚未完成实体手机安装与操作验收。
+
+下载包大小为 4,652,800 字节，SHA-256 为 `808df0da0d1ba88293e76edbc55a7ec04a6ca80b4567284cbd54a5cd24556832`。APK 使用本机构建的调试签名；后续覆盖安装需继续使用同一签名。不同机器或 CI 的调试签名通常不同，不能直接相互覆盖；切勿通过卸载来绕过签名冲突而丢失未备份资料。
+
+本次试用需关注的页面边界：新增流程页未保存重建状态，旋转屏幕、切换深浅模式或进程重建可能丢失未保存表单；原记录编辑页保留已有恢复逻辑。导出当前写入应用专属外部目录并显示路径，尚无系统「另存为／分享」入口，目标手机文件系统的硬链接支持仍待验证。其余功能范围见上方「设备验证与阶段边界」。

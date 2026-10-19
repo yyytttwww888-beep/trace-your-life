@@ -161,7 +161,10 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(16))
         }
-        val scroll = ScrollView(this).apply { addView(root) }
+        val scroll = ScrollView(this).apply {
+            addView(root)
+            setBackgroundColor(dev.tracelife.ui.Ui.bg(this@MainActivity))
+        }
         scroll.setOnApplyWindowInsetsListener { view, insets ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
@@ -174,18 +177,26 @@ class MainActivity : Activity() {
         }
         setContentView(scroll)
         scroll.requestApplyInsets()
-        text(title, 22f)
-        if (name != "records") button("返回", "back") { navigateBack() }
+        if (name != "records") dev.tracelife.ui.Ui.backRow(root) { navigateBack() }
+        dev.tracelife.ui.Ui.screenTitle(root, title)
     }
 
     private fun showRecords() {
-        beginScreen("records", "Trace Life · 记录")
-        button("新建随记", "newRecord") {
-            editor = EditorState()
-            showEditor()
+        beginScreen("records", "Trace Life")
+        dev.tracelife.ui.Ui.card(root).also { card ->
+            dev.tracelife.ui.Ui.sectionTitle(card, "记录")
+            dev.tracelife.ui.Ui.primary(card, "新建随记", "newRecord") {
+                if (!busy) {
+                    editor = EditorState()
+                    showEditor()
+                }
+            }
+            dev.tracelife.ui.Ui.button(card, "复盘与模板", "templates") { if (!busy) showTemplates() }
         }
-        button("复盘与模板", "templates") { showTemplates() }
-        text("按发生日期筛选；补记使用事情发生的日期。没有记录不等于没有发生。")
+        dev.tracelife.ui.Ui.card(root).also { card ->
+            dev.tracelife.ui.Ui.sectionTitle(card, "筛选")
+            dev.tracelife.ui.Ui.note(card, "按发生日期筛选；补记使用事情发生的日期。没有记录不等于没有发生。")
+        }
         field("filterFrom", "起始日期（可留空，YYYY-MM-DD）", filterFrom)
         field("filterThrough", "结束日期（可留空，YYYY-MM-DD）", filterThrough)
         field("filterTopic", "主题（填写一个主题，可留空）", filterTopic)
@@ -195,6 +206,17 @@ class MainActivity : Activity() {
             captureInputs()
             offset = 0
             loadRecords()
+        }
+        dev.tracelife.ui.Ui.card(root).also { card ->
+            dev.tracelife.ui.Ui.sectionTitle(card, "更多功能")
+            dev.tracelife.ui.Ui.button(card, "看板", "navDashboard") { startActivity(Intent(this, dev.tracelife.ui.DashboardActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "核对与整理", "navReview") { startActivity(Intent(this, dev.tracelife.ui.ReviewActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "知识库", "navKnowledge") { startActivity(Intent(this, dev.tracelife.ui.KnowledgeActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "行动实验", "navActions") { startActivity(Intent(this, dev.tracelife.ui.ActionsActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "周期复盘", "navPeriod") { startActivity(Intent(this, dev.tracelife.ui.PeriodActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "个人画像", "navProfile") { startActivity(Intent(this, dev.tracelife.ui.ProfileActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "备份与导出", "navTransfer") { startActivity(Intent(this, dev.tracelife.ui.TransferActivity::class.java)) }
+            dev.tracelife.ui.Ui.button(card, "设置", "navSettings") { startActivity(Intent(this, dev.tracelife.ui.SettingsActivity::class.java)) }
         }
         loadRecords()
     }
@@ -556,11 +578,15 @@ class MainActivity : Activity() {
 
     private fun text(value: String, size: Float = 15f) = addText(root, value, size)
     private fun addText(parent: LinearLayout, value: String, size: Float = 15f) {
-        parent.addView(TextView(this).apply { text = value; textSize = size; setTextIsSelectable(true); setPadding(0, dp(6), 0, dp(6)) })
+        when {
+            size >= 17f -> dev.tracelife.ui.Ui.sectionTitle(parent, value)
+            size >= 15f -> dev.tracelife.ui.Ui.body(parent, value)
+            else -> dev.tracelife.ui.Ui.note(parent, value)
+        }
     }
     private fun button(label: String, tag: String, action: () -> Unit) = addButton(root, label, tag, action)
     private fun addButton(parent: LinearLayout, label: String, viewTag: String, action: () -> Unit) {
-        parent.addView(Button(this).apply { text = label; tag = viewTag; setOnClickListener { if (!busy) action() } })
+        dev.tracelife.ui.Ui.button(parent, label, viewTag) { if (!busy) action() }
     }
     private fun field(key: String, hint: String, value: String, multiline: Boolean = false): EditText {
         val input = EditText(this).apply {
@@ -573,7 +599,10 @@ class MainActivity : Activity() {
             setFreezesText(false)
             isSaveEnabled = false // DraftState owns restoration, including dynamically created questions.
         }
-        root.addView(input)
+        root.addView(input, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(4), 0, dp(8))
+        })
+        dev.tracelife.ui.Ui.styleField(this, input)
         editorFields[key] = input
         input.filters = arrayOf(InputFilter { source, start, end, destination, replaceStart, replaceEnd ->
             val length = destination.length - (replaceEnd - replaceStart) + end - start
@@ -596,12 +625,15 @@ class MainActivity : Activity() {
         })
         return input
     }
-    private fun check(label: String, checked: Boolean) = CheckBox(this).apply { text = label; isChecked = checked; root.addView(this) }
+    private fun check(label: String, checked: Boolean) = CheckBox(this).apply { text = label; isChecked = checked; dev.tracelife.ui.Ui.styleCheck(this@MainActivity, this); root.addView(this) }
     private fun spinner(items: List<String>, selected: Int, viewTag: String) = Spinner(this).apply {
         tag = viewTag
         adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_item, items).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
         setSelection(selected)
-        root.addView(this)
+        dev.tracelife.ui.Ui.styleSpinner(this@MainActivity, this)
+        root.addView(this, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(0, dp(4), 0, dp(8))
+        })
     }
     private fun setEnabled(view: View, enabled: Boolean) {
         view.isEnabled = enabled
