@@ -187,7 +187,7 @@ class ActionStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(record, repository.record(record.id))
         assertEquals(run.stored, repository.analysisRun("run"))
-        assertEquals(9, snapshot().sourceSchemaVersion)
+        assertEquals(10, snapshot().sourceSchemaVersion)
         assertTrue(repository.actionHeads().isEmpty())
         actions.create(draft(), "after-upgrade")
         assertEquals(source, repository.analysisSourceStamp())

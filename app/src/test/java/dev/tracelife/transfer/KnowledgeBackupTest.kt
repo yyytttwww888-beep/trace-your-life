@@ -126,7 +126,7 @@ class KnowledgeBackupTest {
         fixture()
         val snapshot = repository.captureSnapshot(directory())
         val old = json(snapshot).apply {
-            put("formatVersion", 3); put("sourceSchemaVersion", 4); remove("dashboardPreferences")
+            put("formatVersion", 3); put("sourceSchemaVersion", 4); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
             remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
                 remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")

@@ -70,7 +70,7 @@ class ControlledMetricAnalysisTest {
         assertEquals(listOf("known", "overlap", "unknown"), call.metricEvidence.single().sources.map { it.recordId })
         assertEquals(listOf(call.metricEvidence.single().id), proposal.claims.single().evidenceIds)
         assertEquals(0L, AnalysisBatchProcessor(analysis).coverage("run").completedTextCodePoints)
-        assertEquals(11, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(12, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
     }
 
     @Test fun `empty period still has typed zero coverage and no fictitious raw evidence`() {

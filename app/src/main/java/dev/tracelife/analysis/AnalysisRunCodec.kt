@@ -30,7 +30,7 @@ object AnalysisRunCodec {
 
     private val PROFILE_FIELDS = setOf("profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 11)
+    fun encode(state: AnalysisRunState): String = encodeVersion(state, 12)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -43,15 +43,18 @@ object AnalysisRunCodec {
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
         require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
         require(version >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
+        require(version >= 12 || state.feedbackContext == null && !state.request.inheritHistoricalFeedback)
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
-            var value = if (version < 10) raw - "actionPeriod" else raw
+            var value = if (version < 12) raw - "inheritHistoricalFeedback" else raw
+            if (version < 10) value = value - "actionPeriod"
             if (version < 8) value = value - "profileTarget"
             else if (version < 10) value = value + ("profileTarget" to state.request.profileTarget?.let { mapOf("dimension" to it.dimension.name, "layer" to it.layer.name) })
             value
         }
         return json(mapOf("formatVersion" to version, "request" to request, "calls" to state.calls.map {
             var fields = callMap(it)
+            if (version < 12) fields = fields - setOf("historicalFeedbackReadIds", "feedbackContextSha256")
             if (version < 10) fields = fields - "actionEvidence"
             if (version < 9) fields = fields - PROFILE_FIELDS
             if (version < 7) fields = fields - "metricEvidence"
@@ -63,7 +66,9 @@ object AnalysisRunCodec {
                 else -> fields
             }
         }) + (if (version >= 9) mapOf("profileMaintenancePlans" to state.profileMaintenancePlans.map(ProfileMaintenanceProtocol::planMap)) else emptyMap()) +
-            (if (version >= 10) mapOf("actionPlan" to state.actionPlan?.let(ActionEvidenceProtocol::planMap)) else emptyMap()),
+            (if (version >= 10) mapOf("actionPlan" to state.actionPlan?.let(ActionEvidenceProtocol::planMap)) else emptyMap()) +
+            (if (version >= 12) mapOf("feedbackContext" to state.feedbackContext?.let(FeedbackContextProtocol::planMap),
+                "historicalFeedbackResolutions" to state.historicalFeedbackResolutions.map(FeedbackContextProtocol::resolutionMap)) else emptyMap()),
             nodeLimit = if (reserved > 0) 59_000 else 60_000)
             .also { if (it.toByteArray(Charsets.UTF_8).size + reserved > MAX_PAYLOAD_BYTES) throw AnalysisPayloadCapacityException("分析任务及输出预留超过保存上限") }
     }
@@ -136,12 +141,13 @@ object AnalysisRunCodec {
         val rawRoot = read(0) as? Map<String, Any?> ?: error("分析 JSON 需要对象")
         val root = rawRoot.obj(*(arrayOf("formatVersion", "request", "calls") +
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
-            (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..11)
+            (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray()) +
+            (if (rawRoot.int("formatVersion") >= 12) arrayOf("feedbackContext", "historicalFeedbackResolutions") else emptyArray())))
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..12)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
-            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray())))
+            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray()) + (if (format >= 12) arrayOf("inheritHistoricalFeedback") else emptyArray())))
         val profileTarget = request["profileTarget"]?.let { raw ->
             LongitudinalProfileProtocol.parseTarget(raw, allowLongTerm = format >= 10)
         }
@@ -156,7 +162,8 @@ object AnalysisRunCodec {
                 limits.int("inputTokenLimit"), limits.int("outputTokenReserve"), limits.int("maxCalls"),
                 limits.long("totalInputBytes"), limits.int("maxOutputBytes")),
                 request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget,
-                if (format >= 10) request["actionPeriod"] as? Boolean ?: error("行动复盘标记无效") else false),
+                if (format >= 10) request["actionPeriod"] as? Boolean ?: error("行动复盘标记无效") else false,
+                if (format >= 12) request["inheritHistoricalFeedback"] as? Boolean ?: error("历史意见标记无效") else false),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
@@ -169,7 +176,8 @@ object AnalysisRunCodec {
                     6 -> reviewed + arrayOf("reductionInputs", "reductionOutput") + NEW_FIELDS.toTypedArray()
                     7, 8 -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray()
                     else -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray() + PROFILE_FIELDS.toTypedArray() +
-                        if (format >= 10) arrayOf("actionEvidence") else emptyArray()
+                        (if (format >= 10) arrayOf("actionEvidence") else emptyArray()) +
+                        (if (format >= 12) arrayOf("historicalFeedbackReadIds", "feedbackContextSha256") else emptyArray())
                 })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
@@ -197,10 +205,14 @@ object AnalysisRunCodec {
                     call["profileRelation"]?.let(ProfileMaintenanceProtocol::parseRelation),
                     call["profileScan"]?.let(ReductionReviewProtocol::parseScan),
                     call["profileMaintenanceProof"]?.let(ProfileMaintenanceProtocol::parseProof),
-                    if (format >= 10) call.list("actionEvidence").map(ActionEvidenceProtocol::parseReceipt) else emptyList())
+                    if (format >= 10) call.list("actionEvidence").map(ActionEvidenceProtocol::parseReceipt) else emptyList(),
+                    if (format >= 12) call.strings("historicalFeedbackReadIds") else emptyList(),
+                    call["feedbackContextSha256"]?.let { call.string("feedbackContextSha256") })
             },
             if (format < 9) emptyList() else root.list("profileMaintenancePlans").map(ProfileMaintenanceProtocol::parsePlan),
             root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
+            root["feedbackContext"]?.let(FeedbackContextProtocol::parsePlan),
+            if (format >= 12) root.list("historicalFeedbackResolutions").map(FeedbackContextProtocol::parseResolution) else emptyList(),
         )
         require(format >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         require(format >= 10 || state.calls.none { it.purpose == CallPurpose.ACTION_SYNTHESIS })
@@ -310,6 +322,8 @@ object AnalysisRunCodec {
     }
 
     private fun validate(state: AnalysisRunState) {
+        require(state.request.inheritHistoricalFeedback == (state.feedbackContext != null))
+        FeedbackContextProtocol.validate(state)
         require(state.request.actionPeriod == (state.actionPlan != null)) { "行动复盘缺少固定目录" }
         state.actionPlan?.let(ActionEvidenceProtocol::validatePlan)
         require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW, CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
@@ -536,7 +550,8 @@ object AnalysisRunCodec {
             "maxInputBytes" to it.maxInputBytes, "inputTokenLimit" to it.inputTokenLimit, "outputTokenReserve" to it.outputTokenReserve,
             "maxCalls" to it.maxCalls, "totalInputBytes" to it.totalInputBytes, "maxOutputBytes" to it.maxOutputBytes) },
         "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString(),
-        "profileTarget" to request.profileTarget?.let(::profileTargetMap), "actionPeriod" to request.actionPeriod)
+        "profileTarget" to request.profileTarget?.let(::profileTargetMap), "actionPeriod" to request.actionPeriod,
+        "inheritHistoricalFeedback" to request.inheritHistoricalFeedback)
 
     internal fun profileTargetMap(target: ProfileAnalysisTarget): Map<String, Any?> =
         LongitudinalProfileProtocol.targetMap(target)
@@ -561,7 +576,8 @@ object AnalysisRunCodec {
         "profileRelation" to call.profileRelation?.let(ProfileMaintenanceProtocol::relationMap),
         "profileScan" to call.profileScan?.let(ReductionReviewProtocol::scanMap),
         "profileMaintenanceProof" to call.profileMaintenanceProof?.let(ProfileMaintenanceProtocol::proofMap),
-        "actionEvidence" to call.actionEvidence.map(ActionEvidenceProtocol::receiptMap))
+        "actionEvidence" to call.actionEvidence.map(ActionEvidenceProtocol::receiptMap),
+        "historicalFeedbackReadIds" to call.historicalFeedbackReadIds, "feedbackContextSha256" to call.feedbackContextSha256)
     internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
     internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)

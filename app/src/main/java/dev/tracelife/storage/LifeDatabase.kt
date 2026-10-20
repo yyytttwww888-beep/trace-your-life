@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 9) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 10) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -23,10 +23,11 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionSeven(db)
         upgradeToVersionEight(db)
         upgradeToVersionNine(db)
+        upgradeToVersionTen(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..8 && newVersion == 9) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..9 && newVersion == 10) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
@@ -34,7 +35,15 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         if (oldVersion < 6) upgradeToVersionSix(db)
         if (oldVersion < 7) upgradeToVersionSeven(db)
         if (oldVersion < 8) upgradeToVersionEight(db)
-        upgradeToVersionNine(db)
+        if (oldVersion < 9) upgradeToVersionNine(db)
+        upgradeToVersionTen(db)
+    }
+
+    private fun upgradeToVersionTen(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE analysis_runs ADD COLUMN archived_at TEXT")
+        db.execSQL("CREATE INDEX analysis_lifecycle_lookup ON analysis_runs(archived_at, created_at, id)")
+        ExperienceThreadStore.createTables(db)
+        HistoricalComparisonStore.createTables(db)
     }
 
     private fun upgradeToVersionNine(db: SQLiteDatabase) {

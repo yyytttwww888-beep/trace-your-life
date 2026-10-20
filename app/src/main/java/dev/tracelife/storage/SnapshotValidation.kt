@@ -22,23 +22,33 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..9) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..10) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
             require(snapshot.sourceSchemaVersion >= 6 || snapshot.actionRevisions.isEmpty() && snapshot.actionHeads.isEmpty() && snapshot.deletedActions.isEmpty()) { "旧版资料不能包含行动" }
             require(snapshot.sourceSchemaVersion >= 7 || snapshot.profileRevisions.isEmpty() && snapshot.profileHeads.isEmpty() && snapshot.deletedProfiles.isEmpty()) { "旧版资料不能包含画像" }
             require(snapshot.sourceSchemaVersion >= 8 || snapshot.dashboardPreferences == null) { "旧版资料不能包含看板偏好" }
+            require(snapshot.sourceSchemaVersion >= 10 || snapshot.experienceThreads.isEmpty() && snapshot.experienceChanges.isEmpty() && snapshot.deletedExperienceThreads.isEmpty()) { "旧版资料不能包含经验线索" }
+            dev.tracelife.knowledge.ExperienceValidation.validateCollection(snapshot.experienceThreads, snapshot.experienceChanges, snapshot.deletedExperienceThreads)
+            require(snapshot.sourceSchemaVersion >= 10 || snapshot.historicalComparisons.isEmpty() && snapshot.historicalComparisonDeletions.isEmpty()) { "旧版资料不能包含独立对照说明" }
+            HistoricalComparisonCodec.validateCollection(snapshot.historicalComparisons)
+            require(snapshot.historicalComparisonDeletions.size <= HistoricalComparisonCodec.MAX_DELETIONS &&
+                snapshot.historicalComparisonDeletions.map { it.id }.distinct().size == snapshot.historicalComparisonDeletions.size) { "独立对照说明删除标记过多或重复" }
+            snapshot.historicalComparisonDeletions.forEach { id(it.id); require(it.lastRevision > 0) }
+            val deletedComparisonRuns = snapshot.historicalComparisonDeletions.map { it.id }.toSet()
+            require(snapshot.historicalComparisons.none { it.runId in deletedComparisonRuns }) { "独立对照说明及其删除标记同时存在" }
+            val comparisonsByRun = snapshot.historicalComparisons.groupBy { it.runId }
             snapshot.dashboardPreferences?.let { dev.tracelife.dashboard.DashboardPreferencesCodec.encode(it) }
             id(snapshot.snapshotId); id(snapshot.storeId)
             require(snapshot.generation >= 0) { "快照代数无效" }
-            require(snapshot.analysisGeneration >= 0 && snapshot.analysisRuns.size <= 100 &&
+            require(snapshot.analysisGeneration >= 0 &&
                 snapshot.analysisRuns.map { it.id }.distinct().size == snapshot.analysisRuns.size) { "分析任务代数、数量或身份无效" }
             require(snapshot.deletedAnalysisRuns.size <= 100_000 && snapshot.deletedAnalysisRuns.map { it.id }.distinct().size == snapshot.deletedAnalysisRuns.size) { "分析任务删除标记过多或重复" }
             snapshot.deletedAnalysisRuns.forEach { id(it.id); require(it.lastRevision > 0) { "分析任务删除版本无效" } }
             require(snapshot.analysisRuns.map { it.id }.toSet().intersect(snapshot.deletedAnalysisRuns.map { it.id }.toSet()).isEmpty()) { "备份同时包含分析任务及其删除标记" }
-            require(snapshot.analysisRuns.all { it.payload.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024 } &&
-                snapshot.analysisRuns.sumOf { it.payload.toByteArray(Charsets.UTF_8).size.toLong() } <= 16L * 1024 * 1024) { "分析任务内容超过大小上限" }
+            require(snapshot.sourceSchemaVersion >= 10 || snapshot.analysisRuns.none { it.archivedAt != null }) { "旧版资料不能包含归档任务" }
+            AnalysisStorageLimits.validate(snapshot.analysisRuns)
             require(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 &&
                 snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000) { "备份超出当前恢复数量上限" }
             require(snapshot.records.sumOf { it.draft.body.length.toLong() + it.draft.answers.values.sumOf { answer -> answer.length.toLong() } } +
@@ -93,7 +103,6 @@ internal object SnapshotValidation {
                     else -> require((event.entityId to event.revision) in templatesByVersion) { "变更事件引用缺失模板" }
                 }
             }
-            var retainedAnalysisBytes = 0L
             snapshot.analysisRuns.forEach { run ->
                 id(run.id); id(run.source.storeId)
                 require(run.version > 0 && run.source.generation >= 0 && run.updatedAt >= run.createdAt) { "分析任务版本或时间无效" }
@@ -101,10 +110,8 @@ internal object SnapshotValidation {
                 // fails validation instead of making a restored proposal look supported.
                 try {
                     AnalysisRunCodec.validateStored(run, snapshot.records)
-                    retainedAnalysisBytes += run.payload.toByteArray(Charsets.UTF_8).size + AnalysisRunCodec.reservedResponseBytes(run)
                 }
                 catch (failure: Exception) { throw InvalidBackupException("分析任务结构或来源引用无效", failure) }
-                require(retainedAnalysisBytes <= 16L * 1024 * 1024) { "分析任务及待返回输出预留超过保存上限" }
             }
             ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
             require(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS &&
@@ -123,6 +130,20 @@ internal object SnapshotValidation {
                     }
                 require(redacted == run) {
                     "备份包含已永久删除反馈影响的模型文字"
+                }
+            }
+            val retainedFeedbackIds = snapshot.claimFeedback.map { it.id }.toSet()
+            val retainedRecordIds = snapshot.records.map { it.id }.toSet()
+            val retainedRunIds = snapshot.analysisRuns.map { it.id }.toSet()
+            snapshot.analysisRuns.forEach { run ->
+                val state = AnalysisRunCodec.decode(run.payload)
+                require(run.id !in deletedComparisonRuns) { "备份保留了已删除对照说明所在的分析任务" }
+                require(state.historicalFeedbackResolutions.toSet() == comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()) { "分析任务与独立用户对照说明不一致" }
+                dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(state).forEach { reference ->
+                    require(reference.id in retainedFeedbackIds) { "历史意见上下文缺少独立反馈" }
+                    require(reference.id !in erasedFeedback) { "历史意见上下文仍引用已删除反馈" }
+                    require(reference.sourceRecordIds.all { it in retainedRecordIds }) { "历史意见上下文缺少已登记原始资料" }
+                    require(reference.sourceRecordIds.isEmpty() || reference.runId in retainedRunIds) { "历史意见上下文缺少旧判断任务" }
                 }
             }
             val runs = snapshot.analysisRuns.associateBy { it.id }
@@ -155,7 +176,7 @@ internal object SnapshotValidation {
                 require(digest.matches(it.id) && it.lastRevision in 1 until Int.MAX_VALUE) { "知识删除标记无效" }
             }
             require(snapshot.knowledgeHeads.map { it.id }.toSet().intersect(snapshot.deletedKnowledge.map { it.id }.toSet()).isEmpty()) { "备份同时包含知识及其删除标记" }
-            val erasedRuns = snapshot.deletedAnalysisRuns.map { it.id }.toSet()
+            val erasedRuns = snapshot.deletedAnalysisRuns.map { it.id }.toSet() + deletedComparisonRuns
             require(snapshot.knowledgeRevisions.none { value -> value.runId in erasedRuns ||
                 KnowledgeValidation.feedbackDependencies(value).any { dependency ->
                     AnalysisRunCodec.feedbackId(value.runId, dependency.claim) in erasedFeedback
@@ -205,7 +226,7 @@ internal object SnapshotValidation {
             }
             // Fixed references can outlive knowledge deletion or a restore that retains a different
             // local knowledge chain. Missing revisions stay unavailable; independent user text stays.
-        } catch (failure: IllegalArgumentException) {
+        } catch (failure: Exception) {
             if (failure is InvalidBackupException) throw failure
             throw InvalidBackupException(failure.message ?: "备份资料无效", failure)
         }

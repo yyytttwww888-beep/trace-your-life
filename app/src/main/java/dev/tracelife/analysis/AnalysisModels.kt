@@ -39,9 +39,11 @@ data class AnalysisRequest(
     val expiresAt: Instant? = null,
     val profileTarget: ProfileAnalysisTarget? = null,
     val actionPeriod: Boolean = false,
+    val inheritHistoricalFeedback: Boolean = false,
 ) {
     init {
         require(!actionPeriod || profileTarget == null) { "行动复盘与画像生成必须使用独立任务" }
+        require(!inheritHistoricalFeedback || !actionPeriod && profileTarget == null)
         require(question.isNotBlank() && question.length <= 2_000)
         require(focusTopics.size <= 30 && focusTopics.all { it.isNotBlank() && it.length <= 80 })
     }
@@ -93,7 +95,8 @@ data class ReductionReviewProof(val target: ReductionStatementRef, val statement
 data class ReductionReviewContext(val target: ReductionStatementRef, val feedbackVersion: Int,
     val dependencyTokens: List<ReductionFeedbackToken>, val originalEvidence: List<EvidenceReceipt>,
     val leafRefs: List<ReductionNodeRef>, val scans: List<ReductionScanProof>, val latestReview: AnalysisCall?,
-    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList())
+    val originalActionEvidence: List<ActionEvidenceReceipt> = emptyList(),
+    val historicalFeedbackSha256: String? = null)
 data class ReductionStatement(val text: String, val inputIds: List<String>)
 data class ReductionDigest(val statements: List<ReductionStatement>, val unknowns: List<String> = emptyList())
 data class ReductionDependencies(val ref: ReductionNodeRef, val leafRefs: List<ReductionNodeRef>,
@@ -147,11 +150,15 @@ data class AnalysisCall(
     val profileScan: ReductionScanResult? = null,
     val profileMaintenanceProof: ProfileMaintenanceProof? = null,
     val actionEvidence: List<ActionEvidenceReceipt> = emptyList(),
+    val historicalFeedbackReadIds: List<String> = emptyList(),
+    val feedbackContextSha256: String? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),
     val profileMaintenancePlans: List<ProfileMaintenancePlan> = emptyList(),
-    val actionPlan: ActionEvidencePlan? = null)
+    val actionPlan: ActionEvidencePlan? = null,
+    val feedbackContext: FeedbackContextPlan? = null,
+    val historicalFeedbackResolutions: List<HistoricalFeedbackResolution> = emptyList())
 enum class AnalysisStatus { READY, NEEDS_REVIEW, NEEDS_RETRY, IN_FLIGHT, STALE, EXPIRED }
 data class AnalysisTask(val stored: StoredAnalysisRun, val state: AnalysisRunState, val status: AnalysisStatus)
 

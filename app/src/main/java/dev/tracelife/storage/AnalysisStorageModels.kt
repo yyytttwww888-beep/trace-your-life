@@ -65,6 +65,39 @@ data class StoredAnalysisRun(
     val updatedAt: Instant,
     val expiresAt: Instant?,
     val payload: String,
+    val archivedAt: Instant? = null,
 )
 
 class UnreadableSourceException(message: String) : IllegalArgumentException(message)
+
+/** Payload-free history row; lifecycle never changes evidence validity. */
+data class AnalysisRunIndex(
+    val id: String, val version: Int, val createdAt: Instant, val updatedAt: Instant,
+    val expiresAt: Instant?, val archivedAt: Instant?,
+)
+
+data class AnalysisStorageUsage(val activeTasks: Int, val activeBytes: Long, val archivedTasks: Int, val archivedBytes: Long)
+
+internal object AnalysisStorageLimits {
+    const val ACTIVE_TASKS = 100
+    const val ACTIVE_BYTES = 16L * 1024 * 1024
+    const val ARCHIVED_TASKS = 10_000
+    const val ARCHIVED_BYTES = 64L * 1024 * 1024
+
+    fun validate(runs: List<StoredAnalysisRun>, includeReservations: Boolean = true) {
+        require(runs.count { it.archivedAt == null } <= ACTIVE_TASKS && runs.count { it.archivedAt != null } <= ARCHIVED_TASKS) { "分析活动任务或归档数量超过上限" }
+        var active = 0L
+        var archived = 0L
+        runs.forEach { run ->
+            val bytes = run.payload.toByteArray(Charsets.UTF_8).size.toLong()
+            require(bytes in 1..2L * 1024 * 1024) { "单个分析任务超过大小上限" }
+            if (run.archivedAt == null) active += bytes + if (includeReservations) dev.tracelife.analysis.AnalysisRunCodec.reservedResponseBytes(run) else 0
+            else {
+                require(run.archivedAt >= run.createdAt) { "归档时间早于任务创建" }
+                require(dev.tracelife.analysis.AnalysisRunCodec.reservedResponseBytes(run) == 0) { "归档任务不能包含在途调用" }
+                archived += bytes
+            }
+        }
+        require(active <= ACTIVE_BYTES && archived <= ARCHIVED_BYTES) { "分析活动任务或归档内容超过大小上限" }
+    }
+}

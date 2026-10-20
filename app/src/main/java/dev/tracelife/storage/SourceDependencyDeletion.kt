@@ -7,7 +7,8 @@ import dev.tracelife.analysis.AnalysisRunCodec
 internal object SourceDependencyDeletion {
     fun dependsOnRecords(run: StoredAnalysisRun, recordIds: Set<String>): Boolean {
         val state = AnalysisRunCodec.decode(run.payload)
-        return state.calls.any { call -> call.evidence.any { it.recordId in recordIds } ||
+        return dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(state).any { ref -> ref.sourceRecordIds.any { it in recordIds } } ||
+            state.calls.any { call -> call.evidence.any { it.recordId in recordIds } ||
             call.metricEvidence.any { metric -> metric.sources.any { it.recordId in recordIds } } }
     }
 

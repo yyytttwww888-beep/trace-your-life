@@ -37,10 +37,14 @@ internal object PublishedKnowledgeExport {
         val deletedFeedback = snapshot.deletedClaimFeedback.associateBy { it.id }
         val runs = snapshot.analysisRuns.associateBy { it.id }
         val runStates = mutableMapOf<String, AnalysisRunState>()
+        val historyCurrent = mutableMapOf<String, Boolean>()
         fun reviewCurrent(value: StoredKnowledgeRevision): Boolean {
             val run = runs[value.runId] ?: return KnowledgeValidation.reviewMatchesState(value, null)
             if (run.source != value.source) return false
             val state = runStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) }
+            if (!historyCurrent.getOrPut(run.id) { state.feedbackContext?.let {
+                dev.tracelife.analysis.FeedbackContextProtocol.snapshotCurrent(run.id, it, runs, snapshot.claimFeedback)
+            } ?: true }) return false
             return KnowledgeValidation.reviewMatchesState(value, state)
         }
         val stamp = SourceStamp(snapshot.storeId, snapshot.generation)

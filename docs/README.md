@@ -74,3 +74,10 @@
 | Android 与华为健康数据接入 | [官方接入途径及待核实条件](research/2026-10-16-huawei-health-integration.md) |
 
 同一设计结论在对应设计文件维护，主设计提供摘要和链接；研究材料保留核验日期、实际阅读范围与来源，避免把摘要再次当作新的研究证据。
+
+## 跨期经验与长期使用
+
+- [行为设计](superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)与[实施计划](plans/2026-10-20-experience-memory-and-archive.md)。
+- [经验线索](EXPERIENCE_CONTINUITY.md)：固定知识修订、变化过程、独立说明及导出范围。
+- [历史意见](HISTORICAL_FEEDBACK.md)：目录路由、有限上下文、人工对照与发布门槛。
+- [分析归档](TASK_ARCHIVE.md)：生命周期、分页、容量、备份与恢复。

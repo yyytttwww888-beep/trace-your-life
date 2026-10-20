@@ -25,6 +25,9 @@ import dev.tracelife.storage.SourceStamp
 import dev.tracelife.storage.StoredAnalysisRun
 import dev.tracelife.storage.StoredClaimFeedback
 import dev.tracelife.storage.StoredKnowledgeRevision
+import dev.tracelife.knowledge.StoredExperienceThread
+import dev.tracelife.knowledge.StoredExperienceChange
+import dev.tracelife.knowledge.ExperienceRelation
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Rule
@@ -240,6 +243,48 @@ class KnowledgePublicationExportTest {
         assertEquals(1, machineNotes(entries).size)
         assertTrue(entries.values.none { marker in it })
         assertFalse(machineNotes(entries).single().has("extractionUnknowns"))
+    }
+
+    @Test fun `experience exports page changes link canonical knowledge and preserve scope gaps without fallback`() {
+        val records = (1..4).map { record("synthetic-experience-$it") }
+        val notes = records.mapIndexed { i, record -> note("synthetic-experience-run-$i", listOf(record)) }
+        val thread = StoredExperienceThread("synthetic-thread", 4, "合成经验：理解逐步变化", setOf("学习"), now.minusSeconds(40), now.minusSeconds(10))
+        val relations = listOf(ExperienceRelation.INITIAL, ExperienceRelation.SUPPLEMENT, ExperienceRelation.EXCEPTION, ExperienceRelation.NARROW)
+        val changes = notes.mapIndexed { i, note -> StoredExperienceChange(thread.id, i + 1, note.id, note.revision,
+            relations[i], "合成用户说明-$i", now.minusSeconds(40 - i * 10L)) }
+        val source = snapshot(records, notes).copy(experienceThreads = listOf(thread), experienceChanges = changes)
+        val entries = export(source, ReadingExportOptions(pageSize = 2))
+        assertTrue(entries.keys.any { it.startsWith("experiences/entries/") && it.endsWith("changes/page-002.md") })
+        assertEquals(4, entries.keys.count { it.startsWith("experiences/entries/") && Regex("changes/[1-4]\\.md$").containsMatchIn(it) })
+        notes.forEach { note -> assertEquals(1, entries.filterKeys { it.endsWith(".md") }.values.count { note.claim.text in it }) }
+        assertTrue(entries.filterKeys { it.matches(Regex("indexes/(index|page-\\d+)\\.md")) }.values.any { it.contains("经验线索") })
+        assertTrue(entries.keys.any { it.startsWith("indexes/experience-ids/") && it.endsWith(".jsonl") })
+        assertLinks(entries)
+
+        val limited = export(source.copy(knowledgeRevisions = notes.dropLast(1) + notes.last().copy(source = stamp.copy(generation = 6))), ReadingExportOptions(pageSize = 2))
+        val head = limited.filterKeys { it.endsWith("thread.json") }.values.single().let(::JSONObject)
+        assertEquals(4, head.getInt("adoptedSequence"))
+        assertFalse(head.getBoolean("adoptedIncluded"))
+        assertTrue(limited.values.none { changes.last().userNote!! in it || notes.last().claim.text in it })
+        assertTrue(limited.values.any { "不能以更早知识替代" in it })
+        assertEquals(1, JSONObject(limited.getValue("manifest.json")).getJSONObject("experiences").getInt("omittedChanges"))
+        assertLinks(limited)
+    }
+
+    @Test fun `evidence packages and excluded knowledge cannot leak experience names or independent explanations`() {
+        val record = record("synthetic-experience-private", topics = setOf("工作"))
+        val note = note("synthetic-experience-private-run", listOf(record), topics = setOf("工作"))
+        val thread = StoredExperienceThread("synthetic-private-thread", 1, "合成独立名称不可越界", setOf("工作"), now.minusSeconds(20), now.minusSeconds(20))
+        val change = StoredExperienceChange(thread.id, 1, note.id, 1, ExperienceRelation.INITIAL, "合成独立说明不可越界", thread.createdAt)
+        val source = snapshot(listOf(record), listOf(note)).copy(experienceThreads = listOf(thread), experienceChanges = listOf(change))
+        listOf(ReadingExportOptions(kind = ReadingPackageKind.EVIDENCE, question = "合成问题：有哪些原始记录？"),
+            ReadingExportOptions(scope = ExportScope(topics = setOf("学习")))).forEach { options ->
+            val entries = export(source, options)
+            assertFalse(entries.keys.any { it.startsWith("experiences/") })
+            assertTrue(entries.values.none { thread.title in it || change.userNote!! in it })
+            assertEquals(1, JSONObject(entries.getValue("manifest.json")).getJSONObject("experiences").getInt("omittedChanges"))
+            assertLinks(entries)
+        }
     }
 
     private fun record(id: String, date: LocalDate? = LocalDate.parse("2026-10-16"), topics: Set<String> = setOf("学习")) =

@@ -198,6 +198,59 @@ class KnowledgeActivityTest {
         }
     }
 
+    @Test fun `user connects another weeks understanding to same experience and restores the unfinished form`() {
+        val first = publish(KnowledgeCategory.INSIGHT, "值得留下：合成经验先动手。")
+        launch()
+        click("knowledge:${first.id}")
+        click("connectExperience")
+        val experienceIntent = shadowOf(activity).nextStartedActivity
+        assertEquals(ExperienceActivity::class.java.name, experienceIntent.component!!.className)
+        var editor = Robolectric.buildActivity(ExperienceActivity::class.java, experienceIntent).setup()
+        drain()
+        fun editClick(tag: String) { assertTrue(editor.get().window.decorView.findViewWithTag<View>(tag).performClick()); drain() }
+        fun editText() = descendants(editor.get().window.decorView).filterIsInstance<TextView>().filter { it.isShown }.joinToString("\n") { it.text.toString() }
+        editClick("newExperience")
+        editor.get().window.decorView.findViewWithTag<EditText>("experienceTitle").setText("合成：开始任务的办法")
+        editor.get().window.decorView.findViewWithTag<EditText>("experienceNote").setText("合成独立起点说明")
+        editor.recreate(); drain()
+        assertEquals("合成：开始任务的办法", editor.get().window.decorView.findViewWithTag<EditText>("experienceTitle").text.toString())
+        editClick("saveExperience")
+        val thread = KnowledgeContinuity(app.repository).page().items.single().thread
+        assertTrue(editText().contains("目前采用的理解"))
+        assertTrue(editText().contains("合成独立起点说明"))
+        editor.pause().stop().destroy()
+
+        val next = publish(KnowledgeCategory.INSIGHT, "值得留下：合成经验中，复杂任务应先画接口再开始。")
+        val nextIntent = android.content.Intent(app, ExperienceActivity::class.java)
+            .putExtra(ExperienceActivity.EXTRA_KNOWLEDGE_ID, next.id)
+            .putExtra(ExperienceActivity.EXTRA_KNOWLEDGE_REVISION, next.revision)
+        editor = Robolectric.buildActivity(ExperienceActivity::class.java, nextIntent).setup()
+        drain()
+        editClick("experienceChoice:${thread.id}")
+        val relation = editor.get().window.decorView.findViewWithTag<Spinner>("experienceRelation")
+        relation.setSelection((0 until relation.count).single { relation.getItemAtPosition(it) == "收窄适用条件" })
+        drain()
+        editor.get().window.decorView.findViewWithTag<EditText>("experienceNote").setText("合成后续说明：简单任务和复杂任务需要区别")
+        editor.recreate(); drain()
+        assertEquals("合成后续说明：简单任务和复杂任务需要区别", editor.get().window.decorView.findViewWithTag<EditText>("experienceNote").text.toString())
+        editClick("saveExperience")
+        val updated = KnowledgeContinuity(app.repository).get(thread.id)!!
+        assertEquals(2, updated.thread.version)
+        assertEquals(next.id, updated.current.change.knowledgeId)
+        assertTrue(editText().contains("第 1 次 · 起点"))
+        assertTrue(editText().contains("第 2 次 · 收窄适用条件"))
+        assertTrue(editText().contains(first.claim.text))
+        assertTrue(editText().contains(next.claim.text))
+        app.io.submit { app.repository.deleteRecord("source", 1) }.get(20, TimeUnit.SECONDS)
+        editor.recreate(); drain()
+        assertFalse(editText().contains(first.claim.text))
+        assertFalse(editText().contains(next.claim.text))
+        assertTrue(editText().contains("合成独立起点说明"))
+        assertTrue(editText().contains("合成后续说明：简单任务和复杂任务需要区别"))
+        assertTrue(editText().contains("不会自动把更早的理解恢复为当前结论"))
+        editor.pause().stop().destroy()
+    }
+
     private fun launch() {
         controller = Robolectric.buildActivity(KnowledgeActivity::class.java).setup()
         drain()

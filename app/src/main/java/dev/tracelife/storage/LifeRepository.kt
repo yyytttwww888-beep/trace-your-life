@@ -12,10 +12,16 @@ import dev.tracelife.actions.ActionEvidenceProtocol
 import dev.tracelife.actions.ActionHead
 import dev.tracelife.actions.ActionValidation
 import dev.tracelife.actions.StoredActionRevision
+import dev.tracelife.analysis.FeedbackContextCatalog
+import dev.tracelife.analysis.FeedbackContextProtocol
+import dev.tracelife.analysis.HistoricalFeedbackMetadata
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRedactionCapacityException
 import dev.tracelife.analysis.ClaimRef
 import dev.tracelife.analysis.ReductionGraph
+import dev.tracelife.knowledge.ExperienceValidation
+import dev.tracelife.knowledge.StoredExperienceThread
+import dev.tracelife.knowledge.StoredExperienceChange
 import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.knowledge.KnowledgeLibrary
@@ -510,12 +516,69 @@ class LifeRepository(
         transaction(db) { readAnalysisRun(db, id) }
     }
 
-    internal fun analysisRuns(offset: Int, limit: Int): List<StoredAnalysisRun> = access { db ->
+    internal fun analysisRuns(offset: Int, limit: Int, archived: Boolean? = null): List<StoredAnalysisRun> = access { db ->
         require(offset >= 0 && limit in 1..100) { "分析任务分页范围无效" }
         transaction(db) {
-            db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ORDER BY created_at, id LIMIT ? OFFSET ?", arrayOf(limit.toString(), offset.toString())).use { cursor ->
+            db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ${lifecycleWhere(archived)} ORDER BY created_at, id LIMIT ? OFFSET ?", arrayOf(limit.toString(), offset.toString())).use { cursor ->
                 buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
             }
+        }
+    }
+
+    /** SQL filters and pagination operate on metadata before any task payload is decoded. */
+    fun analysisRunIndex(prefix: String? = null, archived: Boolean? = null, offset: Int = 0,
+        limit: Int = 25): List<AnalysisRunIndex> = access { db ->
+        require(offset >= 0 && limit in 1..100)
+        require(prefix == null || prefix.length in 1..200 && prefix.all { it.isLetterOrDigit() || it in "-_" })
+        val conditions = buildList {
+            if (archived != null) add("archived_at IS ${if (archived) "NOT " else ""}NULL")
+            if (prefix != null) add("substr(id, 1, ?) = ?")
+        }
+        val args = buildList {
+            if (prefix != null) { add(prefix.length.toString()); add(prefix) }
+            add(limit.toString()); add(offset.toString())
+        }
+        val where = if (conditions.isEmpty()) "" else "WHERE " + conditions.joinToString(" AND ")
+        db.rawQuery("SELECT id, version, created_at, updated_at, expires_at, archived_at FROM analysis_runs $where ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", args.toTypedArray()).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(AnalysisRunIndex(cursor.string("id"), cursor.int("version"),
+                Instant.parse(cursor.string("created_at")), Instant.parse(cursor.string("updated_at")),
+                cursor.nullableString("expires_at")?.let(Instant::parse), cursor.nullableString("archived_at")?.let(Instant::parse))) }
+        }
+    }
+
+    fun analysisStorageUsage(): AnalysisStorageUsage = access(::analysisStorageUsage)
+
+    /** Archive preserves the complete proof; it neither publishes findings nor deletes anything. */
+    fun archiveAnalysisRun(id: String, expectedVersion: Int): StoredAnalysisRun = access { db ->
+        validateId(id)
+        transaction(db) {
+            val current = readAnalysisRun(db, id) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
+            if (current.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本")
+            if (current.archivedAt != null) return@transaction current
+            require(current.version < Int.MAX_VALUE) { "分析任务版本达到上限" }
+            val state = AnalysisRunCodec.decode(current.payload)
+            require(state.calls.none { it.status == dev.tracelife.analysis.CallStatus.IN_FLIGHT }) { "运行中的分析须先完成或恢复中断" }
+            val usage = analysisStorageUsage(db)
+            require(usage.archivedTasks < AnalysisStorageLimits.ARCHIVED_TASKS && usage.archivedBytes + analysisStorageBytes(current) <= AnalysisStorageLimits.ARCHIVED_BYTES) { "归档空间达到上限，请先导出备份并管理历史" }
+            val now = maxOf(clock.instant(), current.updatedAt)
+            val archived = current.copy(version = current.version + 1, updatedAt = now, archivedAt = now)
+            db.update("analysis_runs", analysisRunValues(archived), "id = ?", arrayOf(id))
+            archived
+        }
+    }
+
+    /** Explicit local reopening grants no model invocation and cannot bypass the active budget. */
+    fun unarchiveAnalysisRun(id: String, expectedVersion: Int): StoredAnalysisRun = access { db ->
+        validateId(id)
+        transaction(db) {
+            val current = readAnalysisRun(db, id) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
+            if (current.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本")
+            if (current.archivedAt == null) return@transaction current
+            require(current.version < Int.MAX_VALUE) { "分析任务版本达到上限" }
+            requireActiveCapacity(db, id, analysisStorageBytes(current))
+            val active = current.copy(version = current.version + 1, updatedAt = maxOf(clock.instant(), current.updatedAt), archivedAt = null)
+            db.update("analysis_runs", analysisRunValues(active), "id = ?", arrayOf(id))
+            active
         }
     }
 
@@ -526,7 +589,9 @@ class LifeRepository(
         transaction(db) {
             requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
             require(!exists(db, "deleted_analysis_runs", "id = ?", run.id)) { "已删除的分析任务 ID 不可复用" }
+            require(!exists(db, "deleted_historical_comparison_runs", "id = ?", run.id)) { "已永久删除对照说明的任务 ID 不可复用" }
             val current = readAnalysisRun(db, run.id)
+            require(run.archivedAt == null && current?.archivedAt == null) { "已归档分析只能查阅；如需继续，请先恢复到活动任务" }
             if (current?.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
             if (current != null) {
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
@@ -545,6 +610,12 @@ class LifeRepository(
             }
             val prior = current?.let { AnalysisRunCodec.decode(it.payload) }
             require(prior == null || prior.request == state.request) { "分析问题、范围和预算不可在原任务中改写，请建立新任务" }
+            require(prior == null || state.historicalFeedbackResolutions.take(prior.historicalFeedbackResolutions.size) == prior.historicalFeedbackResolutions) { "独立对照说明只能追加新版本，不可改写或移除旧说明" }
+            if (current == null) require(HistoricalComparisonStore.list(db, run.id, 0, 1).isEmpty()) { "已有独立对照说明的历史任务 ID 不可复用" }
+            require(prior == null || prior.feedbackContext == state.feedbackContext) { "任务的历史意见目录不可改写，请建立新任务" }
+            state.feedbackContext?.let { plan ->
+                require(FeedbackContextCatalog(this).current(run.id, plan)) { "历史意见或原判断已变化，请重新分析" }
+            }
             require(prior == null || prior.actionPlan == state.actionPlan) { "行动证据目录不可改变" }
             if (current == null || state.calls.any { it !in prior?.calls.orEmpty() && it.status in setOf(dev.tracelife.analysis.CallStatus.IN_FLIGHT, dev.tracelife.analysis.CallStatus.SUCCEEDED) })
                 state.actionPlan?.let { if (!actionEvidencePlanCurrent(state.request.scope, it)) throw dev.tracelife.analysis.AnalysisDependencyBlockedException("行动证据目录已变化") }
@@ -558,10 +629,8 @@ class LifeRepository(
                 if (!profileMaintenanceCatalogCurrent(plan.profileTarget, run.id, plan.target, plan.references))
                     throw dev.tracelife.analysis.AnalysisDependencyBlockedException("画像维护目录在条件保存前发生变化")
             }
-            db.rawQuery("SELECT COUNT(*), COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE id <> ?", arrayOf(run.id)).use {
-                it.moveToFirst()
-                require(it.getInt(0) < 100 && it.getLong(1) + run.payload.toByteArray(Charsets.UTF_8).size + AnalysisRunCodec.reservedResponseBytes(run) <= 16L * 1024 * 1024) { "分析任务超出本地保存上限" }
-            }
+            requireActiveCapacity(db, run.id, analysisStorageBytes(run))
+            HistoricalComparisonStore.append(db, run.id, state.historicalFeedbackResolutions)
             if (current == null) insertAnalysisRun(db, run)
             else db.update("analysis_runs", analysisRunValues(run), "id = ?", arrayOf(run.id))
             run
@@ -602,6 +671,41 @@ class LifeRepository(
         transaction(db) {
             val run = readAnalysisRun(db, runId)
             run != null && run.version == expectedRunVersion && feedbackDependenciesCurrent(db, run, claim)
+        }
+    }
+
+    fun historicalComparisonRuns(offset: Int = 0, limit: Int = 25): List<HistoricalComparisonRun> =
+        access { db -> HistoricalComparisonStore.runs(db, offset, limit) }
+
+    fun historicalComparisons(runId: String? = null, offset: Int = 0, limit: Int = 25): List<HistoricalComparisonNote> = access { db ->
+        require(offset >= 0 && limit in 1..100)
+        runId?.let(::validateId)
+        HistoricalComparisonStore.list(db, runId, offset, limit)
+    }
+
+    /** Explicit erasure of independently written comparison reasons also erases machine copies. */
+    fun deleteHistoricalComparisons(runId: String, expectedAnalysisGeneration: Long) = access { db ->
+        validateId(runId)
+        transaction(db) {
+            if (analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("对照说明或分析已变化，请重新查看后删除")
+            val run = readAnalysisRun(db, runId)
+            if (run != null) deleteAnalysisRun(runId, run.version)
+            else {
+                purgeProfileMaintenanceRuns(db, deletedRunId = runId)
+                purgeKnowledge(db, strings(db, "SELECT DISTINCT id FROM knowledge_revisions WHERE run_id = ?", runId))
+            }
+            HistoricalComparisonStore.delete(db, runId, clock.instant())
+        }
+    }
+
+    /** Routing metadata excludes private wording; only selected identities are read later. */
+    fun historicalFeedbackMetadata(offset: Int = 0, limit: Int = 100): List<HistoricalFeedbackMetadata> = access { db ->
+        require(offset >= 0 && limit in 1..100)
+        db.rawQuery("SELECT id, version, run_id, batch_key, claim_index, claim_sha256, decision FROM claim_feedback WHERE decision IN ('CORRECTED', 'REJECTED', 'WITHDRAWN') ORDER BY id LIMIT ? OFFSET ?",
+            arrayOf(limit.toString(), offset.toString())).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(HistoricalFeedbackMetadata(cursor.string("id"), cursor.int("version"),
+                cursor.string("run_id"), cursor.string("batch_key"), cursor.int("claim_index"), cursor.string("claim_sha256"),
+                ClaimFeedbackDecision.valueOf(cursor.string("decision")))) }
         }
     }
 
@@ -678,9 +782,11 @@ class LifeRepository(
                     if (redacted == run) bumpFeedbackRun(db, run)
                     else {
                         validateAnalysisRun(redacted)
-                        val otherBytes = db.rawQuery("SELECT COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE id <> ?", arrayOf(run.id))
+                        val archived = run.archivedAt != null
+                        val budget = if (archived) AnalysisStorageLimits.ARCHIVED_BYTES else AnalysisStorageLimits.ACTIVE_BYTES
+                        val otherBytes = db.rawQuery("SELECT COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs ${lifecycleWhere(archived)} AND id <> ?", arrayOf(run.id))
                             .use { check(it.moveToFirst()); it.getLong(0) }
-                        if (otherBytes + analysisStorageBytes(redacted) > 16L * 1024 * 1024) throw AnalysisRedactionCapacityException()
+                        if (otherBytes + analysisStorageBytes(redacted) > budget) throw AnalysisRedactionCapacityException()
                         db.update("analysis_runs", analysisRunValues(redacted), "id = ?", arrayOf(run.id))
                     }
                     null
@@ -696,6 +802,31 @@ class LifeRepository(
             } else null
             FeedbackDeletionResult(purgedRun ?: current.runId.takeIf { it in purgedMaintenance })
         }
+    }
+
+    fun experienceThread(id: String): StoredExperienceThread? = access { db -> ExperienceThreadStore.get(db, id) }
+
+    fun experienceThreads(topic: String? = null, knowledgeId: String? = null, offset: Int = 0,
+        limit: Int = 25): List<StoredExperienceThread> = access { db -> ExperienceThreadStore.list(db, topic, knowledgeId, offset, limit) }
+
+    fun experienceHistory(id: String, offset: Int = 0, limit: Int = 25): List<StoredExperienceChange> =
+        access { db -> ExperienceThreadStore.history(db, id, offset, limit) }
+
+    fun experienceCurrentChange(id: String): StoredExperienceChange? = access { db -> ExperienceThreadStore.currentChange(db, id) }
+
+    internal fun saveExperienceThread(value: StoredExperienceThread, change: StoredExperienceChange,
+        expectedVersion: Int?): StoredExperienceThread = access { db ->
+        transaction(db) {
+            ExperienceThreadStore.save(db, value, change, expectedVersion) { id, revision ->
+                val knowledge = KnowledgeLibrary(this, clock).get(id, revision)
+                require(knowledge != null && knowledge.isCurrentRevision && knowledge.evidenceState == KnowledgeEvidenceState.CURRENT &&
+                    knowledge.value.publishedAt <= clock.instant()) { "只能把当前有效的已保存知识加入经验线索" }
+            }
+        }
+    }
+
+    fun deleteExperienceThread(id: String, expectedVersion: Int) = access { db ->
+        transaction(db) { ExperienceThreadStore.delete(db, id, expectedVersion, clock.instant()) }
     }
 
     fun knowledgeRevision(id: String, revision: Int? = null): StoredKnowledgeRevision? = access { db ->
@@ -738,6 +869,13 @@ class LifeRepository(
                 value.category, value.topics, value.revision, value.createdAt, value.publishedAt)
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
+            val publicationState = AnalysisRunCodec.decode(run.payload)
+            publicationState.feedbackContext?.let { plan ->
+                require(FeedbackContextCatalog(this).current(run.id, plan)) { "历史意见或原判断已变化，请重新分析" }
+                val review = requireNotNull(publicationState.calls.lastOrNull { it.batchKey == value.reviewBatchKey &&
+                    it.status == dev.tracelife.analysis.CallStatus.SUCCEEDED }) { "知识核对不存在" }
+                FeedbackContextProtocol.requirePublicationReady(publicationState, value.claimRef, review)
+            }
             value.profileMaintenanceProof?.let { maintenance ->
                 require(profileMaintenanceCatalogCurrent(maintenance.plan.profileTarget, value.runId, value.claimRef,
                     maintenance.plan.references)) { "画像维护历史目录已变化" }
@@ -1076,7 +1214,11 @@ class LifeRepository(
                     knowledgeRevisions = allKnowledgeRevisions(db), knowledgeHeads = allKnowledgeHeads(db), deletedKnowledge = deletions(db, "deleted_knowledge"),
                     actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"),
                     profileRevisions = ProfileStore.allRevisions(db), profileHeads = ProfileStore.allHeads(db), deletedProfiles = deletions(db, "deleted_profiles"),
-                    dashboardPreferences = DashboardPreferencesStore.read(db))
+                    dashboardPreferences = DashboardPreferencesStore.read(db),
+                    experienceThreads = ExperienceThreadStore.allThreads(db), experienceChanges = ExperienceThreadStore.allChanges(db),
+                    deletedExperienceThreads = ExperienceThreadStore.deletions(db),
+                    historicalComparisons = HistoricalComparisonStore.all(db),
+                    historicalComparisonDeletions = HistoricalComparisonStore.deletions(db))
                 snapshot.currentKnowledgeSourceRevisions = snapshot.knowledgeRevisions.filter {
                     SourceScopeLedger.current(db, it.source, it.scope)
                 }.map { it.id to it.revision }.toSet()
@@ -1159,7 +1301,7 @@ class LifeRepository(
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
         if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1"))) {
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1") || exists(db, "experience_threads", "1 = 1") || exists(db, "historical_comparisons", "1 = 1"))) {
             throw IllegalStateException("目标已有记录、模板、分析、反馈、知识、行动或画像，须明确允许替换后恢复")
         }
         val restoredPreferences = DashboardPreferencesStore.read(db) ?: snapshot.dashboardPreferences
@@ -1183,6 +1325,12 @@ class LifeRepository(
         ActionValidation.validateCollection(actionRevisions, actionHeads)
         val mergedRecords = mergeDeletions(deletions(db, "deleted_records"), snapshot.deletedRecords)
         val mergedTemplates = mergeDeletions(deletions(db, "deleted_templates"), snapshot.deletedTemplates)
+        val experience = ExperienceValidation.merge(ExperienceThreadStore.allThreads(db), ExperienceThreadStore.allChanges(db),
+            ExperienceThreadStore.deletions(db), snapshot.experienceThreads, snapshot.experienceChanges, snapshot.deletedExperienceThreads)
+        val comparisonDeletions = mergeDeletions(HistoricalComparisonStore.deletions(db), snapshot.historicalComparisonDeletions)
+        require(comparisonDeletions.size <= HistoricalComparisonCodec.MAX_DELETIONS) { "独立对照说明删除标记达到上限" }
+        val comparisonDeletedRuns = comparisonDeletions.map { it.id }.toSet()
+        val comparisons = HistoricalComparisonStore.merge(HistoricalComparisonStore.all(db), snapshot.historicalComparisons, comparisonDeletedRuns)
         val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns).toMutableList()
         require(mergedAnalyses.size <= 100_000) { "分析任务删除标记超过上限" }
         val mergedFeedbackDeletions = mergeDeletions(deletions(db, "deleted_claim_feedback"), snapshot.deletedClaimFeedback)
@@ -1205,6 +1353,13 @@ class LifeRepository(
         val requiredAttachmentIds = records.flatMap { it.draft.attachmentIds }.toSet()
         val attachments = snapshot.attachments.filter { it.id in requiredAttachmentIds }
         val deletedAnalysisIds = mergedAnalyses.map { it.id }.toMutableSet()
+        snapshot.analysisRuns.filter { it.id in comparisonDeletedRuns && it.id !in deletedAnalysisIds }.forEach { run ->
+            require(mergedAnalyses.size < 100_000) { "分析任务删除标记达到上限" }
+            mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+            deletedAnalysisIds += run.id
+        }
+        // The independent deletion fence also protects copies whose original run is absent.
+        deletedAnalysisIds += comparisonDeletedRuns
         snapshot.analysisRuns.filter { SourceDependencyDeletion.dependsOnRecords(it, recordTombstones) }
             .filterNot { it.id in deletedAnalysisIds }.forEach { run ->
                 require(mergedAnalyses.size < 100_000) { "分析任务删除标记达到上限" }
@@ -1258,19 +1413,24 @@ class LifeRepository(
             }
         // Evaluate aggregate capacity only after all redactions and compatibility exclusions.
         // Later removals may free enough space; input order must not cause needless tombstones.
-        var analysisBytes = redactedAnalyses.sumOf(::analysisStorageBytes)
-        if (analysisBytes > 16L * 1024 * 1024) {
-            redactedAnalyses.map { it to analysisStorageBytes(it) - analysisStorageBytes(originalAnalyses.getValue(it.id)) }
-                .filter { it.second > 0 }.sortedWith(compareByDescending<Pair<StoredAnalysisRun, Long>> { it.second }.thenBy { it.first.id })
-                .forEach { (run, _) ->
-                    if (analysisBytes > 16L * 1024 * 1024) {
-                        discardForCapacity(run)
-                        analysisBytes -= analysisStorageBytes(run)
+        listOf(false, true).forEach { archived ->
+            val group = redactedAnalyses.filter { (it.archivedAt != null) == archived }
+            var analysisBytes = group.sumOf(::analysisStorageBytes)
+            val budget = if (archived) AnalysisStorageLimits.ARCHIVED_BYTES else AnalysisStorageLimits.ACTIVE_BYTES
+            if (analysisBytes > budget) {
+                group.map { it to analysisStorageBytes(it) - analysisStorageBytes(originalAnalyses.getValue(it.id)) }
+                    .filter { it.second > 0 }.sortedWith(compareByDescending<Pair<StoredAnalysisRun, Long>> { it.second }.thenBy { it.first.id })
+                    .forEach { (run, _) ->
+                        if (analysisBytes > budget) {
+                            discardForCapacity(run)
+                            analysisBytes -= analysisStorageBytes(run)
+                        }
                     }
-                }
+            }
+            require(analysisBytes <= budget) { "活动分析或归档超过本地保存上限" }
         }
-        require(analysisBytes <= 16L * 1024 * 1024) { "分析任务超过本地保存上限" }
         var analyses = redactedAnalyses.filterNot { it.id in deletedAnalysisIds }
+        AnalysisStorageLimits.validate(analyses)
         // Present heads are never rolled back by an older backup. Their entire immutable chain
         // wins; if replacement sources cannot support it, retain a deletion fence instead.
         ensureKnowledgeBounds(db)
@@ -1303,10 +1463,19 @@ class LifeRepository(
         // Capacity redaction and source validation can introduce further deletions after the
         // first pass. Close the cross-task graph over those final fences as well.
         val retainedProfileIdentities = profileRevisions.map { it.id to it.revision }.toSet()
+        val retainedRunIds = analyses.map { it.id }.toSet()
+        val incomingRunIds = snapshot.analysisRuns.map { it.id }.toSet()
+        val retainedFeedbackIds = feedback.map { it.id }.toSet()
+        val comparisonsByRun = comparisons.groupBy { it.runId }
         val missingReferenceRuns = analyses.filter { run ->
-            AnalysisRunCodec.decode(run.payload).profileMaintenancePlans.flatMap { it.references }.any { ref ->
+            val state = AnalysisRunCodec.decode(run.payload)
+            state.profileMaintenancePlans.flatMap { it.references }.any { ref ->
                 ref.kind == ProfileMaintenanceReferenceKind.PROFILE && (ref.id to ref.version) !in retainedProfileIdentities
-            }
+            } || FeedbackContextProtocol.usedReferences(state).any { ref ->
+                ref.id !in retainedFeedbackIds || ref.runId !in retainedRunIds &&
+                    (ref.sourceRecordIds.isNotEmpty() || ref.runId in incomingRunIds)
+            } || run.id in comparisonDeletedRuns ||
+                state.historicalFeedbackResolutions.toSet() != comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()
         }.map { it.id }.toSet()
         analyses.filter { it.id in missingReferenceRuns }.forEach { run ->
             require(mergedAnalyses.size < 100_000) { "维护依赖缺口清理超过任务删除上限" }
@@ -1418,6 +1587,8 @@ class LifeRepository(
                 mergedKnowledgeDeletions.forEach { insertDeletion(db, "deleted_knowledge", it) }
                 ActionStore.replace(db, actionRevisions, actionHeads, mergedActionDeletions)
                 ProfileStore.replace(db, profileRevisions, profileHeads, mergedProfileDeletions)
+                ExperienceThreadStore.replace(db, experience.threads, experience.changes, experience.deletions)
+                HistoricalComparisonStore.replace(db, comparisons, comparisonDeletions)
                 restoredPreferences?.let { DashboardPreferencesStore.write(db, it) }
                 val restoreEpoch = localRestoreEpoch()
                 require(restoreEpoch < Long.MAX_VALUE) { "恢复代数达到上限" }
@@ -1594,13 +1765,31 @@ class LifeRepository(
         AnalysisRunCodec.validateStored(run)
     }
 
+    private fun lifecycleWhere(archived: Boolean?): String = if (archived == null) "" else "WHERE archived_at IS ${if (archived) "NOT " else ""}NULL"
+
+    private fun analysisStorageUsage(db: SQLiteDatabase): AnalysisStorageUsage {
+        val values = mutableMapOf<Boolean, Pair<Int, Long>>()
+        db.rawQuery("SELECT archived_at IS NOT NULL, COUNT(*), COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs GROUP BY archived_at IS NOT NULL", null).use { cursor ->
+            while (cursor.moveToNext()) values[cursor.getInt(0) == 1] = cursor.getInt(1) to cursor.getLong(2)
+        }
+        return AnalysisStorageUsage(values[false]?.first ?: 0, values[false]?.second ?: 0,
+            values[true]?.first ?: 0, values[true]?.second ?: 0)
+    }
+
+    private fun requireActiveCapacity(db: SQLiteDatabase, id: String, bytes: Long) {
+        db.rawQuery("SELECT COUNT(*), COALESCE(SUM(length(CAST(payload AS BLOB)) + reserved_bytes), 0) FROM analysis_runs WHERE archived_at IS NULL AND id <> ?", arrayOf(id)).use {
+            it.moveToFirst()
+            require(it.getInt(0) < AnalysisStorageLimits.ACTIVE_TASKS && it.getLong(1) + bytes <= AnalysisStorageLimits.ACTIVE_BYTES) { "活动分析达到保存上限，请先归档已完成的分析" }
+        }
+    }
+
     private fun analysisStorageBytes(run: StoredAnalysisRun): Long =
         run.payload.toByteArray(Charsets.UTF_8).size.toLong() + AnalysisRunCodec.reservedResponseBytes(run)
 
     private fun analysisRunValues(run: StoredAnalysisRun) = values(
         "id" to run.id, "version" to run.version, "source_store_id" to run.source.storeId, "source_generation" to run.source.generation,
         "created_at" to timestamp(run.createdAt), "updated_at" to timestamp(run.updatedAt), "expires_at" to run.expiresAt?.let(::timestamp), "payload" to run.payload,
-        "reserved_bytes" to AnalysisRunCodec.reservedResponseBytes(run),
+        "reserved_bytes" to AnalysisRunCodec.reservedResponseBytes(run), "archived_at" to run.archivedAt?.let(::timestamp),
     )
 
     private fun insertAnalysisRun(db: SQLiteDatabase, run: StoredAnalysisRun) {
@@ -1625,7 +1814,7 @@ class LifeRepository(
             }
         }
         return StoredAnalysisRun(id, cursor.int("version"), SourceStamp(cursor.string("source_store_id"), cursor.getLong(cursor.getColumnIndexOrThrow("source_generation"))),
-            Instant.parse(cursor.string("created_at")), Instant.parse(cursor.string("updated_at")), cursor.nullableString("expires_at")?.let(Instant::parse), payload)
+            Instant.parse(cursor.string("created_at")), Instant.parse(cursor.string("updated_at")), cursor.nullableString("expires_at")?.let(Instant::parse), payload, cursor.nullableString("archived_at")?.let(Instant::parse))
     }
 
     private fun readAnalysisRun(db: SQLiteDatabase, id: String): StoredAnalysisRun? =
@@ -1684,8 +1873,10 @@ class LifeRepository(
     }
 
     private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
+        val state = AnalysisRunCodec.decode(run.payload)
+        if (state.feedbackContext?.let { !FeedbackContextCatalog(this).current(run.id, it) } == true) return false
         val dependencies = try {
-            ReductionGraph.feedbackDependencies(AnalysisRunCodec.decode(run.payload), claim)
+            ReductionGraph.feedbackDependencies(state, claim)
         } catch (_: IllegalArgumentException) { return false }
         return dependencies.all { dependency ->
             val id = AnalysisRunCodec.feedbackId(run.id, dependency.claim)
@@ -1787,15 +1978,21 @@ class LifeRepository(
         ensureKnowledgeBounds(db)
         ActionStore.ensureBounds(db)
         ProfileStore.ensureBounds(db)
+        HistoricalComparisonStore.ensureBounds(db)
+        val usage = analysisStorageUsage(db)
+        require(usage.activeTasks <= AnalysisStorageLimits.ACTIVE_TASKS && usage.activeBytes <= AnalysisStorageLimits.ACTIVE_BYTES &&
+            usage.archivedTasks <= AnalysisStorageLimits.ARCHIVED_TASKS && usage.archivedBytes <= AnalysisStorageLimits.ARCHIVED_BYTES) { "活动分析或归档超过保存上限" }
         val rowLimits = mapOf("record_revisions" to 100_000, "template_versions" to 10_000,
-            "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to 100,
+            "deleted_records" to 100_000, "deleted_templates" to 10_000, "change_events" to 200_000, "analysis_runs" to AnalysisStorageLimits.ACTIVE_TASKS + AnalysisStorageLimits.ARCHIVED_TASKS,
             "deleted_analysis_runs" to 100_000, "claim_feedback" to ClaimFeedbackValidation.MAX_ROWS,
             "deleted_claim_feedback" to ClaimFeedbackValidation.MAX_DELETIONS, "knowledge_revisions" to KnowledgeValidation.MAX_REVISIONS,
             "knowledge_heads" to KnowledgeValidation.MAX_REVISIONS, "deleted_knowledge" to KnowledgeValidation.MAX_DELETIONS,
             "action_revisions" to ActionValidation.MAX_REVISIONS, "action_heads" to ActionValidation.MAX_REVISIONS,
             "deleted_actions" to ActionValidation.MAX_DELETIONS,
             "profile_revisions" to ProfileValidation.MAX_REVISIONS, "profile_heads" to ProfileValidation.MAX_REVISIONS,
-            "deleted_profiles" to ProfileValidation.MAX_DELETIONS)
+            "deleted_profiles" to ProfileValidation.MAX_DELETIONS, "experience_threads" to ExperienceValidation.MAX_THREADS,
+            "experience_changes" to ExperienceValidation.MAX_CHANGES, "deleted_experience_threads" to ExperienceValidation.MAX_DELETIONS,
+            "historical_comparisons" to HistoricalComparisonCodec.MAX_NOTES, "deleted_historical_comparison_runs" to HistoricalComparisonCodec.MAX_DELETIONS)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }
@@ -1808,13 +2005,16 @@ class LifeRepository(
             "template_questions" to listOf("template_id", "question_id", "prompt", "hint", "intent"),
             "deleted_records" to listOf("id"), "deleted_templates" to listOf("id"),
             "change_events" to listOf("entity_id", "kind"),
-            "analysis_runs" to listOf("id", "source_store_id", "payload"),
+            "analysis_runs" to listOf("id", "source_store_id"),
             "deleted_analysis_runs" to listOf("id"),
             "claim_feedback" to listOf("id", "run_id", "batch_key", "claim_sha256", "source_store_id", "decision", "user_text"),
             "deleted_claim_feedback" to listOf("id"),
             "knowledge_revisions" to listOf("id", "run_id", "feedback_id", "payload"), "knowledge_heads" to listOf("id"), "deleted_knowledge" to listOf("id"),
             "profile_revisions" to listOf("id", "operation_id", "payload"),
             "profile_heads" to listOf("id", "knowledge_id", "dimension", "layer"), "deleted_profiles" to listOf("id"),
+            "experience_threads" to listOf("id", "payload"), "experience_changes" to listOf("thread_id", "payload"),
+            "deleted_experience_threads" to listOf("id"),
+            "historical_comparisons" to listOf("id", "run_id", "payload"), "deleted_historical_comparison_runs" to listOf("id"),
         )
         var textBytes = 0L
         textColumns.forEach { (table, columns) ->
@@ -1953,7 +2153,7 @@ class LifeRepository(
     }
 
     companion object {
-        private const val ANALYSIS_METADATA_COLUMNS = "id, version, source_store_id, source_generation, created_at, updated_at, expires_at, length(CAST(payload AS BLOB)) AS payload_bytes, length(payload) AS payload_points"
+        private const val ANALYSIS_METADATA_COLUMNS = "id, version, source_store_id, source_generation, created_at, updated_at, expires_at, archived_at, length(CAST(payload AS BLOB)) AS payload_bytes, length(payload) AS payload_points"
         const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
         private val locks = ConcurrentHashMap<String, Any>()
         private val instantFormat = DateTimeFormatterBuilder().appendInstant(9).toFormatter()

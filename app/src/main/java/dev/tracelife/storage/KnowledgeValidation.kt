@@ -145,6 +145,7 @@ object KnowledgeValidation {
                 if (proof == null) it.purpose == CallPurpose.REVIEW && it.reviewTarget == value.claimRef
                 else it.purpose == CallPurpose.REDUCTION_REVIEW && it.reductionTarget == proof.target
         } ?: return false
+        if (!dev.tracelife.analysis.FeedbackContextProtocol.publicationReady(state, value.claimRef, latest)) return false
         if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
             latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
             latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence ||

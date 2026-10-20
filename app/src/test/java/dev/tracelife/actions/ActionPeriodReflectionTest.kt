@@ -285,9 +285,10 @@ class ActionPeriodReflectionTest {
     @Test fun `new payload versions reject mixed legacy action fields and retain old task format`() {
         seed(); period.start(request(), "run"); period.process("run", provider)
         val payload = JSONObject(analysis.task("run").stored.payload)
-        assertEquals(11, payload.getInt("formatVersion"))
+        assertEquals(12, payload.getInt("formatVersion"))
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(payload.put("formatVersion", 9).toString()) }
         val ordinary = JSONObject(AnalysisRunCodec.encode(AnalysisRunState(AnalysisRequest("合成旧任务", scope))))
+        ordinary.remove("feedbackContext"); ordinary.remove("historicalFeedbackResolutions"); ordinary.getJSONObject("request").remove("inheritHistoricalFeedback")
         ordinary.put("formatVersion", 9); ordinary.remove("actionPlan"); ordinary.getJSONObject("request").remove("actionPeriod")
         assertFalse(AnalysisRunCodec.decode(ordinary.toString()).request.actionPeriod)
     }

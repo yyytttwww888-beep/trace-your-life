@@ -213,8 +213,8 @@ class BackupArchiveTest {
         listOf(
             metadata.replace("\"generation\":41", "\"generation\":41,\"generation\":42"),
             metadata.replace("\"generation\":41", "\"generation\":\"41\""),
-            metadata.replace("\"formatVersion\":8", "\"formatVersion\":999"),
-            metadata.replace("\"sourceSchemaVersion\":9", "\"sourceSchemaVersion\":999"),
+            metadata.replace("\"formatVersion\":9", "\"formatVersion\":999"),
+            metadata.replace("\"sourceSchemaVersion\":10", "\"sourceSchemaVersion\":999"),
             metadata.dropLast(1) + ",\"unknown\":true}",
             metadata + "{}",
         ).forEach { invalid -> assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(invalid.byteInputStream()) } }
@@ -223,7 +223,7 @@ class BackupArchiveTest {
     @Test fun `version one backup remains readable and cannot smuggle analysis fields`() {
         val current = fixture()
         val legacy = JSONObject(metadata(current).toString(Charsets.UTF_8)).apply {
-            put("formatVersion", 1); put("sourceSchemaVersion", 2); remove("dashboardPreferences")
+            put("formatVersion", 1); put("sourceSchemaVersion", 2); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads")
             remove("analysisRuns"); remove("analysisGeneration"); remove("deletedAnalysisRuns")
             remove("claimFeedback"); remove("deletedClaimFeedback")
             remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge")
@@ -330,6 +330,19 @@ class BackupArchiveTest {
             assertFalse(destination.exists())
             rejects(seal(zip(invalid)))
         }
+    }
+
+    @Test fun `malformed archived analysis fails with the backup error before writing metadata`() {
+        val base = fixture()
+        val malformed = base.copy(analysisRuns = listOf(analysisRun(base).copy(
+            payload = "{\"formatVersion\":1,\"request\":false,\"calls\":[]}", archivedAt = time.plusSeconds(2),
+        )))
+        val output = ByteArrayOutputStream()
+        assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.write(malformed, output) }
+        assertEquals(0, output.size())
+        val destination = File(root, "rejected-malformed-archive.tlb")
+        assertThrows(InvalidBackupException::class.java) { BackupArchive.write(malformed, attachments, destination, password) }
+        assertFalse(destination.exists())
     }
 
     @Test fun `logical event history beyond one hundred thousand entries remains readable`() {

@@ -234,6 +234,10 @@ class ReflectionWorkflowTest {
         val ordinary = workflow.process(workflow.start(scope.copy(recordIds = setOf("note-0"))).id, provider).run
         val claim = ordinary.findings.single().target
         workflow.respond(ordinary.id, claim, ordinary.taskVersion, ClaimFeedbackDecision.CONFIRMED)
+        workflow.historicalFeedbackPage(ordinary.id, claim).items.forEach {
+            workflow.resolveHistoricalFeedback(ordinary.id, claim, it.content.reference.id, workflow.inspect(ordinary.id).taskVersion,
+                HistoricalFeedbackChoice.UNRELATED, "合成：这条仅处理独立原文，与先前归并判断不同。")
+        }
         provider.verdict = ReviewVerdict.UNSUPPORTED
         val checked = workflow.reviewAndSave(ordinary.id, claim, provider, provider)
         assertEquals(ReviewVerdict.UNSUPPORTED, checked.run.findings.single().reviewVerdict)

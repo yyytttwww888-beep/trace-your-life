@@ -16,6 +16,7 @@ import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.analysis.ReflectionRun
 import dev.tracelife.analysis.ReflectionTarget
+import dev.tracelife.analysis.HistoricalFeedbackChoice
 import dev.tracelife.analysis.SemanticReviewProvider
 import dev.tracelife.analysis.PreparedModelRequest
 import dev.tracelife.analysis.ReviewCompletion
@@ -237,6 +238,60 @@ class ReflectionActivityTest {
         assertTrue(wording.contains("1 项已保存"))
         assertTrue(wording.contains("其中 1 项待更新"))
         home.pause().stop().destroy()
+    }
+
+    @Test fun `archive and restore keep findings readable and never dispatch a provider`() {
+        val run = seedAnalyzedRun()
+        val calls = provider.calls
+        open(Intent(app, ReflectionActivity::class.java).putExtra(ReflectionActivity.EXTRA_RUN_ID, run.id))
+        click("archiveReflection")
+        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        drain()
+        assertTrue(texts().any { it.startsWith("已归档 ·") })
+        assertNotNull(app.reflectionWorkflow.inspect(run.id).archivedAt)
+        requireNotNull(controller).recreate()
+        drain()
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("unarchiveReflection"))
+        click("unarchiveReflection")
+        assertNull(app.reflectionWorkflow.inspect(run.id).archivedAt)
+        assertEquals(calls, provider.calls)
+        assertEquals(run.findings.map { it.text }, app.reflectionWorkflow.inspect(run.id).findings.map { it.text })
+    }
+
+    @Test fun `correction appears in next analysis and conflicts cannot expose save action`() {
+        val old = seedAnalyzedRun()
+        open(Intent(app, ReflectionActivity::class.java).putExtra(ReflectionActivity.EXTRA_RUN_ID, old.id))
+        val oldTarget = old.findings.first().target as ReflectionTarget.Claim
+        click("reflectionFinding:claim:${oldTarget.ref.batchKey}:${oldTarget.ref.claimIndex}:${oldTarget.ref.claimSha256}")
+        click("correctReflectionFinding")
+        val correctionDialog = ShadowAlertDialog.getLatestAlertDialog()
+        correctionDialog.window!!.decorView.findViewWithTag<EditText>("reflectionCorrection").setText("合成纠正：任务更简单也可能解释启动更快，不能一概而论。")
+        correctionDialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        drain()
+        val corrected = app.reflectionWorkflow.inspect(old.id).findings.first()
+        assertEquals(ClaimFeedbackDecision.CORRECTED, corrected.feedback!!.feedback.decision)
+        controller?.pause()?.stop()?.destroy(); controller = null
+        val next = app.io.submit<ReflectionRun> {
+            val created = app.reflectionWorkflow.start(scope)
+            app.reflectionWorkflow.process(created.id, provider).run
+        }.get(20, TimeUnit.SECONDS)
+        open(Intent(app, ReflectionActivity::class.java).putExtra(ReflectionActivity.EXTRA_RUN_ID, next.id))
+        val target = next.findings.first().target as ReflectionTarget.Claim
+        click("reflectionFinding:claim:${target.ref.batchKey}:${target.ref.claimIndex}:${target.ref.claimSha256}")
+        assertNull(activity.window.decorView.findViewWithTag<View>("keepReflectionFinding"))
+        click("historicalFeedback")
+        assertTrue(texts().any { it.contains("任务更简单") })
+        val item = app.reflectionWorkflow.historicalFeedbackPage(next.id, target).items.single()
+        click("resolveHistory:${item.content.reference.id}")
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        dialog.window!!.decorView.findViewWithTag<Spinner>("historicalFeedbackChoice").setSelection(HistoricalFeedbackChoice.CONFLICT.ordinal)
+        dialog.window!!.decorView.findViewWithTag<EditText>("historicalFeedbackReason").setText("合成对照：新判断仍然缺少任务难度的限制。")
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        drain()
+        assertTrue(texts().any { it.contains("仍与我的意见冲突") })
+        click("historicalFeedbackDone")
+        assertNull(activity.window.decorView.findViewWithTag<View>("keepReflectionFinding"))
+        assertEquals(1, app.reflectionWorkflow.inspect(next.id).findings.first().historicalFeedback.conflicts)
     }
 
     private fun seedAnalyzedRun(): ReflectionRun = app.io.submit<ReflectionRun> {
