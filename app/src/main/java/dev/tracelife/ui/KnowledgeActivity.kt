@@ -48,7 +48,7 @@ class KnowledgeActivity : ScreenActivity() {
     override fun restoreScreenState(savedInstanceState: Bundle?) {
         filterFrom = savedInstanceState?.getString("from").orEmpty()
         filterThrough = savedInstanceState?.getString("through").orEmpty()
-        filterTopic = savedInstanceState?.getString("topic").orEmpty()
+        filterTopic = savedInstanceState?.getString("topic") ?: intent.getStringExtra(EXTRA_TOPIC).orEmpty()
         includeInvalid = savedInstanceState?.getBoolean("includeInvalid", true) ?: true
         shelf = savedInstanceState?.getString("shelf")?.let(KnowledgeShelf::valueOf) ?: KnowledgeShelf.FINDINGS
         detailId = if (savedInstanceState != null) savedInstanceState.getString("detail") else intent.getStringExtra(EXTRA_KNOWLEDGE_ID)
@@ -103,6 +103,9 @@ class KnowledgeActivity : ScreenActivity() {
         detailRevision = null
         beginScreen("index", "知识库", showBack = false)
         Ui.note(root, "从一个主题回到经历、留下的经验，以及后来尝试的结果。")
+        button("查找记录与知识", "searchKnowledge") {
+            startActivity(Intent(this, DiscoveryActivity::class.java).putExtra(DiscoveryActivity.EXTRA_TOPIC, filterTopic))
+        }
         primaryButton("分析记录", "analyzeRecords") { startActivity(Intent(this, ReflectionActivity::class.java)) }
         val shelves = KnowledgeShelf.entries
         spinner(shelves.map(::shelfLabel), shelves.indexOf(shelf), "knowledgeCategory").also { choices ->
@@ -238,6 +241,9 @@ class KnowledgeActivity : ScreenActivity() {
                 Ui.note(card, "${it.records} 条经历 · ${it.saved} 条已保存 · ${it.pending} 条待更新${if (it.experienceThreads > 0) " · ${it.experienceThreads} 条经验线索" else ""}")
             }
             Ui.note(card, "下方并列查看这个主题留下的理解与原始经历；同一条资料可以属于多个主题。")
+            primaryIn(card, "查看主题概况", "openTopicOverview") {
+                startActivity(Intent(this, TopicActivity::class.java).putExtra(TopicActivity.EXTRA_TOPIC, filterTopic))
+            }
             addButton(card, "所有主题", "allKnowledgeTopics") {
                 filterTopic = ""
                 showIndex()
@@ -246,9 +252,7 @@ class KnowledgeActivity : ScreenActivity() {
             if (topics.isEmpty()) Ui.note(card, "记录或保存发现时添加主题，就能在这里逐渐串起相关经历。")
             topics.take(topicLimit).forEach { topic ->
                 listRow(card, "${topic.name}\n${topic.records} 条经历 · ${topic.saved} 条已保存${if (topic.pending > 0) " · ${topic.pending} 条待更新" else ""}${if (topic.experienceThreads > 0) " · ${topic.experienceThreads} 条经验线索" else ""}", "knowledgeTopic:${topic.name}") {
-                    filterTopic = topic.name
-                    shelf = KnowledgeShelf.ALL
-                    showIndex()
+                    startActivity(Intent(this, TopicActivity::class.java).putExtra(TopicActivity.EXTRA_TOPIC, topic.name))
                 }
             }
             if (topics.size > topicLimit) addButton(card, "更多主题", "moreKnowledgeTopics") {
@@ -336,9 +340,7 @@ class KnowledgeActivity : ScreenActivity() {
                 Ui.note(card, "涉及 ${value.scope.from} — ${value.scope.through} 的记录")
                 value.topics.forEach { topic ->
                     addButton(card, "回到「$topic」主题", "knowledgeDetailTopic:$topic") {
-                        filterTopic = topic
-                        shelf = KnowledgeShelf.ALL
-                        showIndex()
+                        startActivity(Intent(this, TopicActivity::class.java).putExtra(TopicActivity.EXTRA_TOPIC, topic))
                     }
                 }
                 Ui.disclosure(card, "时间与版本", "knowledgeMetadata") { details ->
@@ -380,6 +382,32 @@ class KnowledgeActivity : ScreenActivity() {
                     Ui.disclosure(source, "引用位置", "knowledgeReceipt:${receipt.id}") { identity ->
                         Ui.note(identity, "记录 ${receipt.recordId}\n内容 ${receipt.field}\n引用 ${receipt.id}")
                     }
+                }
+            }
+            if (view.isCurrentRevision && view.evidenceState != KnowledgeEvidenceState.CURRENT) {
+                val update = card()
+                Ui.sectionTitle(update, "把这条理解接着更新")
+                Ui.note(update, "原来的理解、依据和自己的说明仍会保留。重新读取资料后，选择值得保存的新发现，再接到原经验中。")
+                if (value.profileMaintenanceProof != null) {
+                    addButton(update, "到关于我更新描述", "refreshProfileKnowledge") { startActivity(Intent(this, ProfileActivity::class.java)) }
+                } else if (value.metricEvidence.isNotEmpty()) {
+                    addButton(update, "查看当前统计", "refreshMetricKnowledge") { startActivity(Intent(this, DashboardActivity::class.java)) }
+                } else if (value.actionPlan != null || value.actionEvidence.isNotEmpty()) {
+                    addButton(update, "重新回看行动与记录", "refreshActionKnowledge") {
+                        startActivity(Intent(this, ActionReflectionActivity::class.java)
+                            .putExtra(ActionReflectionActivity.EXTRA_FROM, value.scope.from.toString())
+                            .putExtra(ActionReflectionActivity.EXTRA_THROUGH, value.scope.through.toString())
+                            .putExtra(ActionReflectionActivity.EXTRA_ZONE_ID, value.scope.zoneId)
+                            .putExtra(ActionReflectionActivity.EXTRA_INCLUDE_ARCHIVED, value.scope.includeArchived)
+                            .putStringArrayListExtra(ActionReflectionActivity.EXTRA_RECORD_IDS, value.scope.recordIds?.let { ArrayList(it) }))
+                    }
+                } else addButton(update, "按原范围重新分析", "refreshKnowledge") {
+                    startActivity(Intent(this, ReflectionActivity::class.java)
+                        .putExtra(ReflectionActivity.EXTRA_FROM, value.scope.from.toString())
+                        .putExtra(ReflectionActivity.EXTRA_THROUGH, value.scope.through.toString())
+                        .putExtra(ReflectionActivity.EXTRA_ZONE_ID, value.scope.zoneId)
+                        .putExtra(ReflectionActivity.EXTRA_INCLUDE_ARCHIVED, value.scope.includeArchived)
+                        .putStringArrayListExtra(ReflectionActivity.EXTRA_RECORD_IDS, value.scope.recordIds?.let { ArrayList(it) }))
                 }
             }
             val continuity = card()
@@ -547,6 +575,7 @@ class KnowledgeActivity : ScreenActivity() {
     }
 
     companion object {
+        const val EXTRA_TOPIC = "knowledgeTopic"
         const val EXTRA_KNOWLEDGE_ID = "knowledgeId"
         const val EXTRA_KNOWLEDGE_REVISION = "knowledgeRevision"
         private const val PAGE_SIZE = 25

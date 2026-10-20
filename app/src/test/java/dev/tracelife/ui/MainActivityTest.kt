@@ -77,6 +77,29 @@ class MainActivityTest {
         assertEquals(setOf("学习", "工作"), records.single().draft.topics)
     }
 
+    @Test fun `accepting two topic suggestions saves separate tags and preserves existing spelling`() {
+        click("newRecord")
+        input("body", "合成资料：今天学习了一个方法，并在工作中实践。")
+        click("recordMetadata")
+        // A pre-existing single tag may contain a Chinese enumeration comma.
+        input("topics", "个人、项目")
+        click("suggestRecordTopics")
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        val list = dialog.listView
+        for (topic in listOf("工作", "学习")) {
+            val index = (0 until list.adapter.count).single { list.adapter.getItem(it).toString().startsWith("$topic · ") }
+            list.performItemClick(list.getChildAt(index), index, list.adapter.getItemId(index))
+        }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        drain()
+        controller.recreate()
+        drain()
+        click("saveRecord")
+        val saved = app.repository.listRecords().items.single()
+        assertEquals(setOf("个人、项目", "工作", "学习"), saved.draft.topics)
+        assertFalse("工作、学习" in saved.draft.topics)
+    }
+
     @Test fun `recreation during save retries stable identity without a duplicate record`() {
         click("newRecord")
         input("body", "合成资料：保存中的草稿")

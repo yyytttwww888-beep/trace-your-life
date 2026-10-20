@@ -241,3 +241,15 @@ val result = app.analysisProcessor.process(
 同一合成案例修复后通过：响应自然结束，4 条发现均通过原文引用检查，任务达到 `READY`，登记读取 1 条历史意见；实际用量 1,791 输入／615 输出 token，完整请求 7,650 字节，保守输入预算 8,674 token。同期 26 项历史协议与适配器离线测试全部通过。此用例没有调用独立核对、处理人工历史对照或发布知识，仅验证该有限案例的生成链与引用边界，不代表模型总体语义正确率或实体手机验收。
 
 请求变化后旧失败批次不能在同一标识下改用新请求继续，需新建同范围任务；旧任务保留其原始调用和错误记录。供应商结构错误记录为 `PROVIDER_RESPONSE`，执行器的结构、引用或预算校验失败记录为 `INVALID_RESPONSE`，诊断时应区分两者。
+
+## 历史意见语义回归
+
+`DeepSeekHistoricalFeedbackAssistLiveTest` 使用独立开关，最多 3 次真实请求，分别检查遵守限制、用同义表达重复被否定的判断、无关情境；每次还带一项旧描述缺失的意见，要求保留不确定。生成夹具是本地合成内容，比较通过正式受控接口执行。模型建议不能直接产生用户决定或知识发布。
+
+```bash
+./gradlew testDebugUnitTest \
+  --tests 'dev.tracelife.providers.DeepSeekHistoricalFeedbackAssistLiveTest' \
+  -PtraceLifeDeepSeekHistoricalAssist=true
+```
+
+沿用本页仓库外密钥文件配置；普通回归默认跳过。固定案例及更广泛的评估边界见[分析质量](ANALYSIS_QUALITY.md)，本次实际结果见[开发验证](DEVELOPMENT.md)。

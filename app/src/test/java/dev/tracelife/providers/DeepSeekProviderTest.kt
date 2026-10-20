@@ -288,6 +288,35 @@ class DeepSeekProviderTest {
 
     private fun provider(transport: DeepSeekTransport) = DeepSeekProvider(credentials, DeepSeekModel.FLASH, transport)
 
+    @Test fun `historical comparison has a distinct metered protocol and rejects omitted extra or fabricated control references`() {
+        val control = "historical-feedback-v1:$evidenceId"
+        val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "HISTORICAL_FEEDBACK_SCAN",
+            "target" to mapOf("text" to "合成新描述：先尝试一次，效果未知。"),
+            "historicalComparisons" to listOf(mapOf("controlKey" to control, "previousClaimText" to "合成旧描述：方法有效。",
+                "userText" to "合成纠正：只有一次，不说明方法有效。")))))
+        fun row(key: String = control) = mapOf("controlKey" to key, "assessment" to "ALIGNED", "reason" to "合成比较：新描述保留了不确定性。")
+        var output = AnalysisRunCodec.json(mapOf("suggestions" to listOf(row())))
+        var wire: String? = null
+        val adapter = provider { body, _ -> wire = body; DeepSeekHttpResponse(200, response(content = output)) }
+        val prepared = adapter.prepareHistoricalFeedbackScan(input)
+        val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(system.contains("不能仅靠措辞不同判断无关"))
+        assertTrue(system.contains("缺少旧描述时必须 UNCERTAIN"))
+        assertFalse(system.contains("evidenceIds"))
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        val result = adapter.scanHistoricalFeedbackPrepared(prepared)
+        assertEquals(prepared.payloadJson, wire)
+        assertEquals(dev.tracelife.analysis.HistoricalFeedbackAssessment.ALIGNED, result.result.suggestions.single().assessment)
+        listOf(emptyList(), listOf(row(), row()), listOf(row("historical-feedback-v1:${"b".repeat(64)}")), listOf(row(evidenceId))).forEach {
+            output = AnalysisRunCodec.json(mapOf("suggestions" to it))
+            assertEquals(DeepSeekFailure.RESPONSE, assertThrows(DeepSeekException::class.java) {
+                adapter.scanHistoricalFeedbackPrepared(prepared)
+            }.reason)
+        }
+        output = AnalysisRunCodec.json(mapOf("suggestions" to listOf(row() + ("acceptedByUser" to true))))
+        assertThrows(DeepSeekException::class.java) { adapter.scanHistoricalFeedbackPrepared(prepared) }
+    }
+
     private fun assertResponseRejected(body: ByteArray) {
         val failure = assertThrows(DeepSeekException::class.java) {
             provider { _, _ -> DeepSeekHttpResponse(200, body) }.complete(request)

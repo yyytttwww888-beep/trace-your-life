@@ -89,6 +89,11 @@ class ActionsActivity : ScreenActivity() {
             createValues = Bundle()
             showCreate()
         }
+        button("对照计划与执行回看", "openActionReflection") {
+            startActivity(Intent(this, ActionReflectionActivity::class.java)
+                .putExtra(ActionReflectionActivity.EXTRA_FROM, LocalDate.now().minusDays(6).toString())
+                .putExtra(ActionReflectionActivity.EXTRA_THROUGH, LocalDate.now().toString()))
+        }
         Ui.disclosure(root, "筛选行动", "actionFilters") { filters ->
             spinnerIn(filters, listOf("全部", "进行中", "待回看"), filterIndex, "filter").also { filterSpinner ->
                 filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {

@@ -56,6 +56,7 @@ object AppNavigation {
         destination("回顾", "navPeriod", PeriodActivity::class.java)
         Ui.sectionTitle(panel, "资料")
         destination("知识库", "navKnowledge", KnowledgeActivity::class.java)
+        destination("查找", "navDiscovery", DiscoveryActivity::class.java)
         destination("关于我", "navProfile", ProfileActivity::class.java)
         destination("备份与导出", "navTransfer", TransferActivity::class.java)
         destination("设置", "navSettings", SettingsActivity::class.java)

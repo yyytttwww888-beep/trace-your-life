@@ -130,6 +130,14 @@ class KnowledgeActivityTest {
         val saved = publish(KnowledgeCategory.INSIGHT, "值得留下：合成资料中，先做一个可完成的步骤。")
         launch()
         click("knowledgeTopic:学习")
+        val topicIntent = shadowOf(activity).nextStartedActivity
+        assertEquals(TopicActivity::class.java.name, topicIntent.component!!.className)
+        val topicController = Robolectric.buildActivity(TopicActivity::class.java, topicIntent).setup(); drain()
+        topicController.get().window.decorView.findViewWithTag<View>("allTopicKnowledge").performClick(); drain()
+        val listing = shadowOf(topicController.get()).nextStartedActivity
+        topicController.pause().stop().destroy()
+        requireNotNull(controller).pause().stop().destroy()
+        controller = Robolectric.buildActivity(KnowledgeActivity::class.java, listing).setup(); drain()
         assertTrue(text().contains("1 条经历 · 1 条已保存"))
         assertTrue(text().contains(source))
         click("topicRecord:source")
@@ -226,7 +234,9 @@ class KnowledgeActivityTest {
             .putExtra(ExperienceActivity.EXTRA_KNOWLEDGE_REVISION, next.revision)
         editor = Robolectric.buildActivity(ExperienceActivity::class.java, nextIntent).setup()
         drain()
-        editClick("experienceChoice:${thread.id}")
+        assertNotNull(editor.get().window.decorView.findViewWithTag<View>("suggestedExperience:${thread.id}"))
+        assertEquals(1, KnowledgeContinuity(app.repository).get(thread.id)!!.thread.version)
+        editClick("suggestedExperience:${thread.id}")
         val relation = editor.get().window.decorView.findViewWithTag<Spinner>("experienceRelation")
         relation.setSelection((0 until relation.count).single { relation.getItemAtPosition(it) == "收窄适用条件" })
         drain()
@@ -249,6 +259,82 @@ class KnowledgeActivityTest {
         assertTrue(editText().contains("合成后续说明：简单任务和复杂任务需要区别"))
         assertTrue(editText().contains("不会自动把更早的理解恢复为当前结论"))
         editor.pause().stop().destroy()
+    }
+
+    @Test fun `topic overview opens fixed knowledge and keeps current concerns separate`() {
+        val kept = publish(KnowledgeCategory.INSIGHT, "值得留下：合成资料中先把问题拆开。")
+        val concern = publish(KnowledgeCategory.INSIGHT, "值得关注：合成资料中的练习缺少复查。")
+        val topicController = Robolectric.buildActivity(TopicActivity::class.java,
+            android.content.Intent(app, TopicActivity::class.java).putExtra(TopicActivity.EXTRA_TOPIC, "学习")).setup()
+        drain()
+        val decor = topicController.get().window.decorView
+        assertNotNull(decor.findViewWithTag<View>("understandings:${kept.id}"))
+        assertNotNull(decor.findViewWithTag<View>("concerns:${concern.id}"))
+        decor.findViewWithTag<View>("understandings:${kept.id}").performClick()
+        val opened = shadowOf(topicController.get()).nextStartedActivity
+        assertEquals(kept.id, opened.getStringExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID))
+        assertEquals(kept.revision, opened.getIntExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_REVISION, -1))
+        topicController.recreate(); drain()
+        assertNotNull(topicController.get().window.decorView.findViewWithTag<View>("concerns:${concern.id}"))
+        topicController.pause().stop().destroy()
+    }
+
+    @Test fun `search restores typed query and opens exact record revision without model requests`() {
+        val search = Robolectric.buildActivity(DiscoveryActivity::class.java).setup()
+        drain()
+        search.get().window.decorView.findViewWithTag<EditText>("discoveryQuery").setText("小步骤")
+        search.get().window.decorView.findViewWithTag<View>("searchDiscovery").performClick(); drain()
+        search.recreate(); drain()
+        assertEquals("小步骤", search.get().window.decorView.findViewWithTag<EditText>("discoveryQuery").text.toString())
+        search.get().window.decorView.findViewWithTag<View>("discoveryHit:RECORD:source").performClick()
+        val opened = shadowOf(search.get()).nextStartedActivity
+        assertEquals("source", opened.getStringExtra(MainActivity.EXTRA_RECORD_ID))
+        assertEquals(1, opened.getIntExtra(MainActivity.EXTRA_RECORD_REVISION, -1))
+        val record = Robolectric.buildActivity(MainActivity::class.java, opened).setup(); drain()
+        assertNull(record.get().window.decorView.findViewWithTag<View>("editRecord"))
+        record.get().window.decorView.findViewWithTag<View>("viewCurrentRecord").performClick(); drain()
+        assertNotNull(record.get().window.decorView.findViewWithTag<View>("editRecord"))
+        record.pause().stop().destroy()
+        assertTrue(app.reflectionWorkflow.historyPage().items.isEmpty())
+        search.pause().stop().destroy()
+    }
+
+    @Test fun `stale knowledge leads back to its date and record scope instead of an arbitrary new week`() {
+        val saved = publish(KnowledgeCategory.INSIGHT, "值得留下：合成原范围。")
+        app.io.submit { app.repository.updateRecord("source", 1, RecordDraft("合成修订", Occurrence(date), setOf("学习"))) }.get(20, TimeUnit.SECONDS)
+        launch(); click("knowledge:${saved.id}"); click("refreshKnowledge")
+        val opened = shadowOf(activity).nextStartedActivity
+        assertEquals(date.toString(), opened.getStringExtra(ReflectionActivity.EXTRA_FROM))
+        assertEquals("Asia/Shanghai", opened.getStringExtra(ReflectionActivity.EXTRA_ZONE_ID))
+        assertFalse(opened.getBooleanExtra(ReflectionActivity.EXTRA_INCLUDE_ARCHIVED, true))
+        opened.putStringArrayListExtra(ReflectionActivity.EXTRA_RECORD_IDS, arrayListOf("source"))
+        opened.putExtra(ReflectionActivity.EXTRA_INCLUDE_ARCHIVED, true)
+        val reflection = Robolectric.buildActivity(ReflectionActivity::class.java, opened).setup()
+        drain(); reflection.recreate(); drain()
+        reflection.get().window.decorView.findViewWithTag<View>("reflectWithActions").performClick(); drain()
+        val action = shadowOf(reflection.get()).nextStartedActivity
+        assertEquals("Asia/Shanghai", action.getStringExtra(ActionReflectionActivity.EXTRA_ZONE_ID))
+        assertTrue(action.getBooleanExtra(ActionReflectionActivity.EXTRA_INCLUDE_ARCHIVED, false))
+        assertEquals(listOf("source"), action.getStringArrayListExtra(ActionReflectionActivity.EXTRA_RECORD_IDS))
+        reflection.pause().stop().destroy()
+    }
+
+    @Test fun `search restores later result page after recreation and return`() {
+        app.io.submit { repeat(25) { index -> app.repository.createRecord(
+            RecordDraft("合成翻页标记 $index", Occurrence(date)), "search-$index") } }.get(20, TimeUnit.SECONDS)
+        val search = Robolectric.buildActivity(DiscoveryActivity::class.java,
+            android.content.Intent(app, DiscoveryActivity::class.java).putExtra(DiscoveryActivity.EXTRA_QUERY, "翻页标记")).setup()
+        drain()
+        search.get().window.decorView.findViewWithTag<View>("nextDiscoveryPage").performClick(); drain()
+        fun matches() = descendants(search.get().window.decorView).mapNotNull { it.tag as? String }
+            .filter { it.startsWith("discoveryHit:") }.toList()
+        val secondPage = matches()
+        assertEquals(5, secondPage.size)
+        search.recreate(); drain()
+        assertEquals(secondPage, matches())
+        search.pause().stop().start().resume().visible(); drain()
+        assertEquals(secondPage, matches())
+        search.pause().stop().destroy()
     }
 
     private fun launch() {

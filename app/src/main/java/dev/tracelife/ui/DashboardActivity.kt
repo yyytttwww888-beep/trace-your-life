@@ -1,5 +1,6 @@
 package dev.tracelife.ui
 
+import android.os.Bundle
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.Spinner
@@ -41,9 +42,25 @@ class DashboardActivity : ScreenActivity() {
     private var windowSpinner: Spinner? = null
     private var archivedCheck: CheckBox? = null
 
+    private var selectedWindow: DashboardWindow? = null
+
+    override fun restoreScreenState(savedInstanceState: Bundle?) {
+        selectedWindow = savedInstanceState?.getString("trendWindow")?.let(DashboardWindow::valueOf)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        selectedWindow?.let { outState.putString("trendWindow", it.name) }
+        super.onSaveInstanceState(outState)
+    }
+
     override fun showHome() {
         beginScreen("home", "趋势", showBack = false)
-        runIo({ app.dashboardPreferences.open() }) { opened ->
+        runIo({
+            val preferences = app.dashboardPreferences.read().value
+            app.dashboard.open(dev.tracelife.dashboard.DashboardRequest(
+                window = selectedWindow ?: preferences.window, zoneId = preferences.zoneId,
+                cards = preferences.cards, includeArchived = preferences.includeArchived))
+        }) { opened ->
             snapshot = opened
             renderHome(opened)
         }
@@ -88,6 +105,24 @@ class DashboardActivity : ScreenActivity() {
                 addButton(options, "刷新", "refresh") { showHome() }
                 renderMetricRules(options, board.current.metric)
             }
+        }
+
+        card().also { trend ->
+            Ui.sectionTitle(trend, "记录趋势")
+            val choices = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            trend.addView(choices)
+            DashboardWindow.entries.forEach { option ->
+                Ui.button(choices, (if (board.request.window == option) "✓ " else "") + windowLabel(option), "trendWindow:${option.name}") {
+                    if (!busy) { selectedWindow = option; showHome() }
+                }.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(dp(2), 0, dp(2), dp(8))
+                }
+            }
+            Ui.note(trend, if (board.request.window == DashboardWindow.DAYS_90) "每点为一个自然周，首尾可能不足一周。" else "每点为一天，空心点表示今天尚未结束。")
+            trend.addView(RecordTrendView(this, board.current.points) { index ->
+                if (!busy) showSources(DashboardSourceCategory.ALL, index, 0)
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(190)))
+            Ui.note(trend, "点按图表查看来源。0 只表示没有保存精确日期记录；日期未知 ${values.unknownTimeRecords} 条、跨多天 ${values.intervalRecords} 条另列。")
         }
 
         card().also { actions ->
@@ -380,6 +415,7 @@ class DashboardActivity : ScreenActivity() {
                         val include = archivedCheck?.isChecked ?: view.value.includeArchived
                         runIo({ app.dashboardPreferences.save(view.revision, view.value.copy(window = window, includeArchived = include)) }) {
                             toast("设置已保存")
+                            selectedWindow = window
                             showHome()
                         }
                     }

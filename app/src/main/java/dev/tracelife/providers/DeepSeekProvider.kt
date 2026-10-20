@@ -10,6 +10,9 @@ import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.BatchProposal
 import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.FeedbackContextProtocol
+import dev.tracelife.analysis.HistoricalFeedbackAssistProtocol
+import dev.tracelife.analysis.HistoricalFeedbackScanCompletion
+import dev.tracelife.analysis.HistoricalFeedbackScanProvider
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.ModelCompletion
 import dev.tracelife.analysis.ModelRequest
@@ -47,7 +50,7 @@ class DeepSeekProvider internal constructor(
     private val credentials: DeepSeekCredentials,
     private val model: DeepSeekModel,
     private val transport: DeepSeekTransport,
-) : AnalysisProvider, SemanticReviewProvider, SemanticReductionScanProvider, SemanticProfileRelationProvider {
+) : AnalysisProvider, SemanticReviewProvider, SemanticReductionScanProvider, SemanticProfileRelationProvider, HistoricalFeedbackScanProvider {
     constructor(credentials: DeepSeekCredentials, model: DeepSeekModel = DeepSeekModel.FLASH) :
         this(credentials, model, HttpsDeepSeekTransport())
 
@@ -94,6 +97,27 @@ class DeepSeekProvider internal constructor(
         if (profile != null) requireMaintenanceHash(envelope)
         return prepareWithInstructions(request, if (profile != null) PROFILE_SCAN_INSTRUCTIONS else
             if (actionContext(envelope)) ACTION_SCAN_INSTRUCTIONS + ACTION_SCAN_GUIDANCE else SCAN_INSTRUCTIONS, envelope)
+    }
+
+    override fun prepareHistoricalFeedbackScan(request: ModelRequest): PreparedModelRequest {
+        val envelope = StrictJson.parse(request.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
+        require(envelope["purpose"] == "HISTORICAL_FEEDBACK_SCAN")
+        require(envelope["historicalFeedback"] == null)
+        return prepareWithInstructions(request, HistoricalFeedbackAssistProtocol.INSTRUCTIONS, envelope)
+    }
+
+    override fun scanHistoricalFeedbackPrepared(request: PreparedModelRequest): HistoricalFeedbackScanCompletion {
+        require(request == prepareHistoricalFeedbackScan(request.original)) { "DeepSeek 历史比较请求与已计量输入不一致" }
+        val envelope = StrictJson.parse(request.original.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
+        val ids = envelope.list("historicalComparisons").map { value ->
+            FeedbackContextProtocol.feedbackIdFromControlKey(value.obj()["controlKey"] as? String ?: error("历史比较标识无效"))
+        }
+        val (result, usage) = execute(request) { text ->
+            HistoricalFeedbackAssistProtocol.parseResult(StrictJson.parse(text.toByteArray(Charsets.UTF_8), 65_536)).also {
+                HistoricalFeedbackAssistProtocol.validateResult(it, ids, 65_536)
+            }
+        }
+        return HistoricalFeedbackScanCompletion(result, usage)
     }
 
     private fun actionContext(envelope: Map<String, Any?>): Boolean {

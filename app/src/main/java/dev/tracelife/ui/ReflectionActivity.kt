@@ -36,6 +36,9 @@ class ReflectionActivity : ScreenActivity() {
     private var through = LocalDate.now().toString()
     private var fromField: EditText? = null
     private var throughField: EditText? = null
+    private var scopeZone = ZoneId.systemDefault().id
+    private var includeArchivedRecords = false
+    private var selectedRecordIds: Set<String>? = null
     private var progressLabel: TextView? = null
     private var resumedOnce = false
     private val preferences get() = getSharedPreferences("ui", MODE_PRIVATE)
@@ -50,7 +53,13 @@ class ReflectionActivity : ScreenActivity() {
             showArchived = savedInstanceState.getBoolean("reflection.archived", false)
             from = savedInstanceState.getString("reflection.from", from)
             through = savedInstanceState.getString("reflection.through", through)
+            scopeZone = savedInstanceState.getString("reflection.zone", scopeZone)
+            includeArchivedRecords = savedInstanceState.getBoolean("reflection.includeArchived", false)
+            selectedRecordIds = savedInstanceState.getStringArrayList("reflection.recordIds")?.toSet()
         } else {
+            scopeZone = intent.getStringExtra(EXTRA_ZONE_ID) ?: scopeZone
+            includeArchivedRecords = intent.getBooleanExtra(EXTRA_INCLUDE_ARCHIVED, false)
+            selectedRecordIds = intent.getStringArrayListExtra(EXTRA_RECORD_IDS)?.toSet()
             runId = intent.getStringExtra(EXTRA_RUN_ID)
             if (runId != null) restoredScreen = "run"
             intent.getStringExtra(EXTRA_FROM)?.let { from = it; selectedRange = 3 }
@@ -68,6 +77,9 @@ class ReflectionActivity : ScreenActivity() {
         outState.putBoolean("reflection.archived", showArchived)
         outState.putString("reflection.from", from)
         outState.putString("reflection.through", through)
+        outState.putString("reflection.zone", scopeZone)
+        outState.putBoolean("reflection.includeArchived", includeArchivedRecords)
+        selectedRecordIds?.let { outState.putStringArrayList("reflection.recordIds", ArrayList(it)) }
         super.onSaveInstanceState(outState)
     }
 
@@ -119,7 +131,7 @@ class ReflectionActivity : ScreenActivity() {
                 rememberDates()
                 selectedRange = position
                 if (position != 3) {
-                    val today = LocalDate.now()
+                    val today = LocalDate.now(ZoneId.of(scopeZone))
                     through = today.toString()
                     from = today.minusDays(when (position) { 0 -> 0L; 1 -> 6L; else -> 29L }).toString()
                     fromField?.setText(from)
@@ -129,6 +141,22 @@ class ReflectionActivity : ScreenActivity() {
                 rangeLabel.visibility = if (position == 3) View.GONE else View.VISIBLE
                 rangeLabel.text = "$from 至 $through"
             }
+        }
+        Ui.note(scopeCard, "时区 $scopeZone${if (includeArchivedRecords) " · 包括归档记录" else ""}")
+        selectedRecordIds?.let { ids ->
+            Ui.note(scopeCard, "沿用原范围指定的 ${ids.size} 条记录。日期不确定的记录也必须属于这些指定记录。")
+            addButton(scopeCard, "改为日期范围内的全部记录", "clearReflectionRecordSelection") {
+                rememberDates(); selectedRecordIds = null; showEntry()
+            }
+        }
+        addButton(scopeCard, "结合行动与实际回看", "reflectWithActions") {
+            rememberDates()
+            startActivity(Intent(this, ActionReflectionActivity::class.java)
+                .putExtra(ActionReflectionActivity.EXTRA_FROM, from)
+                .putExtra(ActionReflectionActivity.EXTRA_THROUGH, through)
+                .putExtra(ActionReflectionActivity.EXTRA_ZONE_ID, scopeZone)
+                .putExtra(ActionReflectionActivity.EXTRA_INCLUDE_ARCHIVED, includeArchivedRecords)
+                .putStringArrayListExtra(ActionReflectionActivity.EXTRA_RECORD_IDS, selectedRecordIds?.let { ArrayList(it) }))
         }
         primaryIn(scopeCard, "开始分析", "startReflection") { startAnalysis() }
         Ui.note(scopeCard, "分析所选范围内可读取的文字，日期不确定的记录也会单列纳入。分批处理，结果会保留，确认后再存入知识库。")
@@ -178,7 +206,7 @@ class ReflectionActivity : ScreenActivity() {
             val start = LocalDate.parse(from)
             val end = LocalDate.parse(through)
             require(!end.isBefore(start)) { "结束日期不能早于开始日期" }
-            AnalysisQuery(start, end, ZoneId.systemDefault().id)
+            AnalysisQuery(start, end, scopeZone, includeArchivedRecords, selectedRecordIds)
         } catch (_: java.time.DateTimeException) {
             showError(IllegalArgumentException("请按 YYYY-MM-DD 填写日期")); return
         } catch (failure: IllegalArgumentException) {
@@ -348,6 +376,11 @@ class ReflectionActivity : ScreenActivity() {
             Ui.sectionTitle(history, "对照以前的意见")
             Ui.note(history, "生成时参考 ${prior.usedInGeneration} / ${prior.total} 条；已对照 ${prior.resolved} 条，仍有冲突 ${prior.conflicts} 条。")
             Ui.note(history, "保存前逐项检查这条发现是否尊重以前的纠正和否定。未读过的意见也在这里，不会默认视为已遵守。")
+            if (run.archivedAt == null && run.canReviewFindings && run.status !in blocked) {
+                addButton(history, "辅助对照以前的意见", "assistHistoricalFeedback") {
+                    startActivity(HistoricalFeedbackAssistActivity.intent(this, run.id, finding.target))
+                }
+            }
             addButton(history, "逐项对照", "historicalFeedback") { showHistoricalFeedback(run, finding) }
         }
         finding.knowledgeId?.let { savedId ->
@@ -576,6 +609,9 @@ class ReflectionActivity : ScreenActivity() {
 
     companion object {
         const val EXTRA_RUN_ID = "dev.tracelife.reflection.RUN_ID"
+        const val EXTRA_ZONE_ID = "reflectionZoneId"
+        const val EXTRA_INCLUDE_ARCHIVED = "reflectionIncludeArchived"
+        const val EXTRA_RECORD_IDS = "reflectionRecordIds"
         const val EXTRA_FROM = "dev.tracelife.reflection.FROM"
         const val EXTRA_THROUGH = "dev.tracelife.reflection.THROUGH"
         private const val REQUESTS_PER_PASS = 5

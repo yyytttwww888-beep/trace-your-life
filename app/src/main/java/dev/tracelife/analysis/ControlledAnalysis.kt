@@ -66,6 +66,115 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         if (coverage.resolved != coverage.total) throw AnalysisDependencyBlockedException("请先逐项对照历史意见；存在未处理或冲突")
     }
 
+    /** Reads selected leaves only; model suggestions never mutate user comparison decisions. */
+    fun historicalFeedbackAssistPage(id: String, target: ClaimRef, offset: Int = 0,
+        onlyAttention: Boolean = false): HistoricalFeedbackAssistPage {
+        require(offset >= 0)
+        val task = current(id)
+        val state = task.state
+        val references = requireNotNull(state.feedbackContext).references
+        val text = HistoricalFeedbackAssistProtocol.targetText(state, target)
+        ensureReductionFeedback(id, ReductionGraph.feedbackDependencies(state, target))
+        val suggestions = HistoricalFeedbackAssistProtocol.completed(state, target)
+        val attentionKinds = setOf(HistoricalFeedbackAssessment.CONFLICT, HistoricalFeedbackAssessment.UNCERTAIN)
+        fun attention(ref: HistoricalFeedbackReference) = suggestions[ref.id]?.assessment in attentionKinds &&
+            FeedbackContextProtocol.latest(state, target, ref.id)?.choice !in setOf(HistoricalFeedbackChoice.RESPECTED, HistoricalFeedbackChoice.UNRELATED)
+        val ordered = references.filter { !onlyAttention || attention(it) }.sortedWith(compareBy<HistoricalFeedbackReference> {
+            when { attention(it) -> 0; suggestions[it.id] == null -> 1; else -> 2 }
+        }.thenBy { it.id })
+        val catalog = FeedbackContextCatalog(repository)
+        val rows = ordered.drop(offset).take(HistoricalFeedbackAssistProtocol.PAGE_SIZE).map {
+            HistoricalFeedbackAssistRow(catalog.resolve(it), suggestions[it.id], FeedbackContextProtocol.latest(state, target, it.id))
+        }
+        ensureRegistered(task.stored)
+        val calls = state.calls.filter { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN && it.reviewTarget == target }
+        return HistoricalFeedbackAssistPage(id, target, text, task.stored.version, offset, onlyAttention, rows,
+            references.size, suggestions.size, references.count { FeedbackContextProtocol.latest(state, target, it.id)?.choice !in
+                setOf(HistoricalFeedbackChoice.RESPECTED, HistoricalFeedbackChoice.UNRELATED) }, references.count(::attention),
+            (offset + rows.size).takeIf { it < ordered.size },
+            HistoricalFeedbackAssistProtocol.snapshotHash(id, task.stored.version, target, offset, onlyAttention, rows),
+            task.status, task.stored.archivedAt != null, calls.size, calls.sumOf { it.usage?.promptTokens?.toLong() ?: 0L },
+            calls.sumOf { it.usage?.completionTokens?.toLong() ?: 0L })
+    }
+
+    /** A single transaction accepts exactly the safe suggestions visible in this immutable page. */
+    fun acceptHistoricalFeedbackSuggestions(page: HistoricalFeedbackAssistPage, selectedIds: Set<String>): AnalysisTask = locked(page.runId) {
+        val task = current(page.runId)
+        if (task.stored.version != page.runVersion) throw AnalysisConflictException("比较内容已有变化，请重新查看后确认")
+        require(task.stored.archivedAt == null) { "请先恢复这次分析" }
+        require(task.state.calls.none { it.status == CallStatus.IN_FLIGHT }) { "请等待正在进行的请求完成，或恢复中断的请求" }
+        val currentPage = historicalFeedbackAssistPage(page.runId, page.target, page.offset, page.onlyAttention)
+        if (page != currentPage) throw AnalysisConflictException("当前页面与保存的比较快照不一致")
+        require(selectedIds.isNotEmpty() && selectedIds.size <= HistoricalFeedbackAssistProtocol.PAGE_SIZE)
+        require(selectedIds.all { id -> currentPage.items.any { it.content.reference.id == id } }) { "只能确认当前看到的意见" }
+        val resolutions = currentPage.items.filter { it.content.reference.id in selectedIds }.map { row ->
+            require(row.resolution == null) { "已有个人选择不能被批量建议覆盖，请逐项修改" }
+            val suggestion = requireNotNull(row.suggestion) { "尚未完成比较" }
+            val choice = when (suggestion.assessment) {
+                HistoricalFeedbackAssessment.ALIGNED -> HistoricalFeedbackChoice.RESPECTED
+                HistoricalFeedbackAssessment.UNRELATED -> HistoricalFeedbackChoice.UNRELATED
+                else -> throw IllegalArgumentException("冲突或不确定意见需要逐项处理")
+            }
+            HistoricalFeedbackResolution(page.target, row.content.reference.id, 1, choice,
+                "我已查看并采用这项比较建议：${suggestion.reason}", clock.instant())
+        }
+        task(save(task.stored, task.state.copy(historicalFeedbackResolutions = task.state.historicalFeedbackResolutions + resolutions)))
+    }
+
+    /** Resumes from all successful pages, including those beyond the generation context's first page. */
+    fun scanHistoricalFeedbackNext(id: String, target: ClaimRef, provider: HistoricalFeedbackScanProvider): HistoricalFeedbackScan? = locked(id) {
+        val task = current(id)
+        require(task.stored.archivedAt == null) { "请先恢复这次分析" }
+        AnalysisRunCodec.validId(provider.id)
+        val state = task.state
+        val plan = requireNotNull(state.feedbackContext)
+        val text = HistoricalFeedbackAssistProtocol.targetText(state, target)
+        ensureReductionFeedback(id, ReductionGraph.feedbackDependencies(state, target))
+        val completed = HistoricalFeedbackAssistProtocol.completed(state, target)
+        val pending = plan.references.filter { it.id !in completed }
+        if (pending.isEmpty()) return@locked null
+        val retry = state.calls.lastOrNull { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN && it.reviewTarget == target &&
+            it.status != CallStatus.SUCCEEDED && it.historicalFeedbackReadIds.any { id -> id !in completed } }
+        val selected = retry?.historicalFeedbackReadIds?.map { id -> plan.references.single { it.id == id } }
+            ?: pending.take(HistoricalFeedbackAssistProtocol.PAGE_SIZE)
+        val content = selected.map(FeedbackContextCatalog(repository)::resolve)
+        val limits = state.request.limits
+        var size = selected.size
+        while (size > 0) {
+            val rows = content.take(size)
+            val ids = rows.map { it.reference.id }
+            val batchKey = "history-scan-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(
+                HistoricalFeedbackAssistProtocol.planHash(state, target), ids)))
+            val payload = AnalysisRunCodec.json(mapOf("protocolVersion" to 13, "purpose" to "HISTORICAL_FEEDBACK_SCAN",
+                "system" to HistoricalFeedbackAssistProtocol.INSTRUCTIONS, "target" to mapOf("identity" to AnalysisRunCodec.claimRefMap(target), "text" to text),
+                "scope" to AnalysisRunCodec.scopeMap(state.request.scope), "historicalComparisons" to rows.map {
+                    mapOf("controlKey" to FeedbackContextProtocol.controlKey(it.reference.id), "version" to it.reference.version,
+                        "decision" to it.decision.name, "userText" to it.userText, "previousClaimText" to it.previousClaimText)
+                }, "coverage" to mapOf("total" to plan.references.size, "previouslyCompared" to completed.size,
+                    "provided" to rows.size, "wholeHistoryCompared" to false, "originalEvidenceProvided" to false)))
+            // Do not append generation history: this purpose already selects its own exact page.
+            val request = ModelRequest(payload, AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
+            val prepared = provider.prepareHistoricalFeedbackScan(request)
+            val fits = prepared.payloadJson.toByteArray(Charsets.UTF_8).size <= limits.maxInputBytes &&
+                prepared.inputTokens in 1..limits.inputTokenLimit && prepared.inputTokens.toLong() + limits.outputTokenReserve <= provider.contextWindowTokens
+            if (!fits) {
+                if (retry != null) throw AnalysisBudgetException("原历史比较请求已超过当前供应商预算，保留进度")
+                size--; continue
+            }
+            val call = execute(task, batchKey, emptyList(), provider.id, provider.contextWindowTokens, request, prepared,
+                purpose = CallPurpose.HISTORICAL_FEEDBACK_SCAN, reviewTarget = target, historicalScanReadIds = ids) { wire ->
+                provider.scanHistoricalFeedbackPrepared(wire).let {
+                    // A missing old statement must never be released as unrelated by guessing.
+                    require(it.result.suggestions.none { suggestion -> suggestion.assessment != HistoricalFeedbackAssessment.UNCERTAIN &&
+                        rows.any { row -> row.reference.id == suggestion.feedbackId && row.previousClaimText == null } })
+                    Completion(historicalFeedbackScan = it.result, usage = it.usage)
+                }
+            }
+            return@locked requireNotNull(call.historicalFeedbackScan)
+        }
+        throw AnalysisBudgetException("单条完整历史意见已超过本次比较预算，请逐项查看；不会截断或标成已检查")
+    }
+
     /** L0 entry, L1 topic hints and L2 range counts. Focus topics never narrow the source set. */
     fun route(id: String): AnalysisRoute {
         val task = current(id)
@@ -779,7 +888,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
     }
 
     private data class Completion(val proposal: BatchProposal? = null, val review: ClaimReview? = null, val usage: ModelUsage? = null, val scan: ReductionScanResult? = null,
-        val profileRelation: ProfileRelationResult? = null, val profileScan: ReductionScanResult? = null)
+        val profileRelation: ProfileRelationResult? = null, val profileScan: ReductionScanResult? = null,
+        val historicalFeedbackScan: HistoricalFeedbackScan? = null)
 
     private fun modelRequest(id: String, batchKey: String, payload: String, limits: AnalysisLimits): ModelRequest {
         val context = current(id).state.feedbackContext
@@ -831,6 +941,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         profileReference: ProfileMaintenanceReference? = null,
         profileReferenceAvailable: Boolean = true,
         profileMaintenanceProof: ProfileMaintenanceProof? = null,
+        historicalScanReadIds: List<String>? = null,
         dispatch: (PreparedModelRequest) -> Completion,
     ): AnalysisCall {
         val state = task.state
@@ -838,6 +949,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         requirePurpose(task, purpose)
         ensureRegistered(task.stored)
         maintenancePlan?.let { ensureMaintenancePlan(task, it) }
+        if (purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN)
+            ensureReductionFeedback(task.stored.id, ReductionGraph.feedbackDependencies(state, requireNotNull(reviewTarget)))
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
         require(prepared.original == request) { "模型适配器改变了原始请求" }
@@ -856,7 +969,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 previous.reviewTarget != reviewTarget || previous.feedbackVersion != feedbackVersion || previous.reductionInputs != reductionInputs || previous.reductionTarget != reductionTarget ||
                 previous.reductionReviewTokens != reductionReviewTokens || previous.reductionScans != reductionScans ||
                 previous.metricEvidence != metricEvidence || previous.actionEvidence != actionEvidence || previous.profileMaintenancePlanSha256 != maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256) ||
-                previous.profileReference != profileReference || previous.profileMaintenanceProof != profileMaintenanceProof) {
+                previous.profileReference != profileReference || previous.profileMaintenanceProof != profileMaintenanceProof ||
+                historicalScanReadIds != null && previous.historicalFeedbackReadIds != historicalScanReadIds) {
                 throw AnalysisConflictException("同一批次不能更换请求、模型、核对目标或反馈")
             }
             if (previous.status == CallStatus.SUCCEEDED) {
@@ -875,9 +989,10 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             reductionReviewTokens = reductionReviewTokens, reductionScans = reductionScans, metricEvidence = metricEvidence,
             profileMaintenancePlanSha256 = maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256), profileReference = profileReference,
             profileMaintenanceProof = profileMaintenanceProof, actionEvidence = actionEvidence,
-            historicalFeedbackReadIds = org.json.JSONObject(request.payloadJson).optJSONObject("historicalFeedback")?.getJSONArray("entries")?.let { rows ->
+            historicalFeedbackReadIds = historicalScanReadIds ?: org.json.JSONObject(request.payloadJson).optJSONObject("historicalFeedback")?.getJSONArray("entries")?.let { rows ->
                 (0 until rows.length()).map { FeedbackContextProtocol.feedbackIdFromControlKey(rows.getJSONObject(it).getString("controlKey")) } }.orEmpty(),
-            feedbackContextSha256 = (reviewTarget ?: reductionTarget?.let(ReductionGraph::feedbackRef))?.let { FeedbackContextProtocol.reviewHash(state, it) })
+            feedbackContextSha256 = if (purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN) HistoricalFeedbackAssistProtocol.planHash(state, requireNotNull(reviewTarget))
+                else (reviewTarget ?: reductionTarget?.let(ReductionGraph::feedbackRef))?.let { FeedbackContextProtocol.reviewHash(state, it) })
         val registered = save(task.stored, state.copy(calls = state.calls + call))
         ensureRegistered(registered)
         maintenancePlan?.let { ensureMaintenancePlan(task(registered), it) }
@@ -901,6 +1016,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 }
                 state.request.profileTarget?.let { LongitudinalProfileProtocol.validateProposal(it, proposal, receipts,
                     LongitudinalProfileProtocol.sources(this, task.stored.id, receipts.map { ref -> ref.recordId }.toSet())) }
+            } else if (purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN) {
+                HistoricalFeedbackAssistProtocol.validateResult(requireNotNull(completion.historicalFeedbackScan), requireNotNull(historicalScanReadIds), limits.maxOutputBytes)
             } else if (purpose == CallPurpose.PROFILE_RELATION) {
                 val result = requireNotNull(completion.profileRelation)
                 ProfileMaintenanceProtocol.validateRelation(result, limits.maxOutputBytes)
@@ -926,15 +1043,19 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             ensureRegistered(registered)
         }
         maintenancePlan?.let { ensureMaintenancePlan(task(registered), it) }
+        if (purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN)
+            ensureReductionFeedback(task.stored.id, ReductionGraph.feedbackDependencies(state, requireNotNull(reviewTarget)))
         val completed = call.copy(status = CallStatus.SUCCEEDED, finishedAt = clock.instant(),
             proposal = if (purpose == CallPurpose.REDUCTION) null else completion.proposal, review = completion.review, usage = completion.usage,
             reductionOutput = if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes) else null, reductionScan = completion.scan,
-            profileRelation = completion.profileRelation, profileScan = completion.profileScan)
+            profileRelation = completion.profileRelation, profileScan = completion.profileScan,
+            historicalFeedbackScan = completion.historicalFeedbackScan)
         save(registered, state.copy(calls = state.calls + completed))
         return completed
     }
 
     private fun requirePurpose(task: AnalysisTask, purpose: CallPurpose) {
+        require(purpose != CallPurpose.HISTORICAL_FEEDBACK_SCAN || task.state.request.inheritHistoricalFeedback)
         require(if (task.state.request.actionPeriod) purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW,
             CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) else purpose != CallPurpose.ACTION_SYNTHESIS) { "行动复盘必须使用独立受控目的" }
         require(task.state.request.profileTarget == null || purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)) {
