@@ -3,6 +3,7 @@ package dev.tracelife.background
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import dev.tracelife.profile.ProfileDimension
 
 /** Device-local consent and limits. Enabling starts with future record events, never the whole store. */
 data class BackgroundPolicy(
@@ -13,6 +14,10 @@ data class BackgroundPolicy(
     val dailyRequestLimit: Int = 10,
     val maxRequestsPerJob: Int = 20,
     val unmeteredOnly: Boolean = true,
+    val weeklyReflection: Boolean = false,
+    val monthlyReflection: Boolean = false,
+    /** Null disables monthly proposals; a selected dimension compares three complete months. */
+    val monthlyProfileDimension: ProfileDimension? = null,
 ) {
     init {
         ZoneId.of(zoneId)
@@ -38,8 +43,10 @@ data class BackgroundSettings(
 
 enum class BackgroundJobStatus {
     QUEUED, RUNNING, PROPOSALS_READY, NEEDS_ATTENTION, FAILED, NEEDS_RECOVERY,
-    SUPERSEDED, SOURCE_UNAVAILABLE, BUDGET_EXHAUSTED, STORAGE_BLOCKED,
+    SUPERSEDED, SOURCE_UNAVAILABLE, BUDGET_EXHAUSTED, STORAGE_BLOCKED, REBUILD_REQUIRED,
 }
+
+enum class BackgroundJobKind { RECORD, WEEKLY_REFLECTION, MONTHLY_REFLECTION, MONTHLY_PROFILE }
 
 /** No record body, model text or credentials are copied into the operational queue. */
 data class BackgroundJob(
@@ -55,6 +62,11 @@ data class BackgroundJob(
     val retryAuthorized: Boolean,
     val createdAt: Instant,
     val updatedAt: Instant,
+    val kind: BackgroundJobKind = BackgroundJobKind.RECORD,
+    val from: LocalDate? = null,
+    val through: LocalDate? = null,
+    val zoneId: String? = null,
+    val profileDimension: ProfileDimension? = null,
 )
 
 enum class BackgroundPassStatus {

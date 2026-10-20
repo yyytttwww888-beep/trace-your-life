@@ -17,7 +17,7 @@ val restored = transfer.restoreBackup(backup, recoveryPassword, preview)
 
 val reading = transfer.exportReadingPackage(
     File(chosenDirectory, "trace-life-knowledge.zip"),
-    ReadingExportOptions(includeAttachments = false),
+    ReadingExportOptions(includeAttachments = false, includePersonalHistory = true),
 )
 val evidence = transfer.exportReadingPackage(
     File(chosenDirectory, "trace-life-evidence.zip"),
@@ -92,7 +92,9 @@ val delivered = DocumentExportDelivery(context.contentResolver).save(
 
 `knowledgeRevisions` 是独立版本化 JSON 载荷的字符串列表，当前载荷 v7，兼容 v1–v6；v7 为画像维护证明增加整体归并目标、叶原文及祖先反馈凭据，v6 增加归并证明中的完整行动来源链及扫描行动凭据；最终核对 `actionEvidence` 与 `reductionProof.originalActionEvidence` 分别保存。v5 的行动目录与行动凭据继续保留；v4 的 `profileMaintenanceProof` 继续保留；v3 的类型化指标凭据和完整来源修订清单继续保留。维护凭据保存纯身份计划、关系与扫描意见、完整原文凭据及历史反馈依赖，不另存历史用户正文原字段；模型理由仍按可能转述这些内容参与删除清理。每个修订保存原陈述、核对意见、范围、期限、反馈版本与完整核对证据引用；直接原文知识的审核副本不依赖父任务仍然存在。归并洞察另存 `reductionProof` 的完整扫描原文、叶清单及全部祖先反馈，父任务缺失时保留历史副本，但不能认定为当前有效；原文仍由记录历史提供。恢复校验修订链连续、稳定身份、唯一且指向最新修订的当前指针，并拒绝知识与其自身、关联任务、自身反馈或任一祖先反馈的永久删除标记共存。后续任务更新不会改写已保存知识的审核副本；当前有效性规则见[正式知识接口](KNOWLEDGE.md)。
 
-分析任务内部载荷另有版本：长期画像发生跨批归并时写入 v16；含固定知识／经验／已采用画像背景的问答写入 v15，保留固定修订、原始范围及内容摘要，不能将背景当作原始证据。校验固定背景与对应知识、画像、经验历史逐项匹配；删除背景及其来源沿任务依赖传播，恢复合并本地删除后执行相同清理。仅原生资料库已核验的当前任务可使这类知识进入阅读包；从备份解码的快照不能自行声明当前有效。带类型化追问背景的任务写入 v14，只登记选定先前回答、固定身份、范围和反馈依赖，不复制完整聊天。先前回答不是原始证据，备份验证背景与原任务逐项匹配；来源或反馈已变化的历史仍可保留，但不能重新声明当前有效。使用历史辅助扫描的任务写入 v13，增加逐条建议、严格引用与调用台账；未使用该能力的现有任务保持 v12 形状及请求身份。读取兼容 v1–v16。v12 增加普通分析历史意见目录、实际读取引用与逐项对照凭据。v11 的归并节点、扫描与最终核对可携带类型化行动凭据；v10 增加行动周期标记、固定行动目录及类型化行动证据，也支持带比较周期的长期画像目标；v9 增加纯身份 `profileMaintenancePlans`、`PROFILE_RELATION`／`PROFILE_SCAN` 及最终维护核对凭据。v8 增加可空的 `profileTarget`，固定画像维度和近期／情境层次；带目标的任务允许原文综合、核对及维护专用调用，普通任务目标为空。v7 增加 `METRIC_ANALYSIS` 与独立 `metricEvidence`；v6 增加 `REDUCTION_SCAN`／`REDUCTION_REVIEW`、完整祖先反馈依赖和纯身份清理记录；v5 增加独立 `REDUCTION` 派生输入、草稿及来源依赖图；v4 允许 `SYNTHESIS` 调用及其全部原文上下文核对，v3 增加调用目的、核对目标、核对意见和反馈版本，v2 包含计量类型与实际用量。不强制改写未受影响的旧历史任务；旧版本不能混入新增目的或字段。派生依赖只能引用同任务此前成功节点，校验父输出摘要、反馈版本、传递关系和去重。永久反馈删除会清理全部受影响后代草稿、扫描和最终核对结果以及知识整条历史，保留预算、必要纯身份及用户独立文字；恢复合并当前墓碑后执行同样清理。已带墓碑但未擦除相应文字的备份被拒绝。DeepSeek KEY 与 Android Keystore 包装密钥均不进入备份，恢复后重新配置；详细限制见[DeepSeek 接入](DEEPSEEK.md)。
+分析任务内部载荷另有版本：使用 `NAVIGATION` 的任务写入 v17，保存独立导航输出和固定背景计划；导航不成为原始事实或正式知识。恢复校验和删除传播检查初始计划与历次导航后全部保留的背景身份，不仅检查当前生效背景。长期画像发生跨批归并时写入 v16；含固定知识／经验／已采用画像背景的问答写入 v15，保留固定修订、原始范围及内容摘要，不能将背景当作原始证据。校验固定背景与对应知识、画像、经验历史逐项匹配；删除背景及其来源沿任务依赖传播，恢复合并本地删除后执行相同清理。仅原生资料库已核验的当前任务可使这类知识进入阅读包；从备份解码的快照不能自行声明当前有效。带类型化追问背景的任务写入 v14，只登记选定先前回答、固定身份、范围和反馈依赖，不复制完整聊天。先前回答不是原始证据，备份验证背景与原任务逐项匹配；来源或反馈已变化的历史仍可保留，但不能重新声明当前有效。使用历史辅助扫描的任务写入 v13，增加逐条建议、严格引用与调用台账；未使用该能力的现有任务保持 v12 形状及请求身份。读取兼容 v1–v17。v12 增加普通分析历史意见目录、实际读取引用与逐项对照凭据。v11 的归并节点、扫描与最终核对可携带类型化行动凭据；v10 增加行动周期标记、固定行动目录及类型化行动证据，也支持带比较周期的长期画像目标；v9 增加纯身份 `profileMaintenancePlans`、`PROFILE_RELATION`／`PROFILE_SCAN` 及最终维护核对凭据。v8 增加可空的 `profileTarget`，固定画像维度和近期／情境层次；带目标的任务允许原文综合、核对及维护专用调用，普通任务目标为空。v7 增加 `METRIC_ANALYSIS` 与独立 `metricEvidence`；v6 增加 `REDUCTION_SCAN`／`REDUCTION_REVIEW`、完整祖先反馈依赖和纯身份清理记录；v5 增加独立 `REDUCTION` 派生输入、草稿及来源依赖图；v4 允许 `SYNTHESIS` 调用及其全部原文上下文核对，v3 增加调用目的、核对目标、核对意见和反馈版本，v2 包含计量类型与实际用量。不强制改写未受影响的旧历史任务；旧版本不能混入新增目的或字段。派生依赖只能引用同任务此前成功节点，校验父输出摘要、反馈版本、传递关系和去重。永久反馈删除会清理全部受影响后代草稿、扫描和最终核对结果以及知识整条历史，保留预算、必要纯身份及用户独立文字；恢复合并当前墓碑后执行同样清理。已带墓碑但未擦除相应文字的备份被拒绝。DeepSeek KEY 与 Android Keystore 包装密钥均不进入备份，恢复后重新配置；详细限制见[DeepSeek 接入](DEEPSEEK.md)。
+
+旧预览版本的 v15 经验背景曾把 `revision` 保存为经验线索总版本，新引用保存的是当时采用内容的变更序号。仅对经过严格解码的 v15 历史任务，备份及恢复允许从该编号以内的连续经验历史，还原最近一次 `INITIAL`／`NARROW`／`REPLACE`；对应知识身份、修订、原任务、陈述、范围及用户说明必须全部一致。不能用后来采用的内容解释早期引用，也不接受任意更早的匹配内容。v17 的初始及导航背景仍严格要求采用变更序号。兼容读取保留旧任务原字节，不重新核定为当前有效；本地经验分叉或删除使身份不再匹配时，仍按原有依赖闭包清理。
 
 画像修订内部载荷 v2 严格读取 v1，新增独立 `maintenanceApplication`，记录维护计划摘要、操作与明确重新考虑历史限制的理由，不覆盖原 `userText`。永久删除画像、知识、任务或反馈时，按纯身份依赖闭包清理关联维护任务及其机器知识，保留无关任务和独立用户文字。恢复合并本地删除决定后执行相同清理；输入本身已带墓碑却仍保留关联机器文字时拒绝整个备份。新知识的持续有效性检查共享反馈与删除依赖，不以自身画像后续采用或改绑使其失效。接口见[跨任务画像维护](PROFILE_MAINTENANCE.md)。
 
@@ -113,7 +115,7 @@ val delivered = DocumentExportDelivery(context.contentResolver).save(
 
 ## 阅读包与证据包
 
-两者均为普通 ZIP，manifest 标明 `restorable=false`。原始资料只保留选中记录的当前修订和实际绑定的模板版本，不包含完整历史、恢复任务状态或删除台账；附件可选择省略。完整分析任务和待核验提案只进入完整加密备份，阅读包通过 `analysisRunsIncluded=false`、`omittedAnalysisRuns` 和 `analysisGap=analysis_not_included` 明示省略；独立反馈行及其用户正文仍以 `claimFeedbackIncluded=false` 和 `omittedClaimFeedback` 标明省略。
+两者均为普通 ZIP，manifest 标明 `restorable=false`。原始资料只保留选中记录的当前修订和实际绑定的模板版本，不包含完整历史、恢复任务状态或删除台账；附件可选择省略。完整分析任务和待核验提案只进入完整加密备份，阅读包通过 `analysisRunsIncluded=false`、`omittedAnalysisRuns` 和 `analysisGap=analysis_not_included` 明示省略。`includePersonalHistory` 明确选择是否纳入独立用户说明、画像组织历史及行动回看，默认 API 值为 `false`；手机另有可取消的选择。反馈纳入与省略数量按实际所选范围登记。
 
 `KNOWLEDGE` 包另纳入采集时有效的正式知识当前修订及其审核副本，要求本次核对涉及的全部原始记录修订都位于选定包内。知识正文显示对应用户决定和反馈版本，不复制独立反馈的 `userText` 字段。失效、过期、核对或反馈已变化、主题不符、原文不在范围内等条目按原因计数并省略，不扩大导出范围。`EVIDENCE` 包仅纳入原始资料，省略全部知识，防止将既有判断当作新证据。知识的发布条件和范围规则见[正式知识接口](KNOWLEDGE.md)。
 
@@ -121,6 +123,7 @@ val delivered = DocumentExportDelivery(context.contentResolver).save(
 
 ```text
 README.md                 阅读顺序与范围
+overview.md               个人概览，区分自述、已采用理解与计划
 manifest.json             小型清单与完整性说明
 indexes/index.md          分层导航
 indexes/ids/              按稳定 ID 哈希定位的分页映射
@@ -133,6 +136,9 @@ records/                  唯一的当前记录 Markdown
 templates/                实际引用的模板版本
 notes/                    已纳入知识的主题／期间导航、唯一正文及原文反向链接
 action-evidence/          知识引用的固定行动凭据、类型／历史身份与反向知识路由
+personal-history/         明确选择后的独立说明、历史变化与行动回看
+navigation/topic-aliases/ 独立用户导航配置；不是生活原文或证据
+profile/history/          画像组织历史，不能作为当前已采用画像
 data/                     分页结构化资料
 inventory/                文件长度与校验值的分页清单
 attachments/              明确选择包含的原始附件
@@ -142,7 +148,21 @@ attachments/              明确选择包含的原始附件
 
 范围按发生日期或区间交集筛选；多个主题为 OR，`topics=null` 包括未分类资料。归档和未知时间默认纳入，排除未知时间仍保留缺口数量。日期区间不展开成每天均发生；跨期与未知记录有独立入口，按日／周分析时须一并核对。记录数量只描述资料覆盖，不代表成长、健康评分或生活完整程度。
 
+主题叫法按实际绑定的固定模板问题内容识别，不能凭模板名字或单个意图冒充配置。它们不进入生活记录、未知日期、未分类、ID 和证据目录；`coverage.sourceCurrentRecords` 保留全部当前记录数，`sourceLifeRecords` 单列生活资料，`excludedByReason.navigationConfiguration` 说明证据目录的排除数量。`KNOWLEDGE` 包另在 `navigation/topic-aliases/index.md` 依照相同日期／主题／归档范围分页提供当前配置，单项 Markdown 只保存叫法答案、记录与修订身份、保存时间、归档状态，不复制原配置正文或附件；机器目录只含定位信息。manifest 的 `navigationConfiguration` 列出来源、纳入、省略数及原因并声明 `originalEvidence=false`；无效答案按原因省略，`EVIDENCE` 包省略全部配置。阅读配置不自动应用规则或建立个人事实；完整原文、历史和恢复仍使用完整备份。
+
 外部文件的阅读约定不能强制其他 AI 的上下文预算；应用内受控取证执行与文件导航分别管理。正式知识是已有分析的保存结果，不能在后续分析中被重复计作独立原始证据。
+
+## 自己的说明与历史变化
+
+`KNOWLEDGE` 阅读包选择 `includePersonalHistory=true` 后，从 `personal-history/index.md` 按类型、保存月份进入唯一正文，结构化条目从 `data/personal-history/` 分页读取；画像另有 `profile/history/index.md` 与逐条修订导航。它纳入画像组织修订及用户原话、当前保留的核对反馈、独立历史对照理由、经验形成关系与说明、未被知识引用的行动回看。原模型判断缺失、失效或删除时仍可保留用户的独立文字，但只登记目标身份及缺失／删除状态，不复制或猜测那条模型判断。历史采用状态与当前有效画像分别管理，历史中的最新修订也不声明为当前画像；重复保留的用户说明不构成新的证据。
+
+画像、反馈、对照和经验变化按保存日期筛选，时区使用 `profileZoneId`；行动回看使用用户声明的 `reviewedOn`，并分别记录实际保存时刻，补记不会错误改变发生日期。指定主题时，经验按用户明确设置的线索主题；其他说明须能从固定关联知识或该目标陈述实际引用的固定记录修订证明主题，否则按 `topic_not_provable` 省略。不会读取同一任务其他陈述来猜测说明主题。无主题筛选时可纳入失去关联的独立原话。
+
+独立行动回看包含执行自述、观察文字、选择、被回看计划修订身份和时区；不附上下一计划或日期范围外的旧计划全文。它是用户报告，不是设备测量，未执行和未知状态分别保留。删除台账优先，明确删除的独立说明不重新输出。`EVIDENCE` 包始终忽略该选项，不混入历史意见、画像或经验说明。
+
+目录使用既有 `pageSize`，JSONL 每片最多 50 项；最多纳入 25,000 项，超限要求按日期分批，不能静默截断。manifest 的 `personalHistory` 登记选择状态、来源总数、纳入数量、按原因省略数、时间口径和 `machineClaimsIncluded=false`；`completeness` 按实际内容计数。原文只保留在条目正文与对应结构化数据，导航不批量拼接文字。普通阅读与完整恢复是不同格式，此扩展仍不能恢复主库。
+
+个人概览的范围、节选与当前方向记录规则见[个人概览](PERSONAL_OVERVIEW.md)。
 
 ## 周期复盘材料导出
 
@@ -162,7 +182,7 @@ manifest 明确 `synthesisStatus=NOT_GENERATED`、`restorable=false`、`validity
 
 `exportDashboard(destination, request)` 建立新看板后导出；`exportDashboard(destination, snapshot)` 导出已查阅的同一快照，失效则拒绝。请求、趋势口径、全局行动与日期语义见[看板接口](DASHBOARD.md)。本模块不新增持久化类型，数据库及完整备份格式不变。
 
-ZIP 格式为 `trace-life-dashboard` v1：
+ZIP 格式为 `trace-life-dashboard` v2（完整备份格式不变）：
 
 ```text
 README.md                  阅读入口和范围
@@ -173,6 +193,12 @@ metrics/current.json       本期口径、范围、每日值和图表点
 metrics/current.csv        本期图表点；90 天按自然周
 metrics/previous.json      前期口径、范围、每日值和图表点
 metrics/previous.csv       前期图表点
+activities/current.json    本期工作学习明确字段、缺口及每日/每周数值
+activities/current.csv     本期投入分钟与实践次数（空值不补零）
+activities/previous.json   前期同口径数据
+activities/previous.csv    前期图表点
+activities/current/        本期分页投入、实践与成果字段定位，不复制成果原文
+activities/previous/       前期同口径分页来源定位
 sources/current/           本期分页来源元数据及贡献点映射
 sources/previous/          前期分页来源元数据及贡献点映射
 insights/current/          本期匹配洞察 ID／修订定位
@@ -184,7 +210,7 @@ inventory/                 文件长度与 SHA-256 分页清单
 
 资料覆盖是独立辅助区，manifest 明示 `sourceMetadataPurpose=global_record_coverage_not_health_card_evidence`；即使默认三张健康卡片尚不可用，也不会把记录覆盖当作健康数值。每个来源保存 ID、修订、发生日期、时区、归档、主题、时间类别与贡献点索引；未知时间及区间不贡献每日点，可能同时出现在两期候选中。`ExportResult.records` 为两期来源 ID 去重后的数量。
 
-每页最多 25 项；CSV 仅含程序生成的身份、日期、版本、数值和状态。用户标题、主题只放入 JSON 资料与转义后的 Markdown，不进入 CSV。洞察只保存应用内 ID／修订，不复制洞察正文或受控模型凭据。行动区保存标题、状态、回看日期、来源状态、最新执行及回看身份；做法、预期信号和回看观察正文省略。原始记录全文、照片、独立反馈、任务台账和凭据也不在包内。
+每页最多 25 项；CSV 仅含程序生成的身份、日期、版本、数值和状态。用户标题、主题只放入 JSON 资料与转义后的 Markdown，不进入 CSV。工作学习数值仅使用固定模板中明确填写的字段，跨日与未知日期不分配到图表，成果只导出记录/修订/字段定位。洞察只保存应用内 ID／修订，不复制洞察正文或受控模型凭据。行动区保存标题、状态、回看日期、来源状态、最新执行及回看身份；做法、预期信号和回看观察正文省略。原始记录全文、照片、独立反馈、任务台账和凭据也不在包内。
 
 manifest 标明 `validity=historical_snapshot_at_evaluatedAt`、`restorable=false`、`modelCitableReceipt=false`、`modelRequests=0`。文件清单以哈希链分页，生成后验证内部导航目标。包最多 10,000 个文件、64 MiB 解压内容；索引页最多 128 KiB，其他文件最多 1 MiB，超限中止。
 
@@ -222,7 +248,7 @@ manifest 的 `actionEvidence` 独立登记凭据数、去重修订数、关联�
 
 KNOWLEDGE 阅读包从 `profile/index.md` 进入分维度目录，再定位画像条目、同包知识和原文。仅纳入当前已采用且来源有效的画像，固定知识 ID／修订还须已被知识范围筛选纳入；不会通过画像扩大主题、日期或证据范围。EVIDENCE 包省略全部画像。候选、不采用、被替代、失效、近期窗口之外和缺失来源的条目省略并计数。
 
-近期画像默认按 30 天窗口判断；`ReadingExportOptions.profileZoneId` 默认 `UTC`，调用者可传目标手机时区，`profileRecentDays` 可设置为 1–366。manifest 记录实际时区、窗口、纳入／省略数量及历史状态。普通阅读包只保存组织元数据和知识链接，不重复机器正文，也不导出画像独立用户文字、全部修订或新的画像摘要；这些历史资料通过完整加密备份保存。
+近期画像默认按 30 天窗口判断；`ReadingExportOptions.profileZoneId` 默认 `UTC`，调用者可传目标手机时区，`profileRecentDays` 可设置为 1–366。manifest 记录实际时区、窗口、纳入／省略数量及历史状态。当前画像目录只保存组织元数据和知识链接，不重复机器正文，也不生成新的画像摘要。明确选择的独立用户文字与组织修订从 `profile/history/` 阅读，应用与阅读包均不能把这些历史状态当成当前有效画像；完整恢复资料通过加密备份保存。
 
 包含画像时，最终文件发布同时校验来源、分析代数和 `[capturedAt, profileValidUntil)`。画像有效期不晚于指定时区下一午夜及其来源知识期限，单纯时间推进或时钟回拨也会阻止旧视图发布。导出后的文件保留生成时状态，不随以后的修改、删除或过期自动更新。
 
@@ -246,7 +272,7 @@ KNOWLEDGE 阅读包从 `profile/index.md` 进入分维度目录，再定位画�
 
 ## 经验线索阅读视图
 
-知识阅读包通过 `experiences/index.md`、主题和 ID 分片定位经验，形成过程按原序号分页并链接同包固定知识修订，知识详情提供反向导航。仅纳入当前包可读的有效知识所对应的事件与独立说明；被删除、失效、范围外的知识正文和该事件说明均省略。清单单独报告源线索、纳入变化与省略数量；目前采用的事件未纳入时明确标记，不能退回较早事件作为当前理解。证据包不含经验线索，完整链及删除台账仅由加密备份保留。详情见[经验线索](EXPERIENCE_CONTINUITY.md)。
+知识阅读包通过 `experiences/index.md`、主题和 ID 分片定位经验，形成过程按原序号分页并链接同包固定知识修订，知识详情提供反向导航。该有效知识视图仅纳入当前包可读的知识所对应的事件与独立说明；被删除、失效、范围外的知识正文和该事件说明均省略。清单单独报告源线索、纳入变化与省略数量；目前采用的事件未纳入时明确标记，不能退回较早事件作为当前理解。明确选择独立历史后，另按事件日期和经验主题提供关系及用户原话，不恢复缺失机器正文，也不宣布哪一历史关系仍然有效。证据包不含经验线索，完整恢复链及删除台账仅由加密备份保留。详情见[经验线索](EXPERIENCE_CONTINUITY.md)。
 
 
 ## 对话保存、恢复与阅读导出

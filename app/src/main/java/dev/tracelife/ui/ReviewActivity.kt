@@ -35,6 +35,11 @@ class ReviewActivity : ScreenActivity() {
     private val preferences get() = getSharedPreferences("ui", MODE_PRIVATE)
 
     override fun showHome() {
+        intent.getStringExtra("runId")?.takeIf { it.isNotBlank() }?.let { requested ->
+            intent.removeExtra("runId")
+            openTask(requested)
+            return
+        }
         beginScreen("home", "整理", showBack = false)
         primaryButton("分析经验与问题", "navReflection") {
             startActivity(android.content.Intent(this, ReflectionActivity::class.java))

@@ -46,6 +46,17 @@ class KnowledgeDiscovery(private val repository: LifeRepository, private val clo
         val evaluated = previous?.evaluatedAt ?: now
         val at = Clock.fixed(evaluated, clock.zone)
         val matcher = TextMatch(query.text)
+        val aliases = TopicAliases(repository)
+        val aliasWords = aliases.matching(query.text)
+        val topicWords = query.topic?.let { aliases.expand(setOf(it)).map(TextMatch::normalize).toSet() }
+        fun matchesTopics(topics: Set<String>) = topicWords == null || topics.any { TextMatch.normalize(it) in topicWords }
+        fun match(text: String): TextMatch.Match {
+            val literal = matcher.match(text)
+            val normalized = TextMatch.normalize(text)
+            val found = aliasWords.filter { TopicAliases.containsWord(normalized, it) }
+            val score = if (found.isEmpty()) 0 else 500 + found.size
+            return if (score > literal.score) TextMatch.Match(score, found.take(8)) else literal
+        }
         val selected = mutableListOf<DiscoveryHit>()
         val after = previous?.items?.lastOrNull()
         var total = 0; var scanned = 0; var pending = 0; var unknown = 0; var afterCount = 0
@@ -59,37 +70,40 @@ class KnowledgeDiscovery(private val repository: LifeRepository, private val clo
         }
         var offset = 0
         do {
-            val page = repository.listRecords(RecordFilter(query.from, query.through, query.topic, limit = 30, offset = offset))
+            val page = repository.listRecords(RecordFilter(query.from, query.through, limit = 30, offset = offset))
             for (record in page.items) {
                 scanned++
+                if (!matchesTopics(record.draft.topics) || aliases.isConfiguration(record)) continue
                 if (record.draft.occurrence.startDate == null) unknown++
                 val fields = listOf(record.draft.body) + record.draft.answers.values
-                val match = fields.map { it to matcher.match(it) }.maxByOrNull { it.second.score } ?: continue
-                if (match.second.score == 0) continue
+                val best = fields.map { it to match(it) }.maxByOrNull { it.second.score } ?: continue
+                if (best.second.score == 0) continue
                 accept(DiscoveryHit(DiscoveryKind.RECORD, record.id, record.revision,
-                    record.draft.occurrence.startDate?.toString() ?: "日期不确定的记录", matcher.excerpt(match.first, match.second),
+                    record.draft.occurrence.startDate?.toString() ?: "日期不确定的记录", matcher.excerpt(best.first, best.second),
                     record.draft.topics, record.draft.occurrence.startDate, record.draft.occurrence.endDate,
-                    null, match.second.terms, match.second.score, record.updatedAt))
+                    null, best.second.terms, best.second.score, record.updatedAt))
             }
             offset = page.nextOffset ?: -1
         } while (offset >= 0)
         val library = KnowledgeLibrary(repository, at)
-        library.scanCurrent(KnowledgeFilter(query.from, query.through, query.topic?.let(::setOf), includeInvalid = true)) { view ->
+        library.scanCurrent(KnowledgeFilter(query.from, query.through, includeInvalid = true)) { view ->
             scanned++
             val value = view.value
+            if (!matchesTopics(value.topics)) return@scanCurrent
             if (view.evidenceState == KnowledgeEvidenceState.CURRENT) value.expiresAt?.let { until = until?.let { old -> minOf(old, it) } ?: it }
-            val match = matcher.match(value.claim.text)
-            if (match.score == 0) return@scanCurrent
+            val matched = match(value.claim.text)
+            if (matched.score == 0) return@scanCurrent
             if (!query.includePending && view.evidenceState != KnowledgeEvidenceState.CURRENT) { pending++; return@scanCurrent }
             accept(DiscoveryHit(DiscoveryKind.KNOWLEDGE, value.id, value.revision, "已保存的理解",
-                matcher.excerpt(value.claim.text, match), value.topics, value.scope.from, value.scope.through,
-                view.evidenceState, match.terms, match.score, value.publishedAt))
+                matcher.excerpt(value.claim.text, matched), value.topics, value.scope.from, value.scope.through,
+                view.evidenceState, matched.terms, matched.score, value.publishedAt))
         }
         offset = 0
         do {
-            val threads = repository.experienceThreads(topic = query.topic, offset = offset, limit = 50)
+            val threads = repository.experienceThreads(offset = offset, limit = 50)
             for (thread in threads) {
                 scanned++
+                if (!matchesTopics(thread.topics)) continue
                 var bestHit: DiscoveryHit? = null
                 var changeOffset = 0
                 do {
@@ -101,7 +115,7 @@ class KnowledgeDiscovery(private val repository: LifeRepository, private val clo
                             query.from?.let { knowledge.value.scope.through < it } == true ||
                             query.through?.let { knowledge.value.scope.from > it } == true)) continue
                         val fields = listOf(thread.title, change.userNote.orEmpty(), knowledge?.value?.claim?.text.orEmpty())
-                        val best = fields.map { it to matcher.match(it) }.maxByOrNull { it.second.score } ?: continue
+                        val best = fields.map { it to match(it) }.maxByOrNull { it.second.score } ?: continue
                         if (best.second.score == 0) continue
                         if (!query.includePending && knowledge?.evidenceState != KnowledgeEvidenceState.CURRENT) { pending++; continue }
                         knowledge?.value?.expiresAt?.takeIf { it > now }?.let { until = until?.let { old -> minOf(old, it) } ?: it }
@@ -146,6 +160,7 @@ class KnowledgeDiscovery(private val repository: LifeRepository, private val clo
         val source = requireNotNull(library.get(knowledgeId, revision)) { "这条知识已删除" }
         require(source.isCurrentRevision && source.evidenceState == KnowledgeEvidenceState.CURRENT) { "请先更新这条知识" }
         val matcher = TextMatch(source.value.claim.text, maxTerms = 256)
+        val sourceTopics = TopicAliases(repository).expand(source.value.topics).map(TextMatch::normalize).toSet()
         val result = mutableListOf<ExperienceSuggestion>()
         var offset = 0
         do {
@@ -162,7 +177,7 @@ class KnowledgeDiscovery(private val repository: LifeRepository, private val clo
                     eventOffset += events.size
                 } while (events.size == 100)
                 if (alreadyLinked) continue
-                val shared = thread.topics.intersect(source.value.topics)
+                val shared = thread.topics.filter { TextMatch.normalize(it) in sourceTopics }.toSet()
                 val match = matcher.match(thread.title + "\n" + current.value.claim.text)
                 if (shared.isEmpty() && match.terms.size < 2) continue
                 val reasons = buildList {

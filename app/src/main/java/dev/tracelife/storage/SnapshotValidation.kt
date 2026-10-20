@@ -150,11 +150,12 @@ internal object SnapshotValidation {
             }
             val runs = snapshot.analysisRuns.associateBy { it.id }
             snapshot.analysisRuns.forEach { run ->
-                val request = AnalysisRunCodec.decode(run.payload).request
-                request.knowledgeContext?.entries?.forEach { ref ->
+                val (state, formatVersion) = AnalysisRunCodec.decodeWithVersion(run.payload)
+                val request = state.request
+                state.knowledgeContexts.flatMap { it.entries }.forEach { ref ->
                     require(ref.runId != run.id && ref.runId in runs) { "已有理解缺少原分析或形成循环" }
                     require(KnowledgeContextIdentity.matches(ref, snapshot.knowledgeRevisions, snapshot.profileRevisions,
-                        snapshot.experienceThreads, snapshot.experienceChanges)) { "已有理解与固定资料修订不一致" }
+                        snapshot.experienceThreads, snapshot.experienceChanges, allowLegacyThreadVersion = formatVersion == 15)) { "已有理解与固定资料修订不一致" }
                 }
                 val visited = mutableSetOf(run.id)
                 var context = request.conversationContext

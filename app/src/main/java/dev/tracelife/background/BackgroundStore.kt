@@ -11,6 +11,7 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.time.LocalDate
+import dev.tracelife.profile.ProfileDimension
 import java.util.concurrent.ConcurrentHashMap
 
 /** Separate device-local operational database; deliberately absent from personal backup snapshots. */
@@ -26,7 +27,7 @@ internal class BackgroundStore(private val directory: File) : Closeable {
                 db.rawQuery("PRAGMA secure_delete=ON", null).use { it.moveToFirst() }
                 db.beginTransaction()
                 try {
-                    require(db.version in 0..1) { "不支持的后台操作库版本" }
+                    require(db.version in 0..2) { "不支持的后台操作库版本" }
                     if (db.version == 0) {
                         db.execSQL("""CREATE TABLE settings (
                             singleton INTEGER PRIMARY KEY CHECK(singleton=1), version INTEGER NOT NULL,
@@ -44,6 +45,18 @@ internal class BackgroundStore(private val directory: File) : Closeable {
                         db.execSQL("CREATE INDEX jobs_record ON jobs(record_id, record_revision)")
                         db.version = 1
                     }
+                    if (db.version == 1) {
+                        db.execSQL("ALTER TABLE settings ADD COLUMN weekly_reflection INTEGER NOT NULL DEFAULT 0")
+                        db.execSQL("ALTER TABLE settings ADD COLUMN monthly_reflection INTEGER NOT NULL DEFAULT 0")
+                        db.execSQL("ALTER TABLE settings ADD COLUMN profile_dimension TEXT")
+                        db.execSQL("ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'RECORD'")
+                        db.execSQL("ALTER TABLE jobs ADD COLUMN from_date TEXT")
+                        db.execSQL("ALTER TABLE jobs ADD COLUMN through_date TEXT")
+                        db.execSQL("ALTER TABLE jobs ADD COLUMN zone_id TEXT")
+                        db.execSQL("ALTER TABLE jobs ADD COLUMN profile_dimension TEXT")
+                        db.execSQL("CREATE TABLE schedules (kind TEXT PRIMARY KEY, next_from TEXT NOT NULL)")
+                        db.version = 2
+                    }
                     db.setTransactionSuccessful()
                 } finally { db.endTransaction() }
             }
@@ -58,7 +71,8 @@ internal class BackgroundStore(private val directory: File) : Closeable {
     fun settings(): BackgroundSettings? = database.rawQuery("SELECT * FROM settings WHERE singleton=1", null).use { c ->
         if (!c.moveToFirst()) null else BackgroundSettings(c.int("version"), BackgroundPolicy(
             c.bool("enabled"), c.bool("paused"), c.string("zone_id"), c.int("pass_limit"),
-            c.int("daily_limit"), c.int("job_limit"), c.bool("unmetered")), c.string("store_id"),
+            c.int("daily_limit"), c.int("job_limit"), c.bool("unmetered"), c.bool("weekly_reflection"),
+            c.bool("monthly_reflection"), c.nullable("profile_dimension")?.let(ProfileDimension::valueOf)), c.string("store_id"),
             c.long("restore_epoch"), c.long("event_cursor"), LocalDate.parse(c.string("usage_day")),
             c.int("reserved_today"), Instant.parse(c.string("last_observed_at")), c.bool("restore_disabled"))
     }
@@ -68,6 +82,8 @@ internal class BackgroundStore(private val directory: File) : Closeable {
         database.insertWithOnConflict("settings", null, values("singleton" to 1, "version" to value.version,
             "enabled" to p.enabled, "paused" to p.paused, "zone_id" to p.zoneId, "pass_limit" to p.maxRequestsPerPass,
             "daily_limit" to p.dailyRequestLimit, "job_limit" to p.maxRequestsPerJob, "unmetered" to p.unmeteredOnly,
+            "weekly_reflection" to p.weeklyReflection, "monthly_reflection" to p.monthlyReflection,
+            "profile_dimension" to p.monthlyProfileDimension?.name,
             "store_id" to value.storeId, "restore_epoch" to value.restoreEpoch, "event_cursor" to value.eventCursor,
             "usage_day" to value.usageDay.toString(), "reserved_today" to value.reservedRequestsToday,
             "last_observed_at" to value.lastObservedAt.toString(), "restore_disabled" to value.requiresEnableAfterRestore),
@@ -93,7 +109,9 @@ internal class BackgroundStore(private val directory: File) : Closeable {
             "record_id" to value.recordId, "record_revision" to value.recordRevision, "event_id" to value.eventId,
             "status" to value.status.name, "run_id" to value.runId, "run_sequence" to value.runSequence,
             "reserved_requests" to value.reservedRequests, "retry_authorized" to value.retryAuthorized,
-            "created_at" to value.createdAt.toString(), "updated_at" to value.updatedAt.toString()),
+            "created_at" to value.createdAt.toString(), "updated_at" to value.updatedAt.toString(),
+            "kind" to value.kind.name, "from_date" to value.from?.toString(), "through_date" to value.through?.toString(),
+            "zone_id" to value.zoneId, "profile_dimension" to value.profileDimension?.name),
             SQLiteDatabase.CONFLICT_REPLACE).also { check(it != -1L) }
     }
 
@@ -113,8 +131,25 @@ internal class BackgroundStore(private val directory: File) : Closeable {
             WHERE status='RUNNING'""", arrayOf(now.toString()))
     }
 
-    fun clearJobs() { database.delete("jobs", null, null) }
+    fun clearJobs() { database.delete("jobs", null, null); database.delete("schedules", null, null) }
     fun delete(id: String) { database.delete("jobs", "id=?", arrayOf(id)) }
+
+    fun scheduledFrom(kind: BackgroundJobKind): LocalDate? = database.rawQuery(
+        "SELECT next_from FROM schedules WHERE kind=?", arrayOf(kind.name)).use { cursor ->
+        if (cursor.moveToFirst()) LocalDate.parse(cursor.getString(0)) else null
+    }
+
+    fun schedule(kind: BackgroundJobKind, from: LocalDate?) {
+        if (from == null) database.delete("schedules", "kind=?", arrayOf(kind.name))
+        else check(database.insertWithOnConflict("schedules", null,
+            values("kind" to kind.name, "next_from" to from.toString()), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
+    }
+
+    fun cancelScheduled(kind: BackgroundJobKind, now: Instant) {
+        database.execSQL("""UPDATE jobs SET status='SUPERSEDED',version=version+1,updated_at=?
+            WHERE kind=? AND status IN ('QUEUED','RUNNING','FAILED','NEEDS_RECOVERY','BUDGET_EXHAUSTED','STORAGE_BLOCKED','REBUILD_REQUIRED')""",
+            arrayOf<Any>(now.toString(), kind.name))
+    }
 
     /** A process death releases the OS lock; RUNNING jobs then require explicit recovery. */
     fun lease(): Closeable? {
@@ -131,7 +166,9 @@ internal class BackgroundStore(private val directory: File) : Closeable {
     }
     private fun Cursor.job() = BackgroundJob(string("id"), int("version"), string("record_id"), int("record_revision"),
         long("event_id"), BackgroundJobStatus.valueOf(string("status")), nullable("run_id"), int("run_sequence"),
-        int("reserved_requests"), bool("retry_authorized"), Instant.parse(string("created_at")), Instant.parse(string("updated_at")))
+        int("reserved_requests"), bool("retry_authorized"), Instant.parse(string("created_at")), Instant.parse(string("updated_at")),
+        BackgroundJobKind.valueOf(string("kind")), nullable("from_date")?.let(LocalDate::parse),
+        nullable("through_date")?.let(LocalDate::parse), nullable("zone_id"), nullable("profile_dimension")?.let(ProfileDimension::valueOf))
     private fun Cursor.string(name: String) = getString(getColumnIndexOrThrow(name))
     private fun Cursor.nullable(name: String): String? = getColumnIndexOrThrow(name).let { if (isNull(it)) null else getString(it) }
     private fun Cursor.int(name: String) = getInt(getColumnIndexOrThrow(name))

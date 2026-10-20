@@ -16,6 +16,9 @@ import dev.tracelife.providers.DeepSeekCredentials
 import dev.tracelife.providers.DeepSeekProvider
 import dev.tracelife.storage.*
 import dev.tracelife.transfer.BackupArchive
+import dev.tracelife.transfer.DataTransfer
+import dev.tracelife.transfer.InvalidBackupException
+import dev.tracelife.transfer.ReadingExportOptions
 import dev.tracelife.transfer.RepositorySnapshot
 import dev.tracelife.transfer.StaleSnapshotException
 import org.json.JSONObject
@@ -198,6 +201,138 @@ class KnowledgeContextTest {
         } finally { android.deleteDatabase(targetName) }
     }
 
+    @Test fun `legacy whole thread reference restores and exports unchanged as stale history`() {
+        val fixture = legacyExperienceFixture()
+        SnapshotValidation.validate(fixture.snapshot)
+        val expected = fixture.snapshot.analysisRuns.single { it.id == fixture.turn.runId }.payload
+        val targetName = "synthetic-legacy-context-${UUID.randomUUID()}.db"
+        try {
+            LifeRepository(android, clock, targetName).use { target ->
+                target.restoreSnapshot(fixture.snapshot, directory(), target.currentGeneration())
+                val task = ControlledAnalysis(target, clock).task(fixture.turn.runId)
+                assertEquals(expected, task.stored.payload)
+                assertEquals(AnalysisStatus.STALE, task.status)
+                assertFalse(KnowledgeContextCatalog(target, clock).current(task.state.request.knowledgeContext!!))
+                assertEquals(1, target.experienceCurrentChange("experience")!!.sequence)
+                assertEquals(2, task.state.request.knowledgeContext!!.entries.single { it.kind == KnowledgeContextKind.EXPERIENCE }.revision)
+                val output = File(directory(), "synthetic-legacy-reading.zip")
+                val result = DataTransfer(android, target, clock).exportReadingPackage(output,
+                    ReadingExportOptions(includePersonalHistory = true))
+                assertTrue(output.isFile)
+                assertEquals(4, result.records)
+                val snapshot = target.captureSnapshot(directory())
+                val archive = File(directory(), "synthetic-legacy-backup.tlb")
+                val password = "synthetic-legacy-backup-only".toCharArray()
+                try {
+                    BackupArchive.write(snapshot, directory(), archive, password)
+                    val decoded = BackupArchive.read(archive, directory(), password)
+                    assertEquals(expected, decoded.analysisRuns.single { it.id == fixture.turn.runId }.payload)
+                } finally { password.fill('\u0000') }
+                assertEquals(expected, target.analysisRun(fixture.turn.runId)!!.payload)
+            }
+        } finally { android.deleteDatabase(targetName) }
+    }
+
+    @Test fun `legacy experience identity uses the adopted content at the fixed prefix before later replacement`() {
+        val fixture = legacyExperienceFixture()
+        val later = fixture.snapshot.copy(
+            experienceThreads = fixture.snapshot.experienceThreads.map { it.copy(version = 3) },
+            experienceChanges = fixture.snapshot.experienceChanges + StoredExperienceChange("experience", 3,
+                fixture.replacement.knowledgeId, 1, ExperienceRelation.REPLACE, "合成后来替代，不得改写旧背景", clock.instant()),
+        )
+        SnapshotValidation.validate(later)
+        // Repointing the same historical prefix to the later adoption must still be rejected.
+        val wrong = rewriteExperienceContext(later, fixture.turn.runId) { ref ->
+            val value = later.knowledgeRevisions.single { it.id == fixture.replacement.knowledgeId }
+            ref.copy(knowledgeId = value.id, knowledgeRevision = value.revision, runId = value.runId,
+                text = value.claim.text, scope = value.scope, userNote = "合成后来替代，不得改写旧背景")
+        }
+        assertThrows(InvalidBackupException::class.java) { SnapshotValidation.validate(wrong) }
+    }
+
+    @Test fun `legacy prefix compatibility still rejects changed text title knowledge note and missing boundary`() {
+        val fixture = legacyExperienceFixture()
+        val supplement = fixture.snapshot.knowledgeRevisions.single { it.id == fixture.supplement.knowledgeId }
+        val mutations: List<(KnowledgeContextEntry) -> KnowledgeContextEntry> = listOf(
+            { it.copy(text = "合成篡改：原判断没有这样说。") },
+            { it.copy(title = "合成篡改：不存在的经验名称") },
+            { it.copy(userNote = "合成篡改：用户没有写过的说明") },
+            { it.copy(knowledgeId = supplement.id, knowledgeRevision = supplement.revision,
+                runId = supplement.runId, text = supplement.claim.text, scope = supplement.scope,
+                userNote = "合成补充说明，不是当前采用内容") },
+            { it.copy(revision = 4) },
+        )
+        mutations.forEach { mutation ->
+            // Recompute both transport hashes: rejection must come from real stored identity,
+            // rather than only noticing an unrecomputed checksum on the forged fixture.
+            val altered = rewriteExperienceContext(fixture.snapshot, fixture.turn.runId, transform = mutation)
+            assertThrows(InvalidBackupException::class.java) { SnapshotValidation.validate(altered) }
+        }
+    }
+
+    @Test fun `v17 initial and navigation contexts reject forged thread revision and title`() {
+        legacyExperienceFixture()
+        val turn = conversation.submit(conversation.prepare("今天学习方法有哪些变化？", scopeOverride = scope))
+        analysis.navigate(turn.runId, provider)
+        val snapshot = repository.captureSnapshot(directory())
+        val stored = snapshot.analysisRuns.single { it.id == turn.runId }
+        assertEquals(17, JSONObject(stored.payload).getInt("formatVersion"))
+        val state = AnalysisRunCodec.decode(stored.payload)
+        assertEquals(1, state.request.knowledgeContext!!.entries.single { it.kind == KnowledgeContextKind.EXPERIENCE }.revision)
+        assertEquals(1, state.calls.single().navigationContext!!.entries.single { it.kind == KnowledgeContextKind.EXPERIENCE }.revision)
+        listOf(false, true).forEach { navigation ->
+            val mutations: List<(KnowledgeContextEntry) -> KnowledgeContextEntry> = listOf(
+                { it.copy(revision = 2) }, { it.copy(title = "合成篡改：不存在的导航经验名称") },
+            )
+            mutations.forEach { mutation ->
+                val altered = rewriteExperienceContext(snapshot, turn.runId, navigation, mutation)
+                assertEquals(17, JSONObject(altered.analysisRuns.single { it.id == turn.runId }.payload).getInt("formatVersion"))
+                assertThrows(InvalidBackupException::class.java) { SnapshotValidation.validate(altered) }
+            }
+        }
+    }
+
+    @Test fun `restore rejects a legacy dependent task when retained experience title or adopted user note differs`() {
+        val fixture = legacyExperienceFixture()
+        val base = fixture.snapshot.copy(
+            analysisRuns = fixture.snapshot.analysisRuns.filterNot { it.id == fixture.turn.runId },
+            conversations = emptyList(), conversationTurns = emptyList(),
+        )
+        val noteFork = base.copy(experienceChanges = base.experienceChanges.map {
+                if (it.threadId == "experience" && it.sequence == 1) it.copy(userNote = "合成本地采用说明，旧备份不得覆盖") else it
+            })
+        val titleFork = base.copy(experienceThreads = base.experienceThreads.map { it.copy(title = "合成本地经验名称，旧备份不得覆盖") })
+        listOf(noteFork, titleFork).forEach { local ->
+            restoredFork(local, fixture.snapshot) { target ->
+                assertEquals(local.experienceThreads.single().title, target.experienceThread("experience")!!.title)
+                assertEquals(local.experienceChanges.single { it.sequence == 1 }.userNote, target.experienceCurrentChange("experience")!!.userNote)
+                assertNull(target.analysisRun(fixture.turn.runId))
+                assertEquals(fixture.turn, target.conversationTurn(fixture.turn.id))
+                assertNotNull(target.record(fixture.initial.sourceId))
+                SnapshotValidation.validate(target.captureSnapshot(directory()))
+            }
+        }
+    }
+
+    @Test fun `deleting a legacy experience dependency removes its task and prevents backup resurrection`() {
+        val fixture = legacyExperienceFixture()
+        val targetName = "synthetic-legacy-deletion-${UUID.randomUUID()}.db"
+        try {
+            LifeRepository(android, clock, targetName).use { target ->
+                target.restoreSnapshot(fixture.snapshot, directory(), target.currentGeneration())
+                assertNotNull(target.analysisRun(fixture.turn.runId))
+                target.deleteExperienceThread("experience", 2)
+                assertNull(target.analysisRun(fixture.turn.runId))
+                target.restoreSnapshot(fixture.snapshot, directory(), target.currentGeneration(), replaceExisting = true)
+                assertNull(target.experienceThread("experience"))
+                assertNull(target.analysisRun(fixture.turn.runId))
+                assertNotNull(target.record(fixture.initial.sourceId))
+                assertEquals(fixture.turn, target.conversationTurn(fixture.turn.id))
+                SnapshotValidation.validate(target.captureSnapshot(directory()))
+            }
+        } finally { android.deleteDatabase(targetName) }
+    }
+
     @Test fun `local experience branch wins same version restore and removes answers based on the other branch`() {
         val initial = publishOriginal("initial")
         val remoteKnowledge = publishOriginal("remote")
@@ -331,6 +466,100 @@ class KnowledgeContextTest {
         assertTrue(analysis.task("bounded").state.calls.isEmpty())
     }
 
+    @Test fun `semantic navigation shares pass budget fixes new context and deletion reaches that context`() {
+        val prior = publishOriginal("semantic-only")
+        val plan = conversation.prepare("今天怎样让脑海里的东西变清晰？", scopeOverride = scope)
+        assertTrue(plan.knowledgeContext!!.entries.isEmpty())
+        val turn = conversation.submit(plan)
+        val originalRequest = analysis.task(turn.runId).state.request
+        val first = conversation.process(turn, provider, maxRequests = 1)
+        assertEquals(1, first.modelRequestsThisPass)
+        val navigation = analysis.task(turn.runId).state.calls.single()
+        assertEquals(CallPurpose.NAVIGATION, navigation.purpose)
+        assertTrue(navigation.evidence.isEmpty())
+        assertNull(navigation.proposal)
+        assertEquals(prior.knowledgeId, navigation.navigationContext!!.entries.single().knowledgeId)
+        assertEquals(originalRequest, analysis.task(turn.runId).state.request)
+        assertEquals(17, JSONObject(analysis.task(turn.runId).stored.payload).getInt("formatVersion"))
+        val next = conversation.process(turn, provider, maxRequests = 1)
+        assertEquals(1, next.modelRequestsThisPass)
+        assertEquals(ReflectionStatus.READY, next.status)
+        assertEquals(1, provider.navigationRequests.size)
+        assertEquals(prior.knowledgeId, next.run.knowledgeContext!!.entries.single().knowledgeId)
+        val saved = save(turn)
+        val dir = directory()
+        val snapshot = repository.captureSnapshot(dir)
+        val archive = File(directory(), "navigation.tlb")
+        BackupArchive.write(snapshot, dir, archive, "synthetic-password-only".toCharArray())
+        assertEquals(snapshot, BackupArchive.read(archive, directory(), "synthetic-password-only".toCharArray()))
+        repository.deleteKnowledge(prior.knowledgeId, 1)
+        assertNull(repository.analysisRun(turn.runId))
+        assertNull(repository.knowledgeRevision(saved))
+        repository.restoreSnapshot(snapshot, dir, repository.currentGeneration(), replaceExisting = true)
+        assertNull(repository.analysisRun(turn.runId))
+        assertEquals(turn.question, repository.conversationTurn(turn.id)!!.question)
+    }
+
+    @Test fun `navigation retry is durable and successful navigation cannot reroute generated content`() {
+        val turn = conversation.submit(conversation.prepare("今天学习方法有哪些变化？", scopeOverride = scope))
+        provider.navigationFailure = true
+        val failed = conversation.process(turn, provider, maxRequests = 1)
+        assertEquals(ReflectionStatus.RETRY_NEEDED, failed.status)
+        assertEquals(1, failed.modelRequestsThisPass)
+        assertNull(analysis.task(turn.runId).state.calls.single().navigation)
+        provider.navigationFailure = false
+        assertEquals(1, conversation.process(turn, provider, maxRequests = 1).modelRequestsThisPass)
+        assertEquals(2, provider.navigationRequests.size)
+        assertEquals(1, conversation.process(turn, provider, maxRequests = 1).modelRequestsThisPass)
+        assertThrows(IllegalArgumentException::class.java) { analysis.navigate(turn.runId, provider) }
+        assertEquals(2, provider.navigationRequests.size)
+    }
+
+    @Test fun `all directory pages are ranked so an old synonymous experience beyond 200 remains reachable`() {
+        val source = publishOriginal("directory")
+        val continuity = KnowledgeContinuity(repository, clock)
+        repeat(205) { continuity.create(source.knowledgeId, 1, "合成普通条目$it", emptySet(), id = "entry-${it.toString().padStart(3, '0')}") }
+        continuity.create(source.knowledgeId, 1, "费曼讲解方法", emptySet(), id = "zz-relevant")
+        val context = KnowledgeContextCatalog(repository, clock).plan("怎样教会另一个人？", scope, emptySet(), setOf("费曼"))
+        assertTrue(context.scanned > 200)
+        assertEquals("zz-relevant", context.entries.single().id)
+        assertTrue(context.entries.size <= KnowledgeContextProtocol.MAX_ENTRIES)
+    }
+
+    @Test fun `record classification only reads bounded saved fragments and never mutates tags`() {
+        val record = repository.createRecord(RecordDraft("合成记录：" + "实践讲解".repeat(2000), Occurrence(day)), "long-classification")
+        val suggestion = dev.tracelife.knowledge.SemanticClassification(repository, analysis).suggest(record.id, record.revision, provider)
+        assertTrue(suggestion.providedFragments < suggestion.totalFragments)
+        assertEquals(16, suggestion.providedFragments)
+        val call = analysis.task(suggestion.runId).state.calls.single()
+        assertEquals(16, call.evidence.size)
+        assertTrue(call.evidence.all { it.recordId == record.id && it.revision == 1 && it.end - it.start <= 400 })
+        assertNull(call.navigationContext)
+        assertTrue(repository.record(record.id)!!.draft.topics.isEmpty())
+        repository.updateRecord(record.id, 1, record.draft.copy(body = "合成更正"))
+        assertEquals(AnalysisStatus.STALE, analysis.task(suggestion.runId).status)
+    }
+
+    @Test fun `many experience routes to one publication cannot crowd out other relevant knowledge`() {
+        val popular = publishOriginal("repeated-route")
+        val separate = publishOriginal("independent-route")
+        val continuity = KnowledgeContinuity(repository, clock)
+        repeat(65) { continuity.create(popular.knowledgeId, 1, "费曼讲解学习经验$it", setOf("学习"),
+            id = "repeated-${it.toString().padStart(3, '0')}") }
+        val context = KnowledgeContextCatalog(repository, clock).plan("学习", scope, setOf("学习"), setOf("费曼"))
+        assertEquals(setOf(popular.knowledgeId, separate.knowledgeId), context.entries.map { it.knowledgeId }.toSet())
+        assertEquals(2, context.entries.size)
+    }
+
+    @Test fun `experience topics route independent user organization without relabeling original knowledge`() {
+        val original = publishOriginal("thread-topic")
+        KnowledgeContinuity(repository, clock).create(original.knowledgeId, 1, "合成经验线索", setOf("专注"), id = "focus-thread")
+        val context = KnowledgeContextCatalog(repository, clock).plan("专注", scope, setOf("专注"))
+        assertEquals("focus-thread", context.entries.single().id)
+        assertEquals(KnowledgeContextKind.EXPERIENCE, context.entries.single().kind)
+        assertEquals(setOf("学习"), repository.knowledgeRevision(original.knowledgeId)!!.topics)
+    }
+
     private fun deletionFence(kind: KnowledgeContextKind) {
         val previous = publishOriginal("origin")
         if (kind == KnowledgeContextKind.EXPERIENCE) KnowledgeContinuity(repository, clock).create(previous.knowledgeId, 1,
@@ -386,6 +615,43 @@ class KnowledgeContextTest {
     }
 
     private data class Published(val runId: String, val sourceId: String, val claim: ClaimRef, val knowledgeId: String)
+    private data class LegacyExperienceFixture(val snapshot: RepositorySnapshot, val turn: ConversationTurn,
+        val initial: Published, val supplement: Published, val replacement: Published)
+
+    /** Emulates the older preview's persisted v15 identity without using any external database. */
+    private fun legacyExperienceFixture(): LegacyExperienceFixture {
+        val initial = publishOriginal("legacy-initial")
+        val supplement = publishOriginal("legacy-supplement")
+        val replacement = publishOriginal("legacy-replacement")
+        KnowledgeContinuity(repository, clock).apply {
+            create(initial.knowledgeId, 1, "合成学习经验", setOf("学习"), "合成初始采用说明", "experience")
+            append("experience", 1, supplement.knowledgeId, 1, ExperienceRelation.SUPPLEMENT, "合成补充说明，不是当前采用内容")
+        }
+        val turn = ask()
+        val snapshot = rewriteExperienceContext(repository.captureSnapshot(directory()), turn.runId) { it.copy(revision = 2) }
+        assertEquals(15, JSONObject(snapshot.analysisRuns.single { it.id == turn.runId }.payload).getInt("formatVersion"))
+        return LegacyExperienceFixture(snapshot, turn, initial, supplement, replacement)
+    }
+
+    private fun rewriteExperienceContext(snapshot: RepositorySnapshot, runId: String, navigation: Boolean = false,
+        transform: (KnowledgeContextEntry) -> KnowledgeContextEntry): RepositorySnapshot = snapshot.copy(
+        analysisRuns = snapshot.analysisRuns.map { stored ->
+            if (stored.id != runId) stored else {
+                val state = AnalysisRunCodec.decode(stored.payload)
+                val plan = if (navigation) requireNotNull(state.calls.single().navigationContext) else requireNotNull(state.request.knowledgeContext)
+                val entries = plan.entries.map { entry ->
+                    if (entry.kind != KnowledgeContextKind.EXPERIENCE) entry else transform(entry).let { changed ->
+                        changed.copy(contentSha256 = AnalysisRunCodec.sha256(AnalysisRunCodec.json(KnowledgeContextProtocol.entryMap(changed) - "contentSha256")))
+                    }
+                }
+                val legacy = KnowledgeContextProtocol.withHash(plan.copy(entries = entries))
+                val changed = if (navigation) state.copy(calls = state.calls.map { it.copy(navigationContext = legacy) })
+                    else state.copy(request = state.request.copy(knowledgeContext = legacy))
+                stored.copy(payload = AnalysisRunCodec.encode(changed))
+            }
+        },
+    )
+
     private fun publishOriginal(name: String): Published {
         val source = "past-$name"
         val previous = day.minusDays(10)
@@ -431,11 +697,19 @@ class KnowledgeContextTest {
         override fun withZone(zone: ZoneId): Clock = Clock.fixed(now, zone)
         override fun instant(): Instant = now
     }
-    private class Provider(private val framing: DeepSeekProvider) : AnalysisProvider, SemanticReviewProvider, SemanticReductionScanProvider {
+    private class Provider(private val framing: DeepSeekProvider) : AnalysisProvider, SemanticReviewProvider, SemanticReductionScanProvider, SemanticNavigationProvider {
         override val id = framing.id
         override val contextWindowTokens = framing.contextWindowTokens
         val requests = mutableListOf<ModelRequest>()
         val wires = mutableListOf<String>()
+        val navigationRequests = mutableListOf<ModelRequest>()
+        var navigationFailure = false
+        override fun prepareNavigation(request: ModelRequest) = framing.prepareNavigation(request)
+        override fun navigatePrepared(request: PreparedModelRequest): NavigationCompletion {
+            navigationRequests += request.original
+            check(!navigationFailure) { "Synthetic failure" }
+            return NavigationCompletion(NavigationSuggestion(listOf("学习"), listOf("学习", "讲解"), "合成导航，只用于查找。"))
+        }
         var before: () -> Unit = {}
         var extraCitation: String? = null
         override fun countInputTokens(request: ModelRequest) = framing.countInputTokens(request)

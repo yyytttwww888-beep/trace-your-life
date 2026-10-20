@@ -1,6 +1,7 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.text.InputType
 import android.view.Gravity
 import android.widget.LinearLayout
@@ -10,6 +11,8 @@ import dev.tracelife.background.BackgroundJob
 import dev.tracelife.background.BackgroundJobStatus
 import dev.tracelife.background.BackgroundPolicy
 import dev.tracelife.background.BackgroundSettings
+import dev.tracelife.background.BackgroundJobKind
+import dev.tracelife.profile.ProfileDimension
 import dev.tracelife.providers.CredentialAccessException
 import dev.tracelife.providers.CredentialStatus
 
@@ -90,7 +93,7 @@ class SettingsActivity : ScreenActivity() {
             Ui.sectionTitle(card, "自动整理")
             if (settings.requiresEnableAfterRestore) {
                 chip(card, "恢复后须重新启用", Ui.Tone.WARN)
-                Ui.note(card, "恢复备份后自动整理已关闭。重新开启，只会整理之后新增或修改的记录。")
+                Ui.note(card, "恢复备份后已撤销自动整理授权。重新开启会从新的记录变更和之后结束的周期开始。")
             }
             val statusRow = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -103,6 +106,14 @@ class SettingsActivity : ScreenActivity() {
             Ui.note(card, "今日已占用 ${settings.reservedRequestsToday} / ${policy.dailyRequestLimit} 次请求额度（UTC）。")
             val enabled = checkIn(card, "自动整理新记录", policy.enabled)
             Ui.note(card, "开启后会将之后新增或修改的记录片段发送给 DeepSeek，可能产生费用。整理结果仍需你核对。")
+            val weekly = checkIn(card, "每周形成一次回看草稿", policy.weeklyReflection).apply { tag = "weeklyReflection" }
+            val monthly = checkIn(card, "每月形成一次回看草稿", policy.monthlyReflection).apply { tag = "monthlyReflection" }
+            val profile = checkIn(card, "每月整理一项跨阶段描述", policy.monthlyProfileDimension != null).apply { tag = "monthlyProfile" }
+            Ui.fieldLabel(card, "跨阶段描述的侧面")
+            val dimension = spinnerIn(card, ProfileDimension.entries.map(::profileDimensionTitle),
+                ProfileDimension.entries.indexOf(policy.monthlyProfileDimension ?: ProfileDimension.ABILITIES_AND_STRATEGIES), "automaticProfileDimension")
+            Ui.note(card, "这些选项随自动整理总开关生效。首次开启从之后结束的周或月开始，跨阶段描述每次读取最近三个完整月；周一和月初后由手机安排，不保证整点执行。")
+            Ui.note(card, "新记录、周/月回看和跨阶段描述共用下面的请求额度。只生成待查看的草稿，不会替你确认、保存经验或采用画像。")
             val unmetered = checkIn(card, "仅在非计费网络下整理（如 Wi-Fi）", policy.unmeteredOnly)
             lateinit var perPass: EditText
             lateinit var daily: EditText
@@ -112,14 +123,16 @@ class SettingsActivity : ScreenActivity() {
                 perPass.inputType = InputType.TYPE_CLASS_NUMBER
                 daily = labeledFieldIn(limits, "每日请求上限（UTC）", "1–1000", policy.dailyRequestLimit.toString(), maxLength = 5)
                 daily.inputType = InputType.TYPE_CLASS_NUMBER
-                perJob = labeledFieldIn(limits, "每条记录的请求上限", "1–100", policy.maxRequestsPerJob.toString(), maxLength = 4)
+                perJob = labeledFieldIn(limits, "每项整理的请求上限", "1–100", policy.maxRequestsPerJob.toString(), maxLength = 4)
                 perJob.inputType = InputType.TYPE_CLASS_NUMBER
                 Ui.note(limits, "这里限制请求次数，不是费用金额。失败和未收到结果的请求也占用额度。")
             }
             primaryIn(card, "保存设置", "applyPolicy") {
                 applyPolicy(settings, enabled.isChecked, perPass.text.toString().trim(),
-                    daily.text.toString().trim(), perJob.text.toString().trim(), unmetered.isChecked)
+                    daily.text.toString().trim(), perJob.text.toString().trim(), unmetered.isChecked,
+                    weekly.isChecked, monthly.isChecked, if (profile.isChecked) ProfileDimension.entries[dimension.selectedItemPosition] else null)
             }
+            addButton(card, "查看待处理内容", "maintenanceInbox") { startActivity(Intent(this, MaintenanceInboxActivity::class.java)) }
             if (policy.enabled && !policy.paused) {
                 addButton(card, "暂停后台整理", "pause") {
                     runIo({ app.incrementalOrganizer.pause() }) { toast("已暂停"); showHome() }
@@ -138,13 +151,14 @@ class SettingsActivity : ScreenActivity() {
     }
 
     private fun applyPolicy(current: BackgroundSettings, enabled: Boolean, perPassText: String,
-                            dailyText: String, perJobText: String, unmeteredOnly: Boolean) {
+                            dailyText: String, perJobText: String, unmeteredOnly: Boolean,
+                            weekly: Boolean, monthly: Boolean, profileDimension: ProfileDimension?) {
         val perPass = perPassText.toIntOrNull()?.takeIf { it in 1..10 }
             ?: run { showError(IllegalArgumentException("每轮最多请求数须为 1 至 10")); return }
         val daily = dailyText.toIntOrNull()?.takeIf { it in 1..1000 }
             ?: run { showError(IllegalArgumentException("每日请求上限须为 1 至 1000")); return }
         val perJob = perJobText.toIntOrNull()?.takeIf { it in 1..100 }
-            ?: run { showError(IllegalArgumentException("每条记录的请求上限须为 1 至 100")); return }
+            ?: run { showError(IllegalArgumentException("每项整理的请求上限须为 1 至 100")); return }
         val policy = BackgroundPolicy(
             enabled = enabled,
             paused = enabled && current.policy.paused,
@@ -153,6 +167,9 @@ class SettingsActivity : ScreenActivity() {
             dailyRequestLimit = daily,
             maxRequestsPerJob = perJob,
             unmeteredOnly = unmeteredOnly,
+            weeklyReflection = weekly,
+            monthlyReflection = monthly,
+            monthlyProfileDimension = profileDimension,
         )
         val save = {
             runIo({
@@ -166,8 +183,15 @@ class SettingsActivity : ScreenActivity() {
                 showHome()
             }
         }
-        if (enabled && (!current.policy.enabled || current.requiresEnableAfterRestore)) {
-            confirm("开启自动整理？", "之后新增或修改的记录片段会发送给 DeepSeek，可能产生费用。每天最多 $daily 次请求。整理不会自动替你确认或采用结果。", "开启", save)
+        val expanded = weekly && !current.policy.weeklyReflection || monthly && !current.policy.monthlyReflection ||
+            profileDimension != null && profileDimension != current.policy.monthlyProfileDimension
+        if (enabled && (!current.policy.enabled || current.requiresEnableAfterRestore || expanded)) {
+            val periods = buildList {
+                if (weekly) add("每个结束的周形成回看草稿")
+                if (monthly) add("每个结束的月形成回看草稿")
+                if (profileDimension != null) add("每月比较最近三个完整月的${profileDimensionTitle(profileDimension)}记录")
+            }.joinToString("；")
+            confirm("开启自动整理？", "之后新增或修改的记录片段会发送给 DeepSeek，可能产生费用。${if (periods.isBlank()) "" else "$periods。"}合计每天最多 $daily 次请求。首次开启不补跑已经结束的周期；结果仍需你核对和明确保存。", "开启", save)
         } else save()
     }
 
@@ -182,23 +206,29 @@ class SettingsActivity : ScreenActivity() {
             if (jobs.isEmpty()) emptyState(card, "还没有自动整理记录。")
             jobs.forEachIndexed { index, job ->
                 if (index > 0) Ui.divider(card)
-                Ui.body(card, "记录整理 · ${job.updatedAt.toString().take(10)}")
+                Ui.body(card, "${backgroundJobTitle(job)} · ${job.updatedAt.toString().take(10)}")
                 chip(card, statusLabel(job.status), statusTone(job.status))
                 Ui.note(card, "已占用 ${job.reservedRequests} 次请求额度")
                 Ui.disclosure(card, "查看详情", "jobDetails:${job.id}") { details ->
-                    Ui.note(details, "记录编号：${job.recordId}\n记录版本：${job.recordRevision}\n整理编号：${job.runId ?: "尚未开始"}\n更新于 ${job.updatedAt}")
+                    Ui.note(details, if (job.kind == BackgroundJobKind.RECORD) "记录编号：${job.recordId}\n记录版本：${job.recordRevision}" else
+                        "${job.from} 至 ${job.through} · ${job.zoneId}")
+                    Ui.note(details, "整理编号：${job.runId ?: "尚未开始"}\n更新于 ${job.updatedAt}")
                 }
+                if (job.runId != null && job.status != BackgroundJobStatus.SOURCE_UNAVAILABLE)
+                    addButton(card, "查看整理结果", "openJob:${job.id}") { startActivity(backgroundJobIntent(this, job)) }
                 if (job.status in RETRYABLE) {
                     if (job.status == BackgroundJobStatus.BUDGET_EXHAUSTED &&
                         job.reservedRequests >= settings.policy.maxRequestsPerJob) {
-                        Ui.note(card, "这条记录的请求额度已用完。可在「用量限制」中提高上限，保存后再重试。")
+                        Ui.note(card, "这项整理的请求额度已用完。可在「用量限制」中提高上限，保存后再重试。")
                     } else {
                         addButton(card, "重新整理", "retry:${job.id}") {
-                            runIo({
-                                app.incrementalOrganizer.retry(job.id, job.version).also { app.backgroundScheduler.wake() }
-                            }) {
-                                toast("已重新排队，等待下一轮后台处理")
-                                showHome()
+                            confirm("重新整理？", "将继续或为已变化的范围建立新任务，并在当前共享额度内重新调用 DeepSeek。已有请求额度不会退回，旧结果仍保留。", "重新整理") {
+                                runIo({
+                                    app.incrementalOrganizer.retry(job.id, job.version).also { app.backgroundScheduler.wake() }
+                                }) {
+                                    toast("已重新排队，等待下一轮后台处理")
+                                    showHome()
+                                }
                             }
                         }
                     }
@@ -229,18 +259,7 @@ class SettingsActivity : ScreenActivity() {
         }
     }
 
-    private fun statusLabel(status: BackgroundJobStatus) = when (status) {
-        BackgroundJobStatus.QUEUED -> "排队中"
-        BackgroundJobStatus.RUNNING -> "处理中"
-        BackgroundJobStatus.PROPOSALS_READY -> "等待核对"
-        BackgroundJobStatus.NEEDS_ATTENTION -> "需要你查看"
-        BackgroundJobStatus.FAILED -> "失败"
-        BackgroundJobStatus.NEEDS_RECOVERY -> "待恢复"
-        BackgroundJobStatus.SUPERSEDED -> "已被更新的修订取代"
-        BackgroundJobStatus.SOURCE_UNAVAILABLE -> "来源记录不可用"
-        BackgroundJobStatus.BUDGET_EXHAUSTED -> "额度已耗尽"
-        BackgroundJobStatus.STORAGE_BLOCKED -> "任务容量已满"
-    }
+    private fun statusLabel(status: BackgroundJobStatus) = backgroundJobStatus(status)
 
     private fun statusTone(status: BackgroundJobStatus) = when (status) {
         BackgroundJobStatus.QUEUED -> Ui.Tone.NEUTRAL
@@ -253,13 +272,11 @@ class SettingsActivity : ScreenActivity() {
         BackgroundJobStatus.SOURCE_UNAVAILABLE -> Ui.Tone.WARN
         BackgroundJobStatus.BUDGET_EXHAUSTED -> Ui.Tone.WARN
         BackgroundJobStatus.STORAGE_BLOCKED -> Ui.Tone.WARN
+        BackgroundJobStatus.REBUILD_REQUIRED -> Ui.Tone.WARN
     }
 
     companion object {
         private const val JOB_PAGE_SIZE = 25
-        private val RETRYABLE = setOf(
-            BackgroundJobStatus.FAILED, BackgroundJobStatus.NEEDS_RECOVERY,
-            BackgroundJobStatus.STORAGE_BLOCKED, BackgroundJobStatus.BUDGET_EXHAUSTED,
-        )
+        private val RETRYABLE = BACKGROUND_RETRYABLE
     }
 }

@@ -1,6 +1,6 @@
 # 看板数据、趋势下钻与行动回看
 
-M4 第一阶段提供看板后端和独立导出，沿用[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md#8-数据看板关键趋势与行动回看)。看板是现有主存的可重建视图，不产生模型调用。[偏好持久化](DASHBOARD_PREFERENCES.md)现已提供；手机页面与原生趋势图已接入，实体手机验收尚未完成；实现与验证记录见[阶段计划](plans/2026-10-19-dashboard-data.md)。
+M4 第一阶段提供看板后端和独立导出，沿用[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md#8-数据看板关键趋势与行动回看)。看板是现有主存的可重建视图，不产生模型调用。[偏好持久化](DASHBOARD_PREFERENCES.md)现已提供；手机页面与原生趋势图已接入，实体手机验收尚未完成；实现与验证记录见[阶段计划](plans/2026-10-19-dashboard-data.md)。工作／学习的明确输入与趋势见下方「投入、实践与成果」，其数值不由自由文本猜测。
 
 ## 建立看板
 
@@ -97,7 +97,7 @@ val saved = app.dataTransfer.exportDashboard(
 // 也可传入 DashboardRequest，在导出时建立新快照。
 ```
 
-`trace-life-dashboard` v1 ZIP 提供 Markdown 概览、JSON 口径与元数据、两期 CSV，以及分页来源、已发布洞察身份、全局行动摘要和时间线。来源属于资料覆盖辅助区，不作为未接通健康指标的依据。记录正文、照片、洞察正文、行动做法、回看观察文字、独立反馈、分析任务和凭据均不在包内。
+`trace-life-dashboard` v2 ZIP 提供 Markdown 概览、JSON 口径与元数据、两期 CSV，以及分页来源、已发布洞察身份、全局行动摘要和时间线。v2 新增 `activities/current.json`、`previous.json` 及对应 CSV 和分页来源目录，记录工作／学习分钟、实践次数、覆盖、输入问题和成果原文字段定位。JSON `null` 与 CSV 空值均表示未填写；明确零值单独保留。成果正文仍通过完整阅读包或备份交付，本看板包不复制。原 `metrics/` 与 `sources/` 继续属于资料覆盖辅助区，不作为未接通健康指标的依据。记录正文、照片、洞察正文、行动做法、回看观察文字、独立反馈、分析任务和凭据均不在包内。
 
 导出是固定评估时刻的历史视图，标明 `restorable=false` 和 `modelCitableReceipt=false`，不生成新的 AI 判断。格式、校验、容量与原子发布规则见[数据转移接口](DATA_TRANSFER.md#看板导出)；完整保存和换机恢复继续使用加密备份。
 
@@ -108,3 +108,31 @@ val saved = app.dataTransfer.exportDashboard(
 点按某个位置可打开该点的实际贡献来源，继续分页查看记录字段和原文。键盘左右键可选择时段，屏幕阅读器用户也可通过「按日期查看记录」访问同一套逐项入口。日期未知和跨多天记录另列数量与下钻入口；华为健康与餐食数据未接入时仍保持不可用，不绘制估计曲线。图表使用现有浅色／深色单色资源，不引入图表依赖。
 
 窗口切换保留于页面重建状态；「调整时间范围」中的保存仍使用持久看板偏好。图表、原文和导出遵守同一快照有效性检查，记录或日期变化后需要刷新。新增行为验证位于 `DashboardChartActivityTest`，具体运行结果统一见[开发验证](DEVELOPMENT.md)。
+
+## 投入、实践与成果
+
+「趋势 → 工作与学习 → 记一次投入或实践」打开可选结构化表单。每条表示一次主要领域为工作或学习的活动，包含发生日期、自由正文、投入分钟、亲自实践次数、具体成果和方法／条件。除领域外均可选，但至少留下一项实际内容；日期可未知或跨多天。分钟为 0–1440 的整数，实践次数为 0–10000 的整数，不将计划、阅读或收藏自动算作实践。同一活动只填一次，不能在工作和学习分别重复计入相同时间。
+
+数据仍是 `RecordDraft` 与 `record_answers`：`ActivityLogTemplate` 固定 v1 问题身份和含义，按需复用兼容模板或创建新模板，不覆盖用户改过、归档或删除的模板。无主库或完整备份格式迁移；修订、原文字段取证、归档、永久删除、加密备份和知识阅读包继承普通记录边界。旧记录继续绑定其原模板版本。完整问题清单（身份、顺序、提问、提示和意图）发生改变后，新版本不再按旧指标解释；原版本仍可计算，来源页明确列出不兼容输入。
+
+`DashboardSnapshot.activityCurrent`／`activityPrevious` 提供独立的 `explicit-activity-v1` 口径视图，绝不复用 `record-coverage` 数字。每个领域有分钟和实践次数的按日／自然周序列、精确日期总量和各字段的填写天数。7／30 天逐日，90 天沿用当前看板自然周边界；各点保留实际天数和是否包含今天。只读取有限标量答案和成果存在标记，计算时不扫描自由正文或成果正文。
+
+- 未填写为 `null`／断点；明确填 0 才为零。空白日不推断为没有工作、学习或实践。
+- 总量仅为精确日期的已填写值之和，覆盖按该字段有填写的日期去重。一个字段缺失不会补成另一个字段的零。
+- 日期未知和跨多天条目另列，不分摊到图表或本期／前期精确日期总量。未知时间条目可能同时出现在两期导航，不可合并成独立事件数。
+- 每个记录 ID 只使用当前修订。不同记录重复描述同一次活动不会自动合并，页面提醒用户编辑原记录修正；不声称已经完成行为级去重。
+- 非整数、超限或不兼容模板显示待修正，受影响数值不加入曲线。有效领域的另一项有效字段仍可计入；领域不明则整条不加入领域统计。
+- 前期并列展示同长度窗口及各自覆盖，不计算成长分或宣称投入上升意味着能力提高。成果时间线只展示明确填写的成果文字，不统计“成果数”作为成长指标。
+
+```kotlin
+val board = app.dashboard.open(DashboardRequest(DashboardWindow.DAYS_30, "Asia/Shanghai"))
+val learning = board.activityCurrent.series.single { it.domain == ActivityDomain.LEARNING }
+val contributors = app.dashboard.activitySources(board,
+    domain = ActivityDomain.LEARNING, measure = ActivityMeasure.MINUTES,
+    pointIndex = 0, offset = 0, limit = 25)
+val outcomes = app.dashboard.activitySources(board, measure = ActivityMeasure.OUTCOMES)
+```
+
+来源入口按领域、字段及图表点过滤，返回固定记录 ID／修订、发生日期和填写值；成果页按日期分页读取明确成果字段的有限预览，继续点开查看完整原文。原文走同一看板快照的 `sourceFields`／`sourceText`，可在专用表单修改兼容活动记录。记录修改、删除、归档和恢复后的旧看板不能继续读取。窗口、领域和所选指标在页面重建后保留，表单未保存输入及稳定记录身份同样保留；保存期间重建后可幂等重试。
+
+专项行为测试位于 `ActivityMetricsTest`、`ActivityEntryActivityTest`、`ActivityTrendActivityTest`，覆盖明确零与缺失、自由文本隔离、自然周边界、固定版本、非法输入、修改／归档／删除失效、加密换库恢复、导出定位和实际页面路径。测试执行结果由统一[开发验证](DEVELOPMENT.md)记录。

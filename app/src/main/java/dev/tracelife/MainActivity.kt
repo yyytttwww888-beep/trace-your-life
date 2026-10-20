@@ -161,7 +161,12 @@ class MainActivity : Activity() {
                 templateEditor = null
                 showTemplates()
             }
-            "detail" -> if (historicalRevision != null) showDetail(requireNotNull(recordId)) else showRecords()
+            "detail" -> when {
+                historicalRevision != null && historicalRevision != intent.getIntExtra(EXTRA_RECORD_REVISION, -1) ->
+                    showDetail(requireNotNull(recordId))
+                intent.hasExtra(EXTRA_RECORD_ID) -> finish()
+                else -> showRecords()
+            }
             "templates" -> showRecords()
             else -> finish()
         }
@@ -204,6 +209,9 @@ class MainActivity : Activity() {
         }
         Ui.button(actions, "做个复盘", "templates") { if (!busy) showTemplates() }
             .layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        Ui.textButton(root, "记一次投入与实践", "newActivityEntry") {
+            if (!busy) startActivity(Intent(this, dev.tracelife.ui.ActivityEntryActivity::class.java))
+        }
         Ui.card(root).apply { tag = "reflectionOverview" }
         Ui.textButton(root, "查找记录与知识", "searchAllContent") {
             if (!busy) startActivity(Intent(this, dev.tracelife.ui.DiscoveryActivity::class.java))
@@ -243,6 +251,7 @@ class MainActivity : Activity() {
                 includeUnknown = includeUnknown,
                 limit = PAGE_SIZE,
                 offset = offset,
+                includeConfiguration = false,
             ).also { require(it.from == null || it.through == null || !it.through.isBefore(it.from)) { "结束日期不能早于起始日期" } }
         } catch (failure: IllegalArgumentException) {
             showError(failure)
@@ -360,6 +369,25 @@ class MainActivity : Activity() {
                 }
                 val actionsCard = dev.tracelife.ui.Ui.card(root)
                 dev.tracelife.ui.Ui.primary(actionsCard, "编辑记录", "editRecord") { if (!busy) { editor = EditorState.from(record); showEditor() } }
+                addButton(actionsCard, "按内容建议主题", "semanticRecordTopics") {
+                    if (!busy) confirm("为这条记录建议主题？", "读取已保存的文字，最多发出一次请求。长记录只读取前一部分，结果会标明范围；由你选择后才修改主题。", "开始整理") {
+                        runIo({ dev.tracelife.knowledge.SemanticClassification(repository, app.analysis).suggest(record.id, record.revision, app.deepSeekProvider) }) { result ->
+                            val suggestions = result.suggestion.topics.filter { it !in record.draft.topics }
+                            if (suggestions.isEmpty()) Toast.makeText(this, "没有需要补充的主题", Toast.LENGTH_SHORT).show()
+                            else {
+                                val selected = BooleanArray(suggestions.size)
+                                AlertDialog.Builder(this).setTitle("选择要加入的主题")
+                                    .setView(TextView(this).apply { text = result.coverage + "\n" + result.suggestion.explanation; setPadding(dp(24), dp(12), dp(24), dp(12)) })
+                                    .setMultiChoiceItems(suggestions.toTypedArray(), selected) { _, index, checked -> selected[index] = checked }
+                                    .setPositiveButton("保存选择") { _, _ ->
+                                        val chosen = suggestions.filterIndexed { index, _ -> selected[index] }.toSet()
+                                        if (chosen.isNotEmpty()) runIo({ repository.updateRecord(record.id, record.revision,
+                                            record.draft.copy(topics = record.draft.topics + chosen)) }) { showDetail(record.id) }
+                                    }.setNegativeButton("暂不添加", null).show()
+                            }
+                        }
+                    }
+                }
                 addButton(actionsCard, "修改历史", "history") {
                     runIo({ repository.history(id) }) { history ->
                         AlertDialog.Builder(this).setTitle("修订历史")
@@ -491,7 +519,9 @@ class MainActivity : Activity() {
         Ui.textButton(root, "添加自己的模板", "importTemplate") { if (!busy) { templateEditor = TemplateEditorState(); showTemplateEditor() } }
         val archived = check("显示已归档模板", showArchivedTemplates)
         archived.setOnCheckedChangeListener { _, checked -> showArchivedTemplates = checked; showTemplates() }
-        runIo({ repository.listTemplates(showArchivedTemplates) }) { templates ->
+        runIo({ repository.listTemplates(showArchivedTemplates).filterNot {
+            dev.tracelife.knowledge.TopicAliasTemplate.supports(it.draft.questions)
+        } }) { templates ->
             if (templates.isEmpty()) dev.tracelife.ui.Ui.emptyState(root, "暂无可用模板")
             templates.forEach { template ->
                 val card = dev.tracelife.ui.Ui.card(root)

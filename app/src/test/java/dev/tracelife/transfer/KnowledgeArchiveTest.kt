@@ -1,5 +1,6 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.knowledge.TopicAliasTemplate
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.Occurrence
@@ -127,6 +128,70 @@ class KnowledgeArchiveTest {
         assertFalse(entries.keys.any { it.startsWith("reviews/") })
         assertEquals(JSONObject.NULL, machineRecords(entries).single().getJSONObject("occurrence").get("startDate"))
         assertEquals(1, JSONObject(entries.getValue("manifest.json").text()).getJSONObject("coverage").getInt("unknownTimeIncluded"))
+    }
+
+    @Test fun `navigation rules have separate paged portable routes without becoming unknown life evidence`() {
+        val template = TemplateVersion("synthetic-navigation-template", 1, TopicAliasTemplate.draft, now)
+        val rules = (0..2).map { index -> record("synthetic-alias-$index", start = null, archived = index == 2).let { source ->
+            source.copy(draft = source.draft.copy(body = "synthetic-private-config-body-$index",
+                template = TemplateRef(template.id, template.version), answers = mapOf(
+                    TopicAliasTemplate.CANONICAL to "合成主要叫法$index", TopicAliasTemplate.ALIASES to "合成其他叫法$index")))
+        } }
+        val source = snapshot(rules + record("synthetic-life", start = null), listOf(template))
+        val (entries, result) = export(source, ReadingExportOptions(pageSize = 1))
+        val manifest = JSONObject(entries.getValue("manifest.json").text())
+        assertEquals(1, result.records)
+        assertEquals(listOf("synthetic-life"), machineRecords(entries).map { it.getString("id") })
+        assertEquals(1, manifest.getJSONObject("coverage").getInt("sourceLifeRecords"))
+        assertEquals(1, manifest.getJSONObject("coverage").getInt("unknownTimeEligible"))
+        assertEquals(3, manifest.getJSONObject("coverage").getJSONObject("excludedByReason").getInt("navigationConfiguration"))
+        assertEquals(3, manifest.getJSONObject("navigationConfiguration").getInt("included"))
+        assertFalse(manifest.getJSONObject("navigationConfiguration").getBoolean("originalEvidence"))
+        assertTrue(entries.keys.contains("navigation/topic-aliases/page-002.md"))
+        val bodies = entries.filterKeys { it.startsWith("navigation/topic-aliases/entries/") }.values.map { it.text() }
+        assertEquals(3, bodies.size)
+        assertTrue(bodies.any { "合成其他叫法0" in it && "不是生活事件" in it })
+        assertTrue(bodies.any { "已归档，不用于当前拓展" in it })
+        assertTrue(entries.values.none { "synthetic-private-config-body-" in it.text() })
+        assertEquals(setOf("synthetic-life"), idMappings(entries).map { it.getString("id") }.toSet())
+        assertTrue(entries.keys.filter { it.startsWith("navigation/topic-aliases/entries/") }.all { it in reachable(entries) })
+        assertGeneratedNavigation(entries)
+    }
+
+    @Test fun `navigation export preserves exact bound template identity and omits malformed rules explicitly`() {
+        val template = TemplateVersion("navigation", 1, TopicAliasTemplate.draft, now)
+        val later = template.copy(version = 2, draft = template.draft.copy(questions = template.draft.questions.map { it.copy(hint = "合成普通问题") }))
+        fun bound(id: String, version: Int, alias: String) = record(id, start = null).let { source -> source.copy(draft = source.draft.copy(
+            template = TemplateRef(template.id, version), answers = mapOf(TopicAliasTemplate.CANONICAL to "合成主题", TopicAliasTemplate.ALIASES to alias))) }
+        val (entries, _) = export(snapshot(listOf(bound("configuration", 1, "合成叫法"), bound("malformed", 1, ""),
+            bound("ordinary", 2, "同名模板但不同含义")), listOf(template, later)))
+        assertEquals(listOf("ordinary"), machineRecords(entries).map { it.getString("id") })
+        val config = JSONObject(entries.getValue("manifest.json").text()).getJSONObject("navigationConfiguration")
+        assertEquals(2, config.getInt("sourceCurrent"))
+        assertEquals(1, config.getInt("included"))
+        assertEquals(1, config.getJSONObject("omittedByReason").getInt("invalid_configuration"))
+    }
+
+    @Test fun `navigation respects selected dates topics and archive choice and never enters evidence packages`() {
+        val template = TemplateVersion("navigation", 1, TopicAliasTemplate.draft, now)
+        val base = record("configuration", start = null).let { source -> source.copy(draft = source.draft.copy(
+            template = TemplateRef(template.id, 1), answers = mapOf(TopicAliasTemplate.CANONICAL to "合成配置关键词", TopicAliasTemplate.ALIASES to "合成别名"))) }
+        val source = snapshot(listOf(base, base.copy(id = "archived", archived = true)), listOf(template))
+        val unknownExcluded = export(source, ReadingExportOptions(scope = ExportScope(from = LocalDate.parse("2026-10-01"),
+            through = LocalDate.parse("2026-10-31"), includeUnknown = false))).first
+        val topicExcluded = export(source, ReadingExportOptions(scope = ExportScope(topics = setOf("学习")))).first
+        listOf(unknownExcluded, topicExcluded).forEach { entries ->
+            assertTrue(entries.values.none { "合成配置关键词" in it.text() })
+            assertEquals(0, JSONObject(entries.getValue("manifest.json").text()).getJSONObject("navigationConfiguration").getInt("included"))
+        }
+        val activeOnly = export(source, ReadingExportOptions(scope = ExportScope(includeArchived = false))).first
+        assertEquals(1, JSONObject(activeOnly.getValue("manifest.json").text()).getJSONObject("navigationConfiguration").getInt("included"))
+        val evidence = export(source, ReadingExportOptions(kind = ReadingPackageKind.EVIDENCE, question = "合成限定任务")).first
+        assertFalse(evidence.keys.any { it.startsWith("navigation/") })
+        assertTrue(evidence.values.none { "合成配置关键词" in it.text() })
+        assertEquals(2, JSONObject(evidence.getValue("manifest.json").text()).getJSONObject("navigationConfiguration")
+            .getJSONObject("omittedByReason").getInt("evidence_package"))
+        assertTrue(machineRecords(evidence).isEmpty())
     }
 
     @Test

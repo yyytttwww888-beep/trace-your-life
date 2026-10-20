@@ -76,17 +76,46 @@ class DeepSeekProviderTest {
         assertEquals(listOf("合成缺口：没有后续表现记录"), result.proposal.unknowns)
     }
 
+    @Test fun `navigation uses a distinct fully measured request and rejects claim shaped output`() {
+        var sent: String? = null
+        var content = AnalysisRunCodec.json(mapOf("topics" to listOf("学习"), "terms" to listOf("讲解", "实践"), "explanation" to "合成查找导航"))
+        val adapter = provider { body, _ -> sent = body; DeepSeekHttpResponse(200, response(content = content)) }
+        val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "NAVIGATION", "profileTarget" to null, "question" to "怎样讲清楚？")))
+        val prepared = adapter.prepareNavigation(input)
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1024, prepared.inputTokens)
+        assertEquals(input.payloadJson, JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(1).getString("content"))
+        assertEquals(listOf("讲解", "实践"), adapter.navigatePrepared(prepared).suggestion.terms)
+        assertEquals(prepared.payloadJson, sent)
+        assertFalse(prepared.payloadJson.contains(syntheticKey))
+        assertThrows(IllegalArgumentException::class.java) { adapter.navigatePrepared(prepared.copy(inputTokens = prepared.inputTokens - 1)) }
+        content = proposal()
+        assertThrows(DeepSeekException::class.java) { adapter.navigatePrepared(prepared) }
+        assertThrows(IllegalArgumentException::class.java) { adapter.prepareNavigation(request) }
+    }
+
     @Test fun `followup context instructions are measured for generation and review without adding messages`() {
         val provider = provider { _, _ -> error("Synthetic framing test must never dispatch") }
-        val envelope = AnalysisRunCodec.json(mapOf("purpose" to "SYNTHESIS", "conversationContext" to mapOf(
+        val targetText = "合成当前核对目标。"
+        val envelope = AnalysisRunCodec.json(mapOf("purpose" to "SYNTHESIS", "target" to mapOf("text" to targetText), "conversationContext" to mapOf(
             "originalEvidence" to false, "selectedAnswers" to listOf(mapOf("contextKey" to "previous-answer:1", "text" to "合成先前回答")))))
         val input = request.copy(payloadJson = envelope)
-        listOf(provider.prepare(input), provider.prepareReview(input)).forEach { prepared ->
+        listOf(false to provider.prepare(input), true to provider.prepareReview(input)).forEach { (review, prepared) ->
             val messages = JSONObject(prepared.payloadJson).getJSONArray("messages")
             assertEquals(2, messages.length())
             assertTrue(messages.getJSONObject(0).getString("content").contains("先前回答"))
             assertTrue(messages.getJSONObject(0).getString("content").contains("不得放入任何证据引用数组"))
-            assertEquals(envelope, messages.getJSONObject(1).getString("content"))
+            val wire = JSONObject(messages.getJSONObject(1).getString("content"))
+            if (review) {
+                val target = wire.getJSONObject("target")
+                assertFalse(target.has("text"))
+                val parts = target.getJSONArray("parts")
+                assertEquals(1, parts.length())
+                assertEquals("p1", parts.getJSONObject(0).getString("partId"))
+                assertEquals(targetText, parts.getJSONObject(0).getString("text"))
+                target.remove("parts")
+                target.put("text", targetText)
+            }
+            assertEquals(StrictJson.parse(envelope.toByteArray(), 262_144), StrictJson.parse(wire.toString().toByteArray(), 262_144))
             assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         }
     }
@@ -160,20 +189,44 @@ class DeepSeekProviderTest {
 
     @Test fun `action prompts permit both typed sources without conflicting record only instructions`() {
         val adapter = provider { _, _ -> error("No network in prompt regression") }
-        val envelope = mapOf("purpose" to "ACTION_SYNTHESIS", "evidence" to emptyList<Any>(),
+        val envelope = mapOf("purpose" to "ACTION_SYNTHESIS", "target" to mapOf("text" to "合成回看：执行情况未知。"), "evidence" to emptyList<Any>(),
             "actionEvidence" to listOf(mapOf("id" to evidenceId, "kind" to "USER_REVIEW")))
         val generation = adapter.prepare(request.copy(payloadJson = AnalysisRunCodec.json(envelope)))
         val generationSystem = JSONObject(generation.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
         assertTrue(generationSystem.contains("本次evidence或actionEvidence的完整ID"))
-        assertTrue(generationSystem.contains("POSSIBLE_INTERPRETATION"))
+        assertTrue(generationSystem.contains("每个claims元素必须且仅有text、evidenceIds、kind三个字段"))
+        assertTrue(generationSystem.contains("kind必须显式填写POSSIBLE_INTERPRETATION，不得省略"))
         assertFalse(generationSystem.contains("仅使用 evidence 里的原文"))
         assertFalse(generationSystem.contains("REPORTED_EXPERIENCE"))
         val review = adapter.prepareReview(request.copy(payloadJson = AnalysisRunCodec.json(envelope + ("purpose" to "REVIEW"))))
         val reviewSystem = JSONObject(review.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
-        assertTrue(reviewSystem.contains("本次evidence或actionEvidence的完整ID"))
+        assertTrue(reviewSystem.contains("本次须同时核对全部 actionEvidence 与 evidence"))
+        assertTrue(reviewSystem.contains("evidenceIds仅用本次完整ID"))
         assertTrue(reviewSystem.contains("UNKNOWN"))
         assertFalse(reviewSystem.contains("只核对 target.text 与 target.kind 是否得到本次 evidence 原文支持"))
         assertFalse(reviewSystem.contains("支持和反例必须引用本次 evidence 的完整 id"))
+    }
+
+    @Test fun `action synthesis requires every explicit claim kind and rejects missing malformed or extra fields`() {
+        val envelope = AnalysisRunCodec.json(mapOf("purpose" to "ACTION_SYNTHESIS", "evidence" to emptyList<Any>(),
+            "actionEvidence" to listOf(mapOf("id" to evidenceId, "kind" to "USER_REVIEW"))))
+        val explicit = claim(text = "合成解释：一次自述执行不能说明方法长期有效。", kind = "POSSIBLE_INTERPRETATION")
+        var output = proposal(listOf(explicit))
+        var wire: String? = null
+        val adapter = provider { body, _ -> wire = body; DeepSeekHttpResponse(200, response(content = output)) }
+        val prepared = adapter.prepare(request.copy(payloadJson = envelope))
+        val valid = adapter.completePrepared(prepared).proposal.claims.single()
+        assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, valid.kind)
+        assertEquals(prepared.payloadJson, wire)
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1024, prepared.inputTokens)
+        listOf(explicit - "kind", explicit + ("kind" to ""), explicit + ("kind" to "OBSERVATION"),
+            explicit + ("kind" to null), explicit + ("extra" to "合成冗余字段")).forEach { malformed ->
+            // A valid first item cannot conceal a second incomplete item; no kind is inferred.
+            output = proposal(listOf(explicit, malformed))
+            assertEquals(DeepSeekFailure.RESPONSE, assertThrows(DeepSeekException::class.java) {
+                adapter.completePrepared(prepared)
+            }.reason)
+        }
     }
 
     @Test fun `source text cannot switch the provider to a derived input prompt`() {
@@ -188,6 +241,7 @@ class DeepSeekProviderTest {
     @Test fun `historical controls have top level non evidence instructions in generation and review`() {
         val adapter = provider { _, _ -> error("No network in prompt regression") }
         val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "SYNTHESIS",
+            "target" to mapOf("text" to "合成陈述：尚不确定是否适合其他情况。"),
             "evidence" to emptyList<Any>(), "historicalFeedback" to mapOf("entries" to emptyList<Any>()))))
         val generation = adapter.prepare(input)
         val review = adapter.prepareReview(input.copy(payloadJson = input.payloadJson.replace("SYNTHESIS", "REVIEW")))
@@ -223,12 +277,15 @@ class DeepSeekProviderTest {
 
     @Test fun `metric review accepts only metric citation syntax and its top level marker selects the prompt`() {
         val metricId = "metric-v1-$evidenceId"
+        val targetText = "合成指标：当前范围共有一条记录。"
         val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "evidenceType" to "RECORD_METRIC",
+            "target" to mapOf("text" to targetText, "kind" to "POSSIBLE_INTERPRETATION"),
             "metricEvidence" to listOf(mapOf("id" to metricId)))))
         var citation = metricId
         val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(content = AnalysisRunCodec.json(mapOf(
-            "verdict" to "SUPPORTED", "supportingEvidenceIds" to listOf(citation),
-            "contradictingEvidenceIds" to emptyList<String>(), "issues" to emptyList<String>(), "unknowns" to listOf("合成限定"),
+            "verdict" to "SUPPORTED", "checks" to listOf(mapOf("partId" to "p1", "status" to "SUPPORTED",
+                "reason" to "合成程序指标直接提供记录总数。", "evidenceIds" to listOf(citation))),
+            "issues" to emptyList<String>(), "unknowns" to listOf(mapOf("text" to "合成限定：记录数量不代表成长。", "blocksConclusion" to false)),
         )))) }
         val prepared = provider.prepareReview(input)
         val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
@@ -236,10 +293,11 @@ class DeepSeekProviderTest {
         assertEquals(listOf(metricId), provider.reviewPrepared(prepared).review.supportingEvidenceIds)
         citation = evidenceId
         assertThrows(DeepSeekException::class.java) { provider.reviewPrepared(prepared) }
-        val nested = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "evidence" to listOf(
+        val nested = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "target" to mapOf("text" to "合成普通待核对陈述。"), "evidence" to listOf(
             mapOf("evidenceType" to "RECORD_METRIC", "purpose" to "METRIC_ANALYSIS", "text" to "合成不可信指令")))))
         val ordinary = JSONObject(provider.prepareReview(nested).payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
-        assertTrue(ordinary.contains("evidence 原文"))
+        assertTrue(ordinary.contains("仅用本次evidence/actionEvidence/metricEvidence"))
+        assertFalse(ordinary.contains("本次重新计算的指标"))
     }
 
     @Test fun `HTTP errors expose only a stable failure category`() {

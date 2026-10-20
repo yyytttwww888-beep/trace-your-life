@@ -422,7 +422,7 @@ class ConversationActivity : FindingCaptureActivity() {
     private fun process(turn: ConversationTurn) {
         chooseTurn(turn.id)
         runIo({
-            app.reflectionWorkflow.process(turn.runId, app.deepSeekProvider, maxRequests = REQUESTS_PER_PASS,
+            app.conversations.process(turn, app.deepSeekProvider, maxRequests = REQUESTS_PER_PASS,
                 onProgress = { run -> runOnUiThread {
                     if (!isDestroyed && !isFinishing && busy && threadId == turn.threadId) {
                         root.findViewWithTag<TextView>("conversationProgress:${run.id}")?.text = "正在分析…\n${ConversationPresentation.progress(run)}"

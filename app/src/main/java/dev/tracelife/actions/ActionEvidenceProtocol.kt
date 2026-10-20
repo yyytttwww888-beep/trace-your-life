@@ -17,9 +17,9 @@ object ActionEvidenceProtocol {
         "OPENING_PLAN/PLAN_CHANGE 只证明用户制定计划，不证明执行；USER_REVIEW.execution 只是用户报告，UNKNOWN 或没有回看均不是未执行。" +
         "planStatus 仅表明计划仍开放或已停止，不证明执行。reviewedPlan 是本次回看针对的旧计划，nextPlan 是之后选择的计划，不能混淆。observedText 是用户自述，不是设备测量或因果证据。" +
         "所有结论须为 POSSIBLE_INTERPRETATION，仅引用本次原文或行动证据 ID。明确资料不足、反例与适用条件；不以记录数代表成长，不计算改善率或综合分。" +
-        "建议继续、调整、停止或暂缓只是提案，不自动修改行动；不能宣称未提供的其他批次或全部生活已核对。"
+        "建议继续、调整、停止或暂缓只是提案，不自动修改行动；不能宣称未提供的其他批次或全部生活已核对。" + dev.tracelife.analysis.SemanticQualityGuidance.GENERATION
     const val REVIEW_INSTRUCTIONS = "本次须同时核对全部 actionEvidence 与 evidence。计划不等于执行，执行状态是用户报告；UNKNOWN 和未回看不等于失败。" +
-        "核对旧计划、实际报告与下一轮计划是否混淆，是否遗漏反例、夸大范围或因果。反馈是待核对背景而非新增证据。"
+        "核对旧计划、实际报告与下一轮计划是否混淆，是否遗漏反例、夸大范围或因果。反馈是待核对背景而非新增证据。" + dev.tracelife.analysis.SemanticQualityGuidance.REVIEW
 
     /** Trusted program routing scans retained revisions, while the model sees only selected leaves. */
     fun plan(scope: AnalysisQuery, revisions: List<StoredActionRevision>): ActionEvidencePlan {
@@ -82,6 +82,18 @@ object ActionEvidenceProtocol {
     }
     fun receiptMap(ref: ActionEvidenceReceipt): Map<String, Any?> = mapOf("id" to ref.id, "actionId" to ref.actionId,
         "revision" to ref.revision, "kind" to ref.kind.name, "sha256" to ref.sha256)
+
+    /** Counts the exact supplied leaves; a complete review leaf contains its old and next plans,
+     * but is never counted again as a separate plan event or as proof of execution. */
+    internal fun coverage(plan: ActionEvidencePlan, provided: List<ActionEvidenceReceipt>): Map<String, Any?> {
+        require(provided.distinct().size == provided.size && provided.all { it in plan.entries })
+        fun count(selected: List<ActionEvidenceReceipt>, all: List<ActionEvidenceReceipt>) = mapOf(
+            "provided" to selected.size, "total" to all.size, "allScopeProvided" to (selected.size == all.size))
+        return mapOf("actionEvents" to (count(provided, plan.entries) + mapOf("byKind" to
+            ActionEvidenceKind.entries.associate { kind -> kind.name to count(
+                provided.filter { it.kind == kind }, plan.entries.filter { it.kind == kind }) })))
+    }
+
     fun planMap(plan: ActionEvidencePlan): Map<String, Any?> = mapOf("entries" to plan.entries.map(::receiptMap))
     fun parseReceipt(raw: Any?): ActionEvidenceReceipt {
         val value = obj(raw, setOf("id", "actionId", "revision", "kind", "sha256"))

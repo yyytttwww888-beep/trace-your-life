@@ -66,7 +66,7 @@ class ConversationContextCatalog(private val repository: LifeRepository, private
             !repository.analysisSourceCurrent(run.source, state.request.scope) ||
             state.feedbackContext?.let { !FeedbackContextCatalog(repository).current(run.id, it) } == true ||
             state.actionPlan?.let { !repository.actionEvidencePlanCurrent(state.request.scope, it) } == true ||
-            state.request.knowledgeContext?.let { !KnowledgeContextCatalog(repository, clock).current(it) } == true)
+            state.knowledgeContext?.let { !KnowledgeContextCatalog(repository, clock).current(it) } == true)
             throw StaleSnapshotException("之前的回答已归档、到期或依据发生变化，请重新提问")
     }
 

@@ -271,7 +271,7 @@ class TransferActivity : ScreenActivity() {
             Ui.sectionTitle(card, "把内容带走")
             Ui.note(card, "导出一份可阅读的文档。文件不会随以后的修改自动更新，也不能用于恢复备份。")
             Ui.disclosure(card, "两种导出方式", "readingKinds") { details ->
-                Ui.note(details, "知识包包含当前有效的知识与相关资料。证据包面向一个具体问题，只包含原始记录，不含知识、行动或画像。两者都不含整理任务与个人反馈。")
+                Ui.note(details, "知识包包含当前有效的知识与相关资料。证据包面向一个具体问题，只包含原始记录，不含知识、行动或画像。知识包可另外带上个人说明与历史；证据包不含这些内容。两者均不含整理任务。")
             }
         }
         card().also { card ->
@@ -283,6 +283,12 @@ class TransferActivity : ScreenActivity() {
             Ui.note(card, "起始与结束日期可留空，表示不限制时间范围。")
             val topic = labeledFieldIn(card, "主题")
             Ui.note(card, "填写一个主题，可留空。")
+            val personalHistory = android.widget.CheckBox(this).apply {
+                text = "带上个人说明与历史（知识包）"
+                isChecked = true
+                tag = "includePersonalHistory"
+                card.addView(this)
+            }
             val question = labeledFieldIn(card, "这份资料用于什么问题？", multiline = true, maxLength = 2000)
             Ui.note(card, "只导出原始记录时必填，最多 2000 字。")
             primaryIn(card, "导出", "exportReading") onExport@{
@@ -302,6 +308,8 @@ class TransferActivity : ScreenActivity() {
                             topics = topic.text.toString().trim().takeIf { it.isNotBlank() }?.let { setOf(it) },
                         ),
                         question = questionValue.takeIf { it.isNotBlank() },
+                        profileZoneId = java.time.ZoneId.systemDefault().id,
+                        includePersonalHistory = kindValue == ReadingPackageKind.KNOWLEDGE && personalHistory.isChecked,
                     )
                 } catch (failure: IllegalArgumentException) {
                     showError(failure)

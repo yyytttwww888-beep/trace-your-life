@@ -20,25 +20,21 @@ data class KnowledgeContextPlan(val entries: List<KnowledgeContextEntry>, val sc
 
 /** Bounded directory -> fixed existing understanding -> original analysis route. No model tools expose the store. */
 class KnowledgeContextCatalog(private val repository: LifeRepository, private val clock: Clock = Clock.systemUTC()) {
-    fun plan(question: String, scope: AnalysisQuery, topics: Set<String>): KnowledgeContextPlan {
+    fun plan(question: String, scope: AnalysisQuery, topics: Set<String>, expandedTerms: Set<String> = emptySet()): KnowledgeContextPlan {
         val source = repository.analysisSourceStamp(); val generation = repository.currentAnalysisGeneration()
         val now = clock.instant()
-        val retained = mutableListOf<KnowledgeContextEntry>()
+        val matcher = dev.tracelife.knowledge.TextMatch(question)
+        val aliases = dev.tracelife.knowledge.TopicAliases(repository)
+        val namedAliases = aliases.matching(question)
+        val expandedTopics = (aliases.expand(topics) + namedAliases).map(dev.tracelife.knowledge.TextMatch::normalize).toSet()
+        val terms = (aliases.expand(expandedTerms) + namedAliases).map(dev.tracelife.knowledge.TextMatch::normalize)
+            .filter { it.isNotBlank() }.distinct()
+        data class Ranked(val entry: KnowledgeContextEntry, val score: Int)
+        val order = compareByDescending<Ranked> { it.score }.thenByDescending { it.entry.scope.through }
+            .thenBy { it.entry.kind.ordinal }.thenBy { it.entry.id }
+        val candidates = mutableListOf<Ranked>()
         var scanned = 0; var matched = 0; var more = false
-        val words = Regex("[A-Za-z]{3,}|[\\p{IsHan}]{2,}").findAll(question).map { it.value.lowercase() }
-            .filter { it.length <= 16 }.take(20).toList()
-        fun relevant(text: String, tags: Set<String>, through: java.time.LocalDate): Boolean =
-            through <= scope.through && (topics.any { it in tags } || words.any { it in text.lowercase() } ||
-                topics.isEmpty())
-        fun retain(entry: KnowledgeContextEntry?) {
-            if (entry == null) return
-            matched++
-            if (retained.size >= KnowledgeContextProtocol.MAX_ENTRIES ||
-                AnalysisRunCodec.json((retained + entry).map(KnowledgeContextProtocol::entryMap)).toByteArray().size > KnowledgeContextProtocol.MAX_BYTES) return
-            retained += entry
-        }
-        // Per-type directory pages are bounded. Unread candidates are disclosed, never claimed absent.
-        // Experience/profile go first so raw publication count cannot crowd out adopted understanding.
+        // Full local directory pagination. Only the best current candidates are retained; original record bodies are never loaded here.
         for (kind in listOf(KnowledgeContextKind.EXPERIENCE, KnowledgeContextKind.PROFILE, KnowledgeContextKind.KNOWLEDGE)) {
             var offset = 0
             while (offset < KnowledgeContextProtocol.DIRECTORY_LIMIT) {
@@ -49,23 +45,55 @@ class KnowledgeContextCatalog(private val repository: LifeRepository, private va
                 }
                 for (id in ids) {
                     scanned++
-                    val candidate = resolve(kind, id) ?: continue
-                    val tags = repository.knowledgeRevision(candidate.knowledgeId, candidate.knowledgeRevision)?.topics.orEmpty()
-                    if (relevant(candidate.title + candidate.text + candidate.userNote.orEmpty(), tags, candidate.scope.through)) {
-                        if (kind == KnowledgeContextKind.KNOWLEDGE && retained.any { it.knowledgeId == candidate.knowledgeId }) continue
-                        retain(candidate)
+                    val profile = if (kind == KnowledgeContextKind.PROFILE) repository.profileRevision(id) ?: continue else null
+                    if (profile != null && profile.adoption != ProfileAdoption.ADOPTED) continue
+                    val thread = if (kind == KnowledgeContextKind.EXPERIENCE) repository.experienceThread(id) ?: continue else null
+                    val change = if (thread != null) repository.experienceCurrentChange(id) ?: continue else null
+                    val knowledge = repository.knowledgeRevision(profile?.draft?.knowledge?.knowledgeId ?: change?.knowledgeId ?: id,
+                        profile?.draft?.knowledge?.revision ?: change?.knowledgeRevision) ?: continue
+                    if (knowledge.scope.through > scope.through) continue
+                    val text = listOfNotNull(thread?.title, profile?.userText, change?.userNote, knowledge.claim.text).joinToString(" ")
+                    val normalized = dev.tracelife.knowledge.TextMatch.normalize(text)
+                    val tagScore = (knowledge.topics + thread?.topics.orEmpty()).count {
+                        dev.tracelife.knowledge.TextMatch.normalize(it) in expandedTopics
+                    } * 60
+                    val textScore = matcher.match(text).score.coerceAtMost(100)
+                    val semanticScore = terms.count { it in normalized } * 40
+                    val base = tagScore + textScore + semanticScore
+                    if (base == 0) continue
+                    matched++
+                    val score = base + if (kind == KnowledgeContextKind.KNOWLEDGE) 0 else 15
+                    // Evidence checks can traverse earlier tasks. Avoid doing that for entries which cannot enter the bounded shortlist.
+                    val existingIndex = candidates.indexOfFirst { it.entry.knowledgeId == knowledge.id }
+                    if (existingIndex >= 0 && score < candidates[existingIndex].score) continue
+                    if (existingIndex < 0 && candidates.size >= SHORTLIST && score < candidates.last().score) continue
+                    val entry = resolve(kind, id) ?: continue
+                    val ranked = Ranked(entry, score)
+                    if (existingIndex >= 0) {
+                        if (order.compare(ranked, candidates[existingIndex]) >= 0) continue
+                        candidates.removeAt(existingIndex)
                     }
+                    candidates += ranked
+                    candidates.sortWith(order)
+                    if (candidates.size > SHORTLIST) candidates.removeAt(candidates.lastIndex)
                 }
                 offset += ids.size
                 if (ids.size < 50) break
-                if (offset == KnowledgeContextProtocol.DIRECTORY_LIMIT) more = more || when (kind) {
+                if (offset >= KnowledgeContextProtocol.DIRECTORY_LIMIT) more = more || when (kind) {
                     KnowledgeContextKind.KNOWLEDGE -> repository.knowledgeHeads(offset, 1).isNotEmpty()
                     KnowledgeContextKind.PROFILE -> repository.profileHeads(offset, 1).isNotEmpty()
                     KnowledgeContextKind.EXPERIENCE -> repository.experienceThreads(offset = offset, limit = 1).isNotEmpty()
                 }
             }
         }
-        val result = KnowledgeContextProtocol.withHash(KnowledgeContextPlan(retained, scanned, matched, more, now, ""))
+        val retained = mutableListOf<KnowledgeContextEntry>()
+        for ((entry) in candidates) {
+            if (retained.size >= KnowledgeContextProtocol.MAX_ENTRIES) break
+            if (retained.any { it.knowledgeId == entry.knowledgeId }) continue
+            if (AnalysisRunCodec.json((retained + entry).map(KnowledgeContextProtocol::entryMap)).toByteArray(Charsets.UTF_8).size <= KnowledgeContextProtocol.MAX_BYTES)
+                retained += entry
+        }
+        val result = KnowledgeContextProtocol.withHash(KnowledgeContextPlan(retained, scanned, matched, more || matched > retained.size, now, ""))
         if (source != repository.analysisSourceStamp() || generation != repository.currentAnalysisGeneration() || !current(result))
             throw StaleSnapshotException("已有理解在准备期间变化，请重新确认范围")
         return result
@@ -115,6 +143,7 @@ class KnowledgeContextCatalog(private val repository: LifeRepository, private va
 
     private class ValidationSession(var visits: Int = 0, val results: MutableMap<String, Boolean> = mutableMapOf())
     companion object {
+        private const val SHORTLIST = 64
         private val reading = ThreadLocal.withInitial { mutableSetOf<String>() }
         private val validation = ThreadLocal<ValidationSession?>()
     }
@@ -123,7 +152,7 @@ class KnowledgeContextCatalog(private val repository: LifeRepository, private va
 object KnowledgeContextProtocol {
     const val MAX_ENTRIES = 8
     const val MAX_BYTES = 16_384
-    const val DIRECTORY_LIMIT = 200
+    const val DIRECTORY_LIMIT = 100_000
     private const val INSTRUCTIONS = "existingUnderstanding是此前保存的理解及独立说明，只用于定位问题、对照旧理解、发现变化和反例；不是新原始证据。" +
         "先说明本轮比已有理解新增了什么，或哪些条件仍未改变；不要把旧模型结论重复当成新发现。" +
         "contextKey不得出现在证据引用数组；没有本轮原始记录或行动凭据支持时只能说此前曾这样理解、目前无法重新判断。" +

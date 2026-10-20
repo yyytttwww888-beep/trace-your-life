@@ -123,6 +123,34 @@ class ConversationWorkflow(
             turn
         }
 
+    /** The explicit run button shares its request limit with the one-time semantic navigation. */
+    fun process(turn: ConversationTurn, provider: dev.tracelife.analysis.AnalysisProvider, maxRequests: Int = 5,
+        onProgress: (ReflectionRun) -> Unit = {}): dev.tracelife.analysis.ReflectionPass {
+        require(maxRequests in 1..100)
+        require(repository.conversationTurn(turn.id) == turn) { "问题已变化或被删除" }
+        var requests = 0
+        val before = analysis.task(turn.runId)
+        if (provider is dev.tracelife.analysis.SemanticNavigationProvider && before.state.request.knowledgeContext != null &&
+            before.state.calls.all { it.purpose == dev.tracelife.analysis.CallPurpose.NAVIGATION }) {
+            try {
+                analysis.navigate(turn.runId, provider)
+            } catch (_: dev.tracelife.analysis.AnalysisBudgetException) {
+                val run = reflection.inspect(turn.runId)
+                return dev.tracelife.analysis.ReflectionPass(run, analysis.task(turn.runId).state.calls.size - before.state.calls.size,
+                    dev.tracelife.analysis.ReflectionStatus.BUDGET_EXHAUSTED)
+            } catch (_: dev.tracelife.analysis.AnalysisValidationException) {
+                val run = reflection.inspect(turn.runId)
+                return dev.tracelife.analysis.ReflectionPass(run, analysis.task(turn.runId).state.calls.size - before.state.calls.size,
+                    dev.tracelife.analysis.ReflectionStatus.RETRY_NEEDED)
+            }
+            requests = analysis.task(turn.runId).state.calls.size - before.state.calls.size
+            onProgress(reflection.inspect(turn.runId))
+        }
+        if (requests >= maxRequests) return reflection.inspect(turn.runId).let { dev.tracelife.analysis.ReflectionPass(it, requests, it.status) }
+        val pass = reflection.process(turn.runId, provider, maxRequests - requests, onProgress)
+        return pass.copy(modelRequestsThisPass = pass.modelRequestsThisPass + requests)
+    }
+
     fun history(offset: Int = 0, limit: Int = 20): List<ConversationThread> = repository.conversationPage(offset, limit)
     fun latestTurn(threadId: String): ConversationTurn? = repository.latestConversationTurn(threadId)
     /** Recover the user's original wording, never a model-written replacement or a chat transcript. */
@@ -144,7 +172,7 @@ class ConversationWorkflow(
         internal const val ANSWER_GUIDANCE = "请围绕上面的实际问题回答记录者本人；按需要分别给出「变化：」「反复出现：」「可以尝试：」或「回答：」，总计最多6条，不强凑类别。" +
             "比较前后方法时说明时间和情境；问题重复出现须有独立事件依据，建议说明尝试条件和可观察信号。" +
             "同一次经历的计划、回看和重复总结不是独立重复事件，不能据此使用‘反复出现’。区分记录条数、经历次数与一次经历内的次数，保留原文数量和单位。" +
-            "明确区分持续时长、发生时间与等待间隔，不把‘每次五分钟’改写成‘五分钟后’。" +
+            "明确区分持续时长、发生时间与等待间隔，保留单位的原意。" +
             "追问背景只用于确定指代，不是新证据；重新读取本轮原文，检查支持、例外和后来的变化。" +
             "缺少资料就说明未知，不把未记录当成没有进步，不作人格标签、健康诊断、成长评分或未经程序计算的统计。" +
             "正文直接回答问题，不使用‘用户记录了’等第三人称复述；缺口用自然语言，不输出协议字段，也不把单批静态覆盖字段当成整个任务的未读结论。" +

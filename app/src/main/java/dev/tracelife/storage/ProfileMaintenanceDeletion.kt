@@ -17,7 +17,7 @@ internal object ProfileMaintenanceDeletion {
             run.id to Triple(state.request.conversationContext, state.profileMaintenancePlans,
                 dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(state))
         }
-        val knowledgeContexts = runs.associate { it.id to AnalysisRunCodec.decode(it.payload).request.knowledgeContext }
+        val knowledgeContexts = runs.associate { it.id to AnalysisRunCodec.decode(it.payload).knowledgeContexts.flatMap { plan -> plan.entries } }
         val profileMap = profiles.groupBy { it.id to it.revision }
         val knowledgeMap = knowledge.groupBy { it.id to it.revision }
         val feedbackMap = feedback.groupBy { it.id }
@@ -29,7 +29,7 @@ internal object ProfileMaintenanceDeletion {
             knowledge.filter { it.runId in forbiddenRuns }.forEach { forbiddenKnowledge += it.id }
             runs.filter { it.id !in forbiddenRuns }.forEach { run ->
                 val (conversation, plans, history) = dependencies.getValue(run.id)
-                val affected = knowledgeContexts[run.id]?.entries?.any { ref ->
+                val affected = knowledgeContexts[run.id]?.any { ref ->
                     ref.runId in forbiddenRuns || ref.knowledgeId in forbiddenKnowledge ||
                         knowledgeMap[ref.knowledgeId to ref.knowledgeRevision].orEmpty().any { value ->
                             KnowledgeValidation.feedbackDependencies(value).any { AnalysisRunCodec.feedbackId(value.runId, it.claim) in deletedFeedback }

@@ -167,7 +167,7 @@ class ReflectionWorkflow(
         ensureUnchanged(task)
         return ReflectionRun(runId, task.stored.createdAt, task.state.request.scope, finalStatus, task.stored.version,
             progress.coverage, leaves.size, nodes.size, task.state.calls.size, rows, unknowns,
-            reviewable && task.stored.archivedAt == null, task.stored.archivedAt, task.state.request.knowledgeContext)
+            reviewable && task.stored.archivedAt == null, task.stored.archivedAt, task.state.knowledgeContext)
     }
 
     /** A single shared pass limit spans original synthesis and all reduction levels. */
@@ -192,7 +192,7 @@ class ReflectionWorkflow(
             val before = current.taskVersion
             val outcome: ReflectionStatus
             if (pending.coverage?.remainingTextFragments?.let { it > 0 } == true) {
-                val result = synthesis.process(runId, provider, maxBatches = 1, fragmentsPerBatch = if (task.state.request.knowledgeContext != null) 16 else 4)
+                val result = synthesis.process(runId, provider, maxBatches = 1, fragmentsPerBatch = if (task.state.knowledgeContext != null) 16 else 4)
                 requests += result.modelRequestsThisPass
                 outcome = when (result.status) {
                     SynthesisProcessingStatus.RETRY_NEEDED -> ReflectionStatus.RETRY_NEEDED
@@ -427,7 +427,7 @@ class ReflectionWorkflow(
         }
         return ReflectionRun(runId, task.stored.createdAt, task.state.request.scope, finalStatus, task.stored.version,
             progress.recordCoverage, progress.batches.size, task.state.calls.count { it.purpose == CallPurpose.REDUCTION && it.status == CallStatus.SUCCEEDED },
-            task.state.calls.size, findings, value.unknowns, value.canReview, task.stored.archivedAt, task.state.request.knowledgeContext,
+            task.state.calls.size, findings, value.unknowns, value.canReview, task.stored.archivedAt, task.state.knowledgeContext,
             progress.actionEvents, progress.processedActionEvents)
     }
 

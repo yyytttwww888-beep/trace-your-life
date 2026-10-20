@@ -27,6 +27,7 @@ class DeepSeekProfileProtocolTest {
     private lateinit var directory: File
     private lateinit var credentials: DeepSeekCredentials
     private val evidenceId = "a".repeat(64)
+    private val reviewTargetText = "合成候选：本次记录中休息后可能感觉精力恢复。"
     private val target = mapOf("dimension" to ProfileDimension.ENERGY_AND_RECOVERY.name,
         "layer" to ProfileLayer.RECENT_STATE.name)
 
@@ -60,8 +61,10 @@ class DeepSeekProfileProtocolTest {
     }
 
     @Test fun `profile review applies target specific checks while keeping the review schema`() {
-        val review = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "supportingEvidenceIds" to listOf(evidenceId),
-            "contradictingEvidenceIds" to emptyList<String>(), "issues" to emptyList<String>(), "unknowns" to listOf("合成局限")))
+        val review = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "checks" to listOf(mapOf(
+            "partId" to "p1", "status" to "SUPPORTED", "reason" to "合成原文支持本次休息后感觉，未推广为长期特质。",
+            "evidenceIds" to listOf(evidenceId))), "issues" to emptyList<String>(),
+            "unknowns" to listOf(mapOf("text" to "合成局限：不是独立测量。", "blocksConclusion" to false))))
         val provider = provider { _, _ -> response(review) }
         val prepared = provider.prepareReview(request("REVIEW"))
         val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
@@ -118,6 +121,7 @@ class DeepSeekProfileProtocolTest {
 
     private fun request(purpose: String = "SYNTHESIS") = ModelRequest(AnalysisRunCodec.json(mapOf(
         "protocolVersion" to 7, "purpose" to purpose, "profileTarget" to target,
+        "target" to mapOf("text" to reviewTargetText, "kind" to "POSSIBLE_INTERPRETATION"),
         "evidence" to listOf(mapOf("id" to evidenceId, "text" to "合成记录：休息后感觉精力好一些。")),
     )), "synthetic-profile-request", 512)
 

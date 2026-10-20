@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tracelife.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.1.0-preview.8"
+        versionCode = 9
+        versionName = "0.1.0-preview.9"
     }
 
     compileOptions {
@@ -43,6 +43,10 @@ android {
             val historicalAssistEnabled = providers.gradleProperty("traceLifeDeepSeekHistoricalAssist").orNull == "true"
             val qualityEnabled = providers.gradleProperty("traceLifeDeepSeekQuality").orNull == "true"
             providers.gradleProperty("traceLifeQualityReportDir").orNull?.let { path -> it.systemProperty("traceLife.qualityReportDir", path) }
+            providers.gradleProperty("traceLifeQualityModel").orNull?.let { model ->
+                require(model in setOf("FLASH", "PRO")) { "traceLifeQualityModel must be FLASH or PRO" }
+                it.systemProperty("traceLife.qualityModel", model)
+            }
             val conversationEnabled = providers.gradleProperty("traceLifeDeepSeekConversation").orNull == "true"
             if (qualityEnabled || conversationEnabled || historicalAssistEnabled || smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
                 if (qualityEnabled) it.systemProperty("traceLife.deepSeek.quality", "true")

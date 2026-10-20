@@ -294,7 +294,7 @@ class ReflectionActivity : FindingCaptureActivity() {
                 runIo({ app.reflectionWorkflow.recover(run.id) }) { renderRun(it) }
             }
         }
-        if (run.status in setOf(ReflectionStatus.STALE, ReflectionStatus.EXPIRED, ReflectionStatus.BUDGET_EXHAUSTED, ReflectionStatus.DEPENDENCY_BLOCKED)) {
+        if (run.status in setOf(ReflectionStatus.STALE, ReflectionStatus.EXPIRED, ReflectionStatus.BUDGET_EXHAUSTED, ReflectionStatus.DEPENDENCY_BLOCKED, ReflectionStatus.CONFLICT)) {
             addButton(summary, "重新选择范围", "newReflection") { findingKey = null; showEntry() }
         }
         addButton(summary, "刷新结果", "refreshReflection") { openRun(run.id) }
@@ -620,7 +620,7 @@ class ReflectionActivity : FindingCaptureActivity() {
         ReflectionStatus.DEPENDENCY_BLOCKED -> "来源判断或反馈已经变化，当前汇总不能继续使用。请重新分析。"
         ReflectionStatus.STALE -> "记录已发生变化。这次分析作为历史保留，不再代表最新资料。"
         ReflectionStatus.EXPIRED -> "这次分析已过期。结果仍可回看，保存前需要重新分析。"
-        ReflectionStatus.CONFLICT -> "资料正在其他地方变化。请刷新结果后再操作。"
+        ReflectionStatus.CONFLICT -> "资料或分析接口已经变化。可先刷新；若仍不能继续，请重新选择范围建立新分析，历史结果会保留。"
     }
 
     private fun formatTime(run: ReflectionRun) = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")

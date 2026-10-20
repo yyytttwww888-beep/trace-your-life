@@ -90,8 +90,10 @@ class DeepSeekReductionReviewProviderTest {
     }
 
     @Test fun `final review has independent original rereading instructions and standard verdict validation`() {
-        val content = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "supportingEvidenceIds" to listOf(receipt),
-            "contradictingEvidenceIds" to emptyList<Any>(), "issues" to emptyList<Any>(), "unknowns" to listOf("合成有限自述")))
+        val content = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "checks" to listOf(mapOf(
+            "partId" to "p1", "status" to "SUPPORTED", "reason" to "合成周一原文记载完成一个练习。",
+            "evidenceIds" to listOf(receipt))), "issues" to emptyList<Any>(),
+            "unknowns" to listOf(mapOf("text" to "合成有限自述，非独立测量。", "blocksConclusion" to false))))
         val provider = provider(content)
         val final = request.copy(payloadJson = request.payloadJson.replace("REDUCTION_SCAN", "REDUCTION_REVIEW"))
         val prepared = provider.prepareReview(final)
@@ -127,13 +129,14 @@ class DeepSeekReductionReviewProviderTest {
         assertEquals(mixed.payloadJson, JSONObject(sent).getJSONArray("messages").getJSONObject(1).getString("content"))
     }
 
-    @Test fun `legacy record scan and final prompts retain persisted retry identities`() {
-        // Golden hashes from the pre-action-reduction provider: failed calls bind the full wire request.
+    @Test fun `record scan retains its legacy prompt while final review pins the explicit v2 wire identity`() {
+        // Scans keep their prompt. Review v2 is intentionally a new provider identity, never a v1 retry.
         val provider = provider("{}")
+        assertTrue(provider.id.endsWith(":review-checks-v2"))
         assertEquals("2dd9d2a987a729f9de844cd63da48be85a5f7ccb8c6f5079de44966335468a6f",
             AnalysisRunCodec.sha256(systemPrompt(provider.prepareScan(request))))
         val final = request.copy(payloadJson = request.payloadJson.replace("REDUCTION_SCAN", "REDUCTION_REVIEW"))
-        assertEquals("ef66626fe7a36666253e175dd88fc60d3cfa77e7b49ed175e21dc805d94faa97",
+        assertEquals("a22b3ec711cb3e7cb963fdf434d1157b4e5476d9299a4d3045dfd18a14443ef9",
             AnalysisRunCodec.sha256(systemPrompt(provider.prepareReview(final))))
     }
 
@@ -141,6 +144,7 @@ class DeepSeekReductionReviewProviderTest {
         val provider = provider("{}")
         listOf(emptyList<Map<String, String>>(), listOf(mapOf("id" to "b".repeat(64), "kind" to "USER_REVIEW"))).forEach { actions ->
             val final = ModelRequest(AnalysisRunCodec.json(mapOf("purpose" to "REDUCTION_REVIEW", "actionPeriod" to true,
+                "target" to mapOf("text" to "合成行动陈述：执行情况仍未知。", "kind" to "POSSIBLE_INTERPRETATION"),
                 "actionEvidence" to actions, "evidence" to listOf(mapOf("id" to receipt, "text" to "合成原文")))),
                 "synthetic-action-final", 1_000)
             val prompt = systemPrompt(provider.prepareReview(final))

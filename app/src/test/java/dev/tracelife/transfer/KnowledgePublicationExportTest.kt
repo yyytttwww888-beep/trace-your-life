@@ -71,6 +71,8 @@ class KnowledgePublicationExportTest {
         assertTrue(entries.values.none { marker in it })
         assertTrue(entries.filterKeys { it.startsWith("indexes/evidence/") }.values.none { note.id in it })
         assertEquals(1, entries.filterKeys { it.endsWith(".md") }.values.count { note.claim.text in it })
+        assertFalse(entries.getValue("overview.md").contains(note.claim.text))
+        assertTrue(markdownTargets("overview.md", entries.getValue("overview.md")).contains(path))
         val machine = machineNotes(entries).single()
         assertEquals("saved-analysis", machine.getString("nodeType"))
         assertFalse(machine.getBoolean("originalEvidence"))
