@@ -90,7 +90,8 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
     fun history(id: String, offset: Int = 0, limit: Int = 25): List<KnowledgeView> = consistentRead { _, _, now ->
         val head = repository.knowledgeRevision(id)?.revision
         val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
-        repository.knowledgeHistory(id, offset, limit).map { view(it, it.revision == head, now, states) }
+        val contextValidity = mutableMapOf<String, Boolean>()
+        repository.knowledgeHistory(id, offset, limit).map { view(it, it.revision == head, now, states, contextValidity) }
     }
 
     fun index(filter: KnowledgeFilter = KnowledgeFilter(), limit: Int = 25): KnowledgeIndexPage = indexPage(filter, 0, limit)
@@ -102,6 +103,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
      * The visitor must retain only the bounded result it needs; this is not a model-reading API. */
     internal fun scanCurrent(filter: KnowledgeFilter = KnowledgeFilter(), visit: (KnowledgeView) -> Unit) = consistentRead { _, _, now ->
         val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
+        val contextValidity = mutableMapOf<String, Boolean>()
         var offset = 0
         do {
             val heads = repository.knowledgeHeads(offset, 100)
@@ -109,7 +111,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                 val value = repository.knowledgeRevision(head.id, head.revision)
                     ?: throw StaleSnapshotException("知识目录在读取期间变化")
                 if (!matches(value, filter)) return@forEach
-                val result = view(value, true, now, states)
+                val result = view(value, true, now, states, contextValidity)
                 if (filter.includeInvalid || result.evidenceState == KnowledgeEvidenceState.CURRENT) visit(result)
             }
             offset += heads.size
@@ -125,6 +127,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
             val evaluatedAt = previous?.evaluatedAt ?: now
             val selected = mutableListOf<KnowledgeIndexItem>()
             val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
+            val contextValidity = mutableMapOf<String, Boolean>()
             var total = 0
             var omitted = 0
             var cursor = 0
@@ -134,7 +137,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                     val value = repository.knowledgeRevision(head.id, head.revision)
                         ?: throw StaleSnapshotException("知识目录在读取期间变化")
                     if (!matches(value, filter)) continue
-                    val state = view(value, true, evaluatedAt, states).evidenceState
+                    val state = view(value, true, evaluatedAt, states, contextValidity).evidenceState
                     if (!filter.includeInvalid && state != KnowledgeEvidenceState.CURRENT) { omitted++; continue }
                     if (total >= offset && selected.size < limit) selected += KnowledgeIndexItem(value.id, value.revision,
                         value.category, value.topics, value.scope.from, value.scope.through, state)
@@ -157,11 +160,18 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
             (filter.topics == null || value.topics.any { it in filter.topics })
 
     private fun view(value: StoredKnowledgeRevision, currentRevision: Boolean, now: Instant,
-        states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?> = mutableMapOf()): KnowledgeView {
+        states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?> = mutableMapOf(),
+        contextValidity: MutableMap<String, Boolean> = mutableMapOf()): KnowledgeView {
         val id = AnalysisRunCodec.feedbackId(value.runId, value.claimRef)
         val feedback = repository.claimFeedback(id)
         val state = when {
             !repository.analysisSourceCurrent(value.source, value.scope) -> KnowledgeEvidenceState.STALE
+            !contextValidity.getOrPut(value.runId) {
+                if (!states.containsKey(value.runId)) states[value.runId] = repository.analysisRun(value.runId)?.let { it.source to AnalysisRunCodec.decode(it.payload) }
+                states[value.runId]?.second?.feedbackContext?.let {
+                    dev.tracelife.analysis.FeedbackContextCatalog(repository).current(value.runId, it)
+                } ?: true
+            } -> KnowledgeEvidenceState.FEEDBACK_CHANGED
             value.actionPlan?.let { !repository.actionEvidencePlanCurrent(value.scope, it) } == true -> KnowledgeEvidenceState.STALE
             value.expiresAt != null && !now.isBefore(value.expiresAt) -> KnowledgeEvidenceState.EXPIRED
             !feedbackCurrent(value) || value.profileMaintenanceProof?.let { !repository.profileMaintenanceDependenciesCurrent(it) } == true ->

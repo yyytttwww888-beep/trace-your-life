@@ -141,6 +141,22 @@ class DeepSeekProviderTest {
         assertTrue(messages.getJSONObject(0).getString("content").contains("仅使用 evidence 里的原文"))
     }
 
+    @Test fun `historical controls have top level non evidence instructions in generation and review`() {
+        val adapter = provider { _, _ -> error("No network in prompt regression") }
+        val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "SYNTHESIS",
+            "evidence" to emptyList<Any>(), "historicalFeedback" to mapOf("entries" to emptyList<Any>()))))
+        val generation = adapter.prepare(input)
+        val review = adapter.prepareReview(input.copy(payloadJson = input.payloadJson.replace("SYNTHESIS", "REVIEW")))
+        listOf(generation, review).forEach { prepared ->
+            val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+            assertTrue(system.contains("historicalFeedback"))
+            assertTrue(system.contains("controlKey"))
+            assertTrue(system.contains("不得放入 evidenceIds"))
+            assertTrue(system.contains("不得把旧判断或纠正文句转述为本期事实"))
+            assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        }
+    }
+
     @Test fun `metric proposals use a distinct exact wire prompt and typed IDs`() {
         val metricId = "metric-v1-$evidenceId"
         val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "METRIC_ANALYSIS",

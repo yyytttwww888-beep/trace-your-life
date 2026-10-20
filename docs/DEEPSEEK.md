@@ -224,3 +224,20 @@ val result = app.analysisProcessor.process(
 ```
 
 运行结果和实际范围见[开发验证](DEVELOPMENT.md#主动分析闭环验证)。测试不读取真实个人记录或把密钥写入 APK；生成的合成文字用于人工检查表达质量，不代表个人任务总体准确率。
+
+## 历史纠正与原文引用的真实验证
+
+```bash
+./gradlew testDebugUnitTest --tests 'dev.tracelife.providers.DeepSeekHistoricalFeedbackLiveTest' \
+  -PtraceLifeDeepSeekReflection=true
+```
+
+新增用例沿用主动分析的显式开关，普通测试与 CI 默认跳过、不读取凭据；单次最多 1 个付费请求。它先构造旧判断和用户纠正，再将两条当前合成记录经过正式 `ReflectionWorkflow → ControlledAnalysis → DeepSeekProvider`。仅合成请求与响应正文写入仓库外 `~/Library/Caches/trace-life-tools/experience-memory-20261020/history-live-<随机ID>/`，不保存请求头或密钥，日志仅输出路径、响应结构、计数与用量。测试后清理数据库与临时凭据。
+
+2026-10-20 共执行 2 次：首次响应自然结束、JSON 完整，用量 1,695 输入／578 输出 token；模型却把历史纠正的反馈 ID 放进了新判断的 `evidenceIds`。适配器结构解析成功，受控执行器的证据归属校验拒绝整份提案，任务记录 `INVALID_RESPONSE`，没有发布或放行部分判断。
+
+修复将历史条目的传输标识改成明确类型的 `controlKey`，内容校验值保留在固定任务目录，并在顶层系统指令要求历史意见只约束判断、不能引用或转述为本期事实。生成、核对和扫描共用该规则，完整指令仍计量；没有增加输出预算或放宽引用检查。补充离线回归验证混入原始反馈 ID 时仍拒绝保存。
+
+同一合成案例修复后通过：响应自然结束，4 条发现均通过原文引用检查，任务达到 `READY`，登记读取 1 条历史意见；实际用量 1,791 输入／615 输出 token，完整请求 7,650 字节，保守输入预算 8,674 token。同期 26 项历史协议与适配器离线测试全部通过。此用例没有调用独立核对、处理人工历史对照或发布知识，仅验证该有限案例的生成链与引用边界，不代表模型总体语义正确率或实体手机验收。
+
+请求变化后旧失败批次不能在同一标识下改用新请求继续，需新建同范围任务；旧任务保留其原始调用和错误记录。供应商结构错误记录为 `PROVIDER_RESPONSE`，执行器的结构、引用或预算校验失败记录为 `INVALID_RESPONSE`，诊断时应区分两者。

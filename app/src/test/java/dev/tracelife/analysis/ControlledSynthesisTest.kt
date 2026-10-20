@@ -73,7 +73,7 @@ class ControlledSynthesisTest {
         assertEquals(CallPurpose.SYNTHESIS, saved.purpose)
         assertEquals(CallStatus.SUCCEEDED, saved.status)
         assertEquals(2, saved.evidence.size)
-        assertEquals(11, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(12, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(0L, AnalysisBatchProcessor(analysis).coverage("run").completedTextCodePoints)
         repository.close()
         repository = LifeRepository(context, clock, database)
@@ -195,7 +195,7 @@ class ControlledSynthesisTest {
             val legacy = legacy(current, version)
             val decoded = AnalysisRunCodec.decode(legacy)
             assertEquals(CallPurpose.EXTRACTION, decoded.calls.single().purpose)
-            assertEquals(11, JSONObject(AnalysisRunCodec.encode(decoded)).getInt("formatVersion"))
+            assertEquals(12, JSONObject(AnalysisRunCodec.encode(decoded)).getInt("formatVersion"))
             AnalysisRunCodec.validateStored(analysis.task("run").stored.copy(payload = legacy))
         }
         analysis.synthesize("run", "synthesis", selected, Synthesizer())

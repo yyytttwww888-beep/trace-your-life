@@ -154,7 +154,7 @@ class PeriodReductionReviewProcessor(private val analysis: ControlledAnalysis) {
             context.target.root.batchKey, context.target.root.attempt, context.target.root.outputSha256,
             context.target.index, context.target.statementSha256, context.feedbackVersion,
             context.dependencyTokens.map { listOf(it.claim.batchKey, it.claim.claimIndex, it.claim.claimSha256, it.version) }, ids,
-        )))
+        ) + listOfNotNull(context.historicalFeedbackSha256)))
 
     private fun blocked(task: AnalysisTask): ReductionReviewStatus? = when (task.status) {
         AnalysisStatus.STALE -> ReductionReviewStatus.STALE

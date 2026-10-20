@@ -9,6 +9,7 @@ import dev.tracelife.analysis.AnalysisProviderException
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.BatchProposal
 import dev.tracelife.analysis.ClaimKind
+import dev.tracelife.analysis.FeedbackContextProtocol
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.ModelCompletion
 import dev.tracelife.analysis.ModelRequest
@@ -65,7 +66,7 @@ class DeepSeekProvider internal constructor(
                 if (actionContext(envelope)) ACTION_REDUCTION_GUIDANCE else ""
             envelope["purpose"] == "METRIC_ANALYSIS" -> METRIC_INSTRUCTIONS
             else -> OUTPUT_INSTRUCTIONS
-        })
+        }, envelope)
     }
     override fun prepareReview(request: ModelRequest): PreparedModelRequest {
         val envelope = StrictJson.parse(request.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
@@ -84,7 +85,7 @@ class DeepSeekProvider internal constructor(
             actionContext(envelope) -> ACTION_REVIEW_INSTRUCTIONS
             envelope["purpose"] == "REVIEW" && envelope["evidenceType"] == "RECORD_METRIC" -> METRIC_REVIEW_INSTRUCTIONS
             else -> REVIEW_INSTRUCTIONS
-        })
+        }, envelope)
     }
 
     override fun prepareScan(request: ModelRequest): PreparedModelRequest {
@@ -92,7 +93,7 @@ class DeepSeekProvider internal constructor(
         val profile = profileTarget(envelope, "PROFILE_SCAN")
         if (profile != null) requireMaintenanceHash(envelope)
         return prepareWithInstructions(request, if (profile != null) PROFILE_SCAN_INSTRUCTIONS else
-            if (actionContext(envelope)) ACTION_SCAN_INSTRUCTIONS + ACTION_SCAN_GUIDANCE else SCAN_INSTRUCTIONS)
+            if (actionContext(envelope)) ACTION_SCAN_INSTRUCTIONS + ACTION_SCAN_GUIDANCE else SCAN_INSTRUCTIONS, envelope)
     }
 
     private fun actionContext(envelope: Map<String, Any?>): Boolean {
@@ -104,7 +105,7 @@ class DeepSeekProvider internal constructor(
         val envelope = StrictJson.parse(request.payloadJson.toByteArray(Charsets.UTF_8), 262_144).obj()
         requireNotNull(profileTarget(envelope, "PROFILE_RELATION"))
         requireMaintenanceHash(envelope)
-        return prepareWithInstructions(request, PROFILE_RELATION_INSTRUCTIONS)
+        return prepareWithInstructions(request, PROFILE_RELATION_INSTRUCTIONS, envelope)
     }
 
     override fun relatePrepared(request: PreparedModelRequest): ProfileRelationCompletion {
@@ -123,12 +124,13 @@ class DeepSeekProvider internal constructor(
         return ReductionScanCompletion(result, usage)
     }
 
-    private fun prepareWithInstructions(request: ModelRequest, instructions: String): PreparedModelRequest {
+    private fun prepareWithInstructions(request: ModelRequest, instructions: String, envelope: Map<String, Any?>): PreparedModelRequest {
         require(request.maximumOutputTokens in 1..32_768)
         require(request.payloadJson.toByteArray(Charsets.UTF_8).size <= 262_144)
         val body = AnalysisRunCodec.json(mapOf(
             "model" to model.apiId,
-            "messages" to listOf(mapOf("role" to "system", "content" to instructions),
+            "messages" to listOf(mapOf("role" to "system", "content" to (instructions +
+                if (envelope["historicalFeedback"] != null) FeedbackContextProtocol.MODEL_INSTRUCTIONS else "")),
                 mapOf("role" to "user", "content" to request.payloadJson)),
             "thinking" to mapOf("type" to "disabled"),
             "response_format" to mapOf("type" to "json_object"),

@@ -16,6 +16,8 @@ import dev.tracelife.analysis.ReflectionStatus
 import dev.tracelife.analysis.ReflectionTarget
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.analysis.HistoricalFeedbackCheck
+import dev.tracelife.analysis.HistoricalFeedbackChoice
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.ClaimFeedbackDecision
 import java.time.LocalDate
@@ -29,6 +31,7 @@ class ReflectionActivity : ScreenActivity() {
     private var findingKey: String? = null
     private var selectedRange = 1
     private var historyOffset = 0
+    private var showArchived = false
     private var from = LocalDate.now().minusDays(6).toString()
     private var through = LocalDate.now().toString()
     private var fromField: EditText? = null
@@ -44,6 +47,7 @@ class ReflectionActivity : ScreenActivity() {
             findingKey = savedInstanceState.getString("reflection.finding")
             selectedRange = savedInstanceState.getInt("reflection.range", 1)
             historyOffset = savedInstanceState.getInt("reflection.historyOffset", 0)
+            showArchived = savedInstanceState.getBoolean("reflection.archived", false)
             from = savedInstanceState.getString("reflection.from", from)
             through = savedInstanceState.getString("reflection.through", through)
         } else {
@@ -61,6 +65,7 @@ class ReflectionActivity : ScreenActivity() {
         outState.putString("reflection.finding", findingKey)
         outState.putInt("reflection.range", selectedRange)
         outState.putInt("reflection.historyOffset", historyOffset)
+        outState.putBoolean("reflection.archived", showArchived)
         outState.putString("reflection.from", from)
         outState.putString("reflection.through", through)
         super.onSaveInstanceState(outState)
@@ -86,6 +91,7 @@ class ReflectionActivity : ScreenActivity() {
         if (busy) return
         when (screen) {
             "original", "evidence" -> runId?.let { openRun(it) } ?: showEntry()
+            "feedback" -> runId?.let { openRun(it) } ?: showEntry()
             "finding" -> { findingKey = null; runId?.let { openRun(it) } ?: showEntry() }
             "run" -> { findingKey = null; showEntry() }
             else -> finish()
@@ -126,13 +132,28 @@ class ReflectionActivity : ScreenActivity() {
         }
         primaryIn(scopeCard, "开始分析", "startReflection") { startAnalysis() }
         Ui.note(scopeCard, "分析所选范围内可读取的文字，日期不确定的记录也会单列纳入。分批处理，结果会保留，确认后再存入知识库。")
-        section("分析记录")
+        section(if (showArchived) "已归档的分析" else "分析记录")
+        addButton(root, "我的对照说明", "historicalFeedbackNotes") {
+            startActivity(Intent(this, FeedbackNotesActivity::class.java))
+        }
+        Ui.disclosure(root, "更多任务", "reflectionTaskManagement") { details ->
+            addButton(details, "管理全部分析与整理", "manageAllTasks") {
+                startActivity(Intent(this, TaskArchiveActivity::class.java))
+            }
+        }
+        addButton(root, if (showArchived) "返回进行中的分析" else "查看归档", "reflectionArchiveList") {
+            rememberDates()
+            showArchived = !showArchived
+            historyOffset = 0
+            showEntry()
+        }
         val history = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; root.addView(this) }
         Ui.note(history, "正在读取分析记录…")
-        runIo({ app.reflectionWorkflow.history(limit = HISTORY_PAGE_SIZE + 1, offset = historyOffset) }) { runs ->
+        runIo({ app.reflectionWorkflow.historyPage(archived = showArchived, limit = HISTORY_PAGE_SIZE, offset = historyOffset) }) { page ->
+            val runs = page.items
             history.removeAllViews()
             if (runs.isEmpty()) {
-                emptyState(history, if (historyOffset == 0) "还没有分析过。保存记录后，在这里开始第一次回看。" else "这一页已没有分析记录。")
+                emptyState(history, if (showArchived) "还没有归档的分析。完成回看后，可以在结果页收起任务。" else if (historyOffset == 0) "还没有分析过。保存记录后，在这里开始第一次回看。" else "这一页已没有分析记录。")
             } else runs.take(HISTORY_PAGE_SIZE).forEach { run ->
                 listRow(history,
                     "${run.scope.from} 至 ${run.scope.through}\n${statusLabel(run.status)} · ${run.findings.size} 条发现\n${formatTime(run)}",
@@ -143,9 +164,9 @@ class ReflectionActivity : ScreenActivity() {
                 historyOffset = maxOf(0, historyOffset - HISTORY_PAGE_SIZE)
                 showEntry()
             }
-            if (runs.size > HISTORY_PAGE_SIZE) addButton(history, "更早的分析", "reflectionHistoryNext") {
+            if (page.nextOffset != null) addButton(history, "更早的分析", "reflectionHistoryNext") {
                 rememberDates()
-                historyOffset += HISTORY_PAGE_SIZE
+                historyOffset = page.nextOffset
                 showEntry()
             }
         }
@@ -168,6 +189,7 @@ class ReflectionActivity : ScreenActivity() {
                 runIo({ app.reflectionWorkflow.start(scope) }) { run ->
                     findingKey = null
                     historyOffset = 0
+                    showArchived = false
                     rememberRun(run.id)
                     renderRun(run)
                     processRun(run)
@@ -214,15 +236,15 @@ class ReflectionActivity : ScreenActivity() {
         throughField = null
         note("${run.scope.from} 至 ${run.scope.through}")
         val summary = card()
-        Ui.sectionTitle(summary, statusLabel(run.status))
+        Ui.sectionTitle(summary, if (run.archivedAt != null) "已归档 · ${statusLabel(run.status)}" else statusLabel(run.status))
         progressLabel = Ui.note(summary, progressText(run)).apply { tag = "reflectionProgress" }
         Ui.note(summary, statusHint(run))
-        if (run.status in continuable && !run.canReviewFindings) primaryIn(summary, if (run.totalRequests == 0) "开始分析" else "继续分析", "continueReflection") {
+        if (run.archivedAt == null && run.status in continuable && !run.canReviewFindings) primaryIn(summary, if (run.totalRequests == 0) "开始分析" else "继续分析", "continueReflection") {
             withConfigured {
                 confirm("继续分析？", "继续发送本范围尚未处理的片段或已有草稿给 DeepSeek，可能产生费用。本轮最多请求 $REQUESTS_PER_PASS 次，已完成的步骤会保留。", "继续分析") { processRun(run) }
             }
         }
-        if (run.status == ReflectionStatus.NEEDS_RECOVERY) addButton(summary, "恢复中断进度", "recoverReflection") {
+        if (run.archivedAt == null && run.status == ReflectionStatus.NEEDS_RECOVERY) addButton(summary, "恢复中断进度", "recoverReflection") {
             confirm("恢复中断进度？", "上次请求未正常结束。恢复本身不会调用模型，之后由你决定是否继续；重新请求可能重复产生费用。", "恢复进度") {
                 runIo({ app.reflectionWorkflow.recover(run.id) }) { renderRun(it) }
             }
@@ -231,6 +253,18 @@ class ReflectionActivity : ScreenActivity() {
             addButton(summary, "重新选择范围", "newReflection") { findingKey = null; showEntry() }
         }
         addButton(summary, "刷新结果", "refreshReflection") { openRun(run.id) }
+        if (run.archivedAt != null) {
+            Ui.note(summary, "这次分析已收起。知识与依据仍可查看；继续处理前请恢复任务。")
+            addButton(summary, "恢复为进行中", "unarchiveReflection") {
+                runIo({ app.reflectionWorkflow.unarchive(run.id, run.taskVersion) }) { renderRun(it) }
+            }
+        } else if (run.status != ReflectionStatus.NEEDS_RECOVERY) {
+            addButton(summary, "归档这次分析", "archiveReflection") {
+                confirm("归档这次分析？", "收起处理过程，保留已保存的知识、意见和依据。未完成的进度也会保留；之后可恢复继续，不会自动发起分析。", "归档") {
+                    runIo({ app.reflectionWorkflow.archive(run.id, run.taskVersion) }) { renderRun(it) }
+                }
+            }
+        }
         renderCoverage(run)
         if (run.findings.isEmpty()) {
             section("本次发现")
@@ -308,18 +342,29 @@ class ReflectionActivity : ScreenActivity() {
             reviewHint(progress.status)?.let { note(it) }
         }
         addButton(root, "查看记录依据", "reflectionEvidence") { showEvidence(run, finding) }
+        val prior = finding.historicalFeedback
+        if (prior.total > 0) {
+            val history = card()
+            Ui.sectionTitle(history, "对照以前的意见")
+            Ui.note(history, "生成时参考 ${prior.usedInGeneration} / ${prior.total} 条；已对照 ${prior.resolved} 条，仍有冲突 ${prior.conflicts} 条。")
+            Ui.note(history, "保存前逐项检查这条发现是否尊重以前的纠正和否定。未读过的意见也在这里，不会默认视为已遵守。")
+            addButton(history, "逐项对照", "historicalFeedback") { showHistoricalFeedback(run, finding) }
+        }
         finding.knowledgeId?.let { savedId ->
             primaryButton("查看已保存内容与后续尝试", "openSavedFinding") {
                 startActivity(Intent(this, KnowledgeActivity::class.java).putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID, savedId))
             }
         }
-        if (run.status !in blocked && run.canReviewFindings) {
+        if (run.status !in blocked && (run.canReviewFindings || run.archivedAt != null)) {
             val decision = finding.feedback?.feedback?.decision
-            if (finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT && decision !in rejected && finding.reviewVerdict !in unsupported) {
+            if (run.archivedAt == null && run.canReviewFindings && finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT && decision !in rejected && finding.reviewVerdict !in unsupported &&
+                prior.resolved == prior.total && prior.conflicts == 0) {
                 primaryButton(if (decision == ClaimFeedbackDecision.CONFIRMED) "继续核对并保存" else "保留到知识库", "keepReflectionFinding") {
                     keepFinding(run, finding)
                 }
             }
+            addButton(root, "补充我的纠正", "correctReflectionFinding") { correctFinding(run, finding) }
+            if (run.archivedAt != null) note("归档后仍可否定或纠正。要继续核对和保存，请返回结果页恢复任务。")
             if (decision != ClaimFeedbackDecision.REJECTED) dangerButton("这条不符合我的情况", "rejectReflectionFinding") {
                 confirm("否定这条发现？", "将保留你的决定，阻止这条发现继续收录；已经保存的关联内容也会退出有效知识。原始记录会保留。", "否定") {
                     runIo({ app.reflectionWorkflow.respond(run.id, finding.target, run.taskVersion,
@@ -328,10 +373,88 @@ class ReflectionActivity : ScreenActivity() {
                     }
                 }
             }
+        } else if (run.archivedAt != null) {
+            note("这次分析已归档。可返回结果页恢复任务后继续处理。")
         } else if (!run.canReviewFindings && run.status !in blocked) {
             note("这是部分记录中的发现。请先完成整段时间的分析与汇总，再核对和保存。")
         } else note("${statusLabel(run.status)}。这条发现不能继续保存为当前知识，请返回查看任务状态。")
         note("这是依据所选记录提出的解释，不是对你的固定评价。觉得不准确时可以否定，再补充经历。")
+    }
+
+    private fun correctFinding(run: ReflectionRun, finding: ReflectionFinding) {
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), 0, dp(20), 0) }
+        val input = labeledFieldIn(layout, "我的实际情况", "哪些地方不准确？有什么条件或例外？",
+            finding.feedback?.feedback?.userText.orEmpty()).apply { tag = "reflectionCorrection"; minLines = 3 }
+        AlertDialog.Builder(this).setTitle("纠正这条发现")
+            .setMessage("保留你的原话，并让相关内容退出有效知识。后续分析会把这份意见列入对照范围。")
+            .setView(layout).setNegativeButton("取消", null).setPositiveButton("保存纠正") { _, _ ->
+                val content = input.text.toString().trim()
+                if (content.isEmpty() || content.length > 2000) {
+                    showError(IllegalArgumentException("请填写 1 至 2000 字的纠正")); return@setPositiveButton
+                }
+                runIo({ app.reflectionWorkflow.respond(run.id, finding.target, run.taskVersion,
+                    ClaimFeedbackDecision.CORRECTED, finding.feedback?.feedback?.version, userText = content) }) { renderUpdatedFinding(it) }
+            }.show()
+    }
+
+    private fun showHistoricalFeedback(run: ReflectionRun, finding: ReflectionFinding, offset: Int = 0) {
+        beginScreen("feedback", "以前的意见")
+        text(finding.text)
+        note("逐项对照这条发现。原文核对与这些意见分开进行；有冲突时请先纠正当前发现。")
+        runIo({ app.reflectionWorkflow.historicalFeedbackPage(run.id, finding.target, offset) }) { page ->
+            note("第 ${if (page.total == 0) 0 else offset + 1} 至 ${offset + page.items.size} 条，共 ${page.total} 条")
+            page.items.forEach { item ->
+                val container = card()
+                val content = item.content
+                Ui.sectionTitle(container, when (content.decision) {
+                    ClaimFeedbackDecision.CORRECTED -> "以前的纠正"
+                    ClaimFeedbackDecision.WITHDRAWN -> "以前撤回的判断"
+                    else -> "以前否定的判断"
+                })
+                content.previousClaimText?.let { Ui.body(container, "当时的分析：\n$it") }
+                content.userText?.let { Ui.body(container, "你的意见：\n$it") }
+                if (content.previousClaimText == null) Ui.note(container, "当时的分析正文已不可用；保留独立意见，不补写旧判断。")
+                item.resolution?.let { Ui.note(container, "${feedbackChoiceLabel(it.choice)}：${it.reason}") }
+                    ?: Ui.note(container, "尚未对照")
+                if (run.archivedAt == null && run.canReviewFindings && run.status !in blocked) {
+                    addButton(container, if (item.resolution == null) "处理这条意见" else "调整对照结果", "resolveHistory:${content.reference.id}") {
+                        resolveHistory(run, finding, item, offset)
+                    }
+                }
+            }
+            if (offset > 0) addButton(root, "上一页意见", "historicalFeedbackPrevious") {
+                showHistoricalFeedback(run, finding, maxOf(0, offset - 16))
+            }
+            page.nextOffset?.let { next -> addButton(root, "下一页意见", "historicalFeedbackNext") { showHistoricalFeedback(run, finding, next) } }
+            addButton(root, "返回这条发现", "historicalFeedbackDone") { openRun(run.id) }
+        }
+    }
+
+    private fun resolveHistory(run: ReflectionRun, finding: ReflectionFinding, item: HistoricalFeedbackCheck, offset: Int) {
+        val choices = HistoricalFeedbackChoice.entries
+        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), 0, dp(20), 0) }
+        val choice = spinnerIn(layout, choices.map(::feedbackChoiceLabel),
+            item.resolution?.choice?.let(choices::indexOf) ?: 0, "historicalFeedbackChoice")
+        val reason = labeledFieldIn(layout, "对照理由", "当前发现如何遵守，或为什么不适用？", item.resolution?.reason.orEmpty())
+            .apply { tag = "historicalFeedbackReason"; minLines = 2 }
+        AlertDialog.Builder(this).setTitle("与以前的意见对照").setView(layout)
+            .setNegativeButton("取消", null).setPositiveButton("保存对照") { _, _ ->
+                val explanation = reason.text.toString().trim()
+                if (explanation.isEmpty() || explanation.length > 1000) {
+                    showError(IllegalArgumentException("请填写 1 至 1000 字的对照理由")); return@setPositiveButton
+                }
+                runIo({ app.reflectionWorkflow.resolveHistoricalFeedback(run.id, finding.target, item.content.reference.id,
+                    run.taskVersion, choices[choice.selectedItemPosition], explanation, item.resolution?.version) }) { updated ->
+                    val current = updated.findings.firstOrNull { targetKey(it.target) == findingKey }
+                    if (current == null) renderRun(updated) else showHistoricalFeedback(updated, current, offset)
+                }
+            }.show()
+    }
+
+    private fun feedbackChoiceLabel(choice: HistoricalFeedbackChoice): String = when (choice) {
+        HistoricalFeedbackChoice.RESPECTED -> "这条发现已遵守"
+        HistoricalFeedbackChoice.UNRELATED -> "本次情境不适用"
+        HistoricalFeedbackChoice.CONFLICT -> "仍与我的意见冲突"
     }
 
     private fun keepFinding(run: ReflectionRun, finding: ReflectionFinding) {

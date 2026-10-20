@@ -1,10 +1,13 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.knowledge.StoredExperienceThread
+import dev.tracelife.knowledge.StoredExperienceChange
 import dev.tracelife.dashboard.StoredDashboardPreferences
 import dev.tracelife.model.Attachment
 import dev.tracelife.model.ChangeEvent
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.model.TemplateVersion
+import dev.tracelife.storage.HistoricalComparisonNote
 import dev.tracelife.storage.StoredAnalysisRun
 import dev.tracelife.storage.StoredClaimFeedback
 import dev.tracelife.storage.StoredKnowledgeRevision
@@ -29,7 +32,7 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 9,
+    val sourceSchemaVersion: Int = 10,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
@@ -45,6 +48,11 @@ data class RepositorySnapshot(
     val profileHeads: List<ProfileHead> = emptyList(),
     val deletedProfiles: List<Deletion> = emptyList(),
     val dashboardPreferences: StoredDashboardPreferences? = null,
+    val experienceThreads: List<StoredExperienceThread> = emptyList(),
+    val experienceChanges: List<StoredExperienceChange> = emptyList(),
+    val deletedExperienceThreads: List<Deletion> = emptyList(),
+    val historicalComparisons: List<HistoricalComparisonNote> = emptyList(),
+    val historicalComparisonDeletions: List<Deletion> = emptyList(),
 ) {
     // Derived locally during capture; deliberately absent from the constructor/codec so copies
     // and imported backups never inherit a trusted current-source classification.

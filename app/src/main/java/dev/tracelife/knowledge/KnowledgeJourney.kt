@@ -22,7 +22,7 @@ data class KnowledgeJourneyPage(
     val entries: List<KnowledgeView>, val total: Int, val currentCount: Int, val pendingCount: Int,
     val nextOffset: Int?,
 )
-data class TopicOverview(val name: String, val records: Int, val saved: Int, val pending: Int)
+data class TopicOverview(val name: String, val records: Int, val saved: Int, val pending: Int, val experienceThreads: Int = 0)
 data class RelatedActions(val items: List<ActionView>, val total: Int, val nextOffset: Int?)
 
 /** Trusted local navigation only. It makes no model call and never provides a bulk model context.
@@ -70,17 +70,23 @@ class KnowledgeJourney(private val repository: LifeRepository, private val clock
         var offset = 0
         do {
             val page = repository.analysisSourcePage(source, scope, offset, 100)
-            page.items.forEach { row -> row.topics.forEach { counts.getOrPut(it) { IntArray(3) }[0]++ } }
+            page.items.forEach { row -> row.topics.forEach { counts.getOrPut(it) { IntArray(4) }[0]++ } }
             offset += page.items.size
         } while (page.nextOffset != null)
         knowledge.scanCurrent(KnowledgeFilter(includeInvalid = true)) { view ->
             view.value.topics.forEach { topic ->
-                val count = counts.getOrPut(topic) { IntArray(3) }
+                val count = counts.getOrPut(topic) { IntArray(4) }
                 count[1]++
                 if (view.evidenceState != KnowledgeEvidenceState.CURRENT) count[2]++
             }
         }
-        counts.map { (topic, count) -> TopicOverview(topic, count[0], count[1], count[2]) }
+        var threadOffset = 0
+        do {
+            val threads = repository.experienceThreads(offset = threadOffset, limit = 100)
+            threads.forEach { thread -> thread.topics.forEach { counts.getOrPut(it) { IntArray(4) }[3]++ } }
+            threadOffset += threads.size
+        } while (threads.size == 100)
+        counts.map { (topic, count) -> TopicOverview(topic, count[0], count[1], count[2], count[3]) }
     }
 
     fun records(topic: String, offset: Int = 0, limit: Int = 10) = consistent { _, _ ->

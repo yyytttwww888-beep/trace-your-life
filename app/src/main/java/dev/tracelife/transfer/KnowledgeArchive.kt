@@ -80,6 +80,7 @@ object KnowledgeArchive {
         val actionEvidence = ActionEvidenceExport.select(snapshot, knowledge)
         val actions = ActionExport.select(snapshot, options)
         val profiles = ProfileExport.select(snapshot, options, knowledge)
+        val experiences = ExperienceExport.select(snapshot, options, knowledge)
         val validUntil = (knowledge.entries.mapNotNull { it.value.expiresAt } + listOfNotNull(profiles.validUntil)).minOrNull()
         val unknownEligible = current.count { record ->
             record.draft.occurrence.startDate == null &&
@@ -116,10 +117,11 @@ object KnowledgeArchive {
                     archive.text(paths.getValue(record.id), recordText(record, paths.getValue(record.id), templatePaths, attachments, options, archive,
                         relatedKnowledge[record.id]?.let { "notes/sources/${hash(record.id)}/index.md" }))
                 }
-                writeKnowledge(archive, knowledge, knowledgePaths, paths, actionEvidencePaths)
+                writeKnowledge(archive, knowledge, knowledgePaths, paths, actionEvidencePaths, experiences)
                 writeActionEvidence(archive, actionEvidence, actionEvidencePaths, knowledgePaths)
                 writeActions(archive, actions)
                 writeProfiles(archive, profiles, knowledgePaths)
+                writeExperiences(archive, experiences, knowledgePaths)
                 boundTemplates.forEach { template ->
                     val path = templatePaths.getValue(template.id to template.version)
                     archive.text(path, templateText(template))
@@ -139,6 +141,7 @@ object KnowledgeArchive {
                 if (actions.entries.isNotEmpty()) rootLinks += Nav("用户选定行动（不是执行证据）", "actions/index.md")
                 if (actionEvidence.isNotEmpty()) rootLinks += Nav("知识引用的行动原始凭据", "action-evidence/index.md")
                 if (profiles.entries.isNotEmpty()) rootLinks += Nav("已采用画像（引用共享知识）", "profile/index.md")
+                if (experiences.entries.isNotEmpty()) rootLinks += Nav("经验线索与变化过程", "experiences/index.md")
                 archive.pages("indexes/index.md", "分层索引", rootLinks, "先确定任务、时间和主题；分页枚举范围，再按需读取原文。此包没有执行模型读取预算。")
                 archive.recordPages("indexes/evidence/index.md", "当前范围证据目录", included, paths)
                 archive.pages("templates/index.md", "所绑定的模板版本", boundTemplates.map { Nav("${it.draft.name} · 版本 ${it.version}", templatePaths.getValue(it.id to it.version)) })
@@ -158,6 +161,7 @@ object KnowledgeArchive {
                         .append(archive.link("README.md", "timeline/intervals/index.md", "跨期区间目录"))
                         .append(" 和 ").append(archive.link("README.md", "timeline/unknown/index.md", "未知时间目录")).append("。\n\n")
                     append("主题和索引中的长名称仅作缩短显示；完整文字保留在原始记录或结构化资料中。所有日/周入口只是导航，未生成任何复盘总结、画像或成长判断。\n")
+                    append("\n经验线索纳入 ${experiences.entries.size} 条、变化 ${experiences.includedChanges} 项；省略 ${experiences.sourceThreads - experiences.entries.size} 条线索和 ${experiences.sourceChanges - experiences.includedChanges} 项变化。只含指向同包有效知识的事件及其独立用户说明；未纳入的变化不复制说明或机器正文。目前采用的理解若不在包内，不退回上一项冒充当前理解。线索是用户组织的关联，非新证据；完整形成过程及删除台账由加密备份保留。历史意见的独立对照说明 ${snapshot.historicalComparisons.size} 条未纳入，仅由加密备份保留。\n")
                     append("\n完整分析任务、完整调用证据台账和待核验提案未纳入本阅读包；未发布的跨批周期草稿也未纳入。这些内容仅保留在完整加密备份中。周期草稿是派生分析，不是原始证据。已发布知识保留对应的核对凭据；周期知识区分分批原文筛查与最终核对，不代表全部分析历史或事实认证。\n")
                     append("\n已纳入 ${knowledge.entries.size} 条在 capturedAt 时有效的已发布知识，省略 ${knowledge.omitted} 条当前指针及 ${knowledge.omittedHistoricalRevisions} 份历史知识修订。已发布知识是保存的分析，不是新增原始证据，也不代表用户已掌握或实践；新的判断必须沿引用重新核对原文。\n")
                     if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
@@ -192,6 +196,7 @@ object KnowledgeArchive {
                         .put("reductionDraftsIncluded", false)
                         .put("claimFeedbackIncluded", false).put("omittedClaimFeedback", snapshot.claimFeedback.size)
                         .put("claimFeedbackGap", "claim_feedback_not_included")
+                        .put("historicalComparisonsIncluded", false).put("omittedHistoricalComparisons", snapshot.historicalComparisons.size)
                         .put("knowledgeRevisionsIncluded", knowledge.entries.size).put("omittedHistoricalKnowledgeRevisions", knowledge.omittedHistoricalRevisions)
                         .put("actionRevisionsIncluded", (actions.entries.map { it.id to it.revision } +
                             actionEvidence.map { it.receipt.actionId to it.receipt.revision }).distinct().size)
@@ -202,6 +207,7 @@ object KnowledgeArchive {
                         .put("actionEvidenceReceiptsIncluded", actionEvidence.size).put("completeActionHistoryIncluded", false)
                         .put("profileRevisionsIncluded", profiles.entries.size).put("omittedHistoricalProfileRevisions", profiles.omittedHistoricalRevisions)
                         .put("profileUserTextIncluded", false).put("profileReleaseHistoryIncluded", false)
+                        .put("experienceChangesIncluded", experiences.includedChanges).put("completeExperienceHistoryIncluded", false)
                         .put("analysisGap", "analysis_not_included"))
                     .put("knowledge", JSONObject().put("sourceHeads", knowledge.sourceHeads).put("included", knowledge.entries.size)
                         .put("omitted", knowledge.omitted).put("omittedByReason", JSONObject(knowledge.omittedByReason as Map<*, *>))
@@ -227,7 +233,14 @@ object KnowledgeArchive {
                         .put("zoneId", profiles.zoneId).put("recentDays", profiles.recentDays)
                         .put("validAt", snapshot.capturedAt.toString()).put("validUntil", profiles.validUntil?.toString() ?: JSONObject.NULL)
                         .put("originalEvidence", false).put("userTextIncluded", false).put("claimBodiesDuplicated", false))
+                    .put("experiences", JSONObject().put("sourceThreads", experiences.sourceThreads).put("includedThreads", experiences.entries.size)
+                        .put("sourceChanges", experiences.sourceChanges).put("includedChanges", experiences.includedChanges)
+                        .put("omittedChanges", experiences.sourceChanges - experiences.includedChanges)
+                        .put("selection", "fixed_revision_in_included_knowledge").put("originalEvidence", false)
+                        .put("omittedEventUserTextIncluded", false).put("claimBodiesDuplicated", false))
                     .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json")
+                        .put("experiences", if (experiences.entries.isNotEmpty()) "experiences/index.md" else JSONObject.NULL)
+                        .put("experienceIds", if (experiences.entries.isNotEmpty()) "indexes/experience-ids/index.json" else JSONObject.NULL)
                         .put("knowledge", if (knowledge.entries.isNotEmpty()) "notes/index.md" else JSONObject.NULL)
                         .put("knowledgeIds", if (knowledge.entries.isNotEmpty()) "indexes/note-ids/index.json" else JSONObject.NULL)
                         .put("actions", if (actions.entries.isNotEmpty()) "actions/index.md" else JSONObject.NULL)
@@ -243,6 +256,7 @@ object KnowledgeArchive {
                 if (actions.entries.isNotEmpty()) listOf("actions/index.md", "indexes/action-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 if (actionEvidence.isNotEmpty()) listOf("action-evidence/index.md", "indexes/action-evidence-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 if (profiles.entries.isNotEmpty()) listOf("profile/index.md", "indexes/profile-ids/index.json").forEach { archive.reference("manifest.json", it) }
+                if (experiences.entries.isNotEmpty()) listOf("experiences/index.md", "indexes/experience-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 archive.text("manifest.json", manifest.toString(2), index = true)
                 archive.validateReferences()
             }
@@ -411,6 +425,89 @@ object KnowledgeArchive {
         if (hasProfiles) dataLinks += Nav("当前采用画像 JSONL（共享知识定位）", "data/profiles/index.md")
         if (hasActionEvidence) dataLinks += Nav("行动原始凭据（固定修订）", "data/action-evidence/index.md")
         archive.pages("data/index.md", "结构化资料入口", dataLinks, "历史修订和恢复所需台账未包含；不可完整恢复。")
+    }
+
+    private fun writeExperiences(archive: ArchiveWriter, selection: ExperienceExport.Selection, knowledgePaths: Map<String, String>) {
+        if (selection.entries.isEmpty()) return
+        val paths = selection.entries.associate { it.thread.id to "experiences/entries/${hash(it.thread.id)}/index.md" }
+        selection.entries.forEach { entry ->
+            val thread = entry.thread
+            val path = paths.getValue(thread.id)
+            val base = path.removeSuffix("index.md")
+            val steps = entry.changes.map { event ->
+                val eventPath = "${base}changes/${event.sequence}.md"
+                val dataPath = "${base}changes/${event.sequence}.json"
+                val knowledgePath = knowledgePaths.getValue(event.knowledgeId)
+                val label = when (event.relation) {
+                    dev.tracelife.knowledge.ExperienceRelation.INITIAL -> "起点"
+                    dev.tracelife.knowledge.ExperienceRelation.SUPPLEMENT -> "补充"
+                    dev.tracelife.knowledge.ExperienceRelation.EXCEPTION -> "例外"
+                    dev.tracelife.knowledge.ExperienceRelation.NARROW -> "收窄"
+                    dev.tracelife.knowledge.ExperienceRelation.REPLACE -> "替代"
+                }
+                archive.text(eventPath, buildString {
+                    append("# 变化 ${event.sequence} · $label\n\n")
+                    append("用户关联时间：${event.createdAt}；不是经历发生时间，不是原始证据。\n\n")
+                    append(archive.link(eventPath, knowledgePath, "固定知识修订 ${event.knowledgeRevision}")).append("\n\n")
+                    event.userNote?.let { append("用户独立说明（资料）：\n").append(fenced(it)).append("\n") }
+                    append(archive.link(eventPath, dataPath, "结构化变化")).append(" · ")
+                        .append(archive.link(eventPath, path, "返回经验线索")).append("\n")
+                })
+                archive.text(dataPath, JSONObject(dev.tracelife.knowledge.ExperienceCodec.encodeChange(event))
+                    .put("nodeType", "user_experience_relation").put("originalEvidence", false)
+                    .put("knowledgePath", knowledgePath).toString(2))
+                archive.reference(dataPath, knowledgePath)
+                Nav("${event.sequence} · $label · ${event.createdAt}", eventPath)
+            }
+            archive.pages("${base}changes/index.md", "纳入的经验变化", steps,
+                "保留原序号；缺号代表本包未纳入该变化，不能补写缺失内容。")
+            val metadataPath = "${base}thread.json"
+            archive.text(metadataPath, JSONObject(dev.tracelife.knowledge.ExperienceCodec.encodeThread(thread))
+                .put("nodeType", "experience_thread").put("originalEvidence", false)
+                .put("totalChanges", entry.totalChanges).put("includedChanges", entry.changes.size)
+                .put("adoptedSequence", entry.adoptedSequence).put("adoptedIncluded", entry.adoptedIncluded)
+                .put("changesIndex", "${base}changes/index.md").toString(2))
+            archive.reference(metadataPath, "${base}changes/index.md")
+            val links = mutableListOf(Nav("分页查看变化过程", "${base}changes/index.md"), Nav("线索身份与范围", metadataPath))
+            if (entry.adoptedIncluded) links += Nav("目前采用的理解", "${base}changes/${entry.adoptedSequence}.md")
+            archive.pages(path, thread.title, links,
+                "关联是用户选择，非新增证据。共 ${entry.totalChanges} 项变化，本包纳入 ${entry.changes.size} 项。" +
+                    if (entry.adoptedIncluded) "目前采用第 ${entry.adoptedSequence} 项；补充、例外不自动替代。"
+                    else "目前采用第 ${entry.adoptedSequence} 项，该项未纳入本包，不能以更早知识替代。")
+        }
+        val topics = selection.entries.flatMap { entry -> entry.thread.topics.map { it to entry } }.groupBy({ it.first }, { it.second })
+        val topicLinks = topics.toSortedMap().map { (topic, members) ->
+            val path = "experiences/topics/${hash(topic)}/index.md"
+            archive.pages(path, topic, members.map { Nav(it.thread.title, paths.getValue(it.thread.id)) })
+            Nav("$topic · ${members.size} 条", path)
+        }.toMutableList()
+        val unclassified = selection.entries.filter { it.thread.topics.isEmpty() }
+        if (unclassified.isNotEmpty()) {
+            archive.pages("experiences/topics/unclassified/index.md", "未分类经验", unclassified.map { Nav(it.thread.title, paths.getValue(it.thread.id)) })
+            topicLinks += Nav("未分类经验", "experiences/topics/unclassified/index.md")
+        }
+        archive.pages("experiences/topics/index.md", "经验主题", topicLinks)
+        archive.pages("experiences/all/index.md", "经验线索目录", selection.entries.map { Nav(it.thread.title, paths.getValue(it.thread.id)) })
+        val shards = selection.entries.groupBy { hash(it.thread.id).take(2) }.toSortedMap().map { (prefix, entries) ->
+            val shard = "indexes/experience-ids/$prefix/index.json"
+            val pages = entries.chunked(archive.pageSize).mapIndexed { i, page ->
+                val path = "indexes/experience-ids/$prefix/threads-${number(i)}.jsonl"
+                archive.text(path, page.joinToString("\n", postfix = "\n") { entry ->
+                    archive.reference(path, paths.getValue(entry.thread.id))
+                    JSONObject().put("id", entry.thread.id).put("version", entry.thread.version)
+                        .put("path", paths.getValue(entry.thread.id)).toString()
+                }, index = true)
+                archive.reference(shard, path)
+                JSONObject().put("path", path).put("count", page.size)
+            }
+            archive.jsonPages(shard, "experience-id-mapping-pages", pages)
+            archive.reference("indexes/experience-ids/index.json", shard)
+            JSONObject().put("prefix", prefix).put("path", shard).put("count", entries.size)
+        }
+        archive.jsonPages("indexes/experience-ids/index.json", "sha256-utf8-prefix-2-experiences", shards)
+        archive.pages("experiences/index.md", "经验线索", listOf(Nav("按主题定位", "experiences/topics/index.md"),
+            Nav("全部线索", "experiences/all/index.md"), Nav("精确线索 ID", "indexes/experience-ids/index.json")),
+            "只展示同包有效知识及其关联；不会复制机器正文。完整形成过程须使用加密备份。")
     }
 
     private fun writeProfiles(archive: ArchiveWriter, selection: ProfileExport.Selection, knowledgePaths: Map<String, String>) {
@@ -651,9 +748,12 @@ object KnowledgeArchive {
         paths: Map<String, String>,
         recordPaths: Map<String, String>,
         actionEvidencePaths: Map<String, String>,
+        experiences: ExperienceExport.Selection,
     ) {
         if (selection.entries.isEmpty()) return
         val notes = selection.entries.map { it.value }
+        val relatedExperiences = experiences.entries.flatMap { entry -> entry.changes.map { it.knowledgeId to entry } }
+            .groupBy({ it.first }, { it.second })
         fun notePages(path: String, title: String, values: List<StoredKnowledgeRevision>, note: String = "") {
             archive.pages(path, title, values.map { Nav("${it.id} · 修订 ${it.revision} · ${it.category.name}", paths.getValue(it.id)) },
                 "节点内容为已保存分析的导航，不是新的原始证据。$note")
@@ -661,6 +761,9 @@ object KnowledgeArchive {
         selection.entries.forEach { entry ->
             val value = entry.value
             val path = paths.getValue(value.id)
+            val experienceIndex = "notes/experiences/${hash(value.id)}/index.md"
+            relatedExperiences[value.id]?.let { threads -> archive.pages(experienceIndex, "这份知识关联的经验线索",
+                threads.map { Nav(it.thread.title, "experiences/entries/${hash(it.thread.id)}/index.md") }, "关联由用户明确选择，不是额外证据。") }
             val actionRefs = KnowledgeValidation.allActionEvidence(value)
             val actionIndexPath = "notes/action-evidence/${hash(value.id)}/index.md"
             if (actionRefs.isNotEmpty()) {
@@ -700,6 +803,8 @@ object KnowledgeArchive {
                 append("来源：${escape(value.source.storeId)} / ${value.source.generation}；发布：${value.publishedAt}；到期：${value.expiresAt ?: "未设置"}。\n\n")
                 append("## 保存的陈述\n\n").append(fenced(value.claim.text))
                 append("\n主题（资料）：\n").append(fenced(value.topics.sorted().joinToString("\n")))
+                if (relatedExperiences.containsKey(value.id)) append("\n这份知识参与的变化过程：")
+                    .append(archive.link(path, experienceIndex, "经验线索")).append("。关联不代表当前理解已经得到新证实。\n")
                 append("\n## 核对与用户决定\n\n")
                 append("核对结果：${value.review.verdict.name}；提供方：${escape(value.reviewProviderId)}；核对批次：${escape(value.reviewBatchKey)}；尝试：${value.reviewAttempt}。模型核对不是事实认证。\n\n")
                 value.reductionProof?.let { proof ->

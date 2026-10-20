@@ -286,7 +286,7 @@ class ProfileStorageTest {
         assertEquals(action, repository.actionRevision(action.id))
         assertEquals(knowledge, repository.knowledgeRevision(knowledge.id))
         assertEquals(before.analysisRuns.single(), repository.analysisRun(knowledge.runId))
-        assertEquals(9, snapshot().sourceSchemaVersion)
+        assertEquals(10, snapshot().sourceSchemaVersion)
         assertTrue(repository.profileHeads().isEmpty())
         repository.saveProfile(initial("after-upgrade", knowledge), null)
         assertEquals(before.generation, repository.currentGeneration())

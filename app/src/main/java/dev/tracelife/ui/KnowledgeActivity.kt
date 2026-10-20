@@ -12,6 +12,8 @@ import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.EvidenceReceipt
 import dev.tracelife.analysis.ReviewIssue
 import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.knowledge.KnowledgeContinuity
+import dev.tracelife.knowledge.ExperienceSummary
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.knowledge.KnowledgeFilter
 import dev.tracelife.knowledge.KnowledgeJourney
@@ -35,6 +37,7 @@ class KnowledgeActivity : ScreenActivity() {
     private val journey get() = KnowledgeJourney(app.repository)
     private var topicLimit = 12
     private var topics = emptyList<TopicOverview>()
+    private var experienceThreads = emptyList<ExperienceSummary>()
     private var includeInvalidCheck: CheckBox? = null
     private val filterFields = linkedMapOf<String, EditText>()
     private var currentPage: KnowledgeJourneyPage? = null
@@ -154,8 +157,9 @@ class KnowledgeActivity : ScreenActivity() {
         runIo({
             val overview = journey.topics()
             val page = journey.page(filter, shelf, limit = PAGE_SIZE)
-            overview to page
-        }) { (overview, page) ->
+            Triple(overview, page, KnowledgeContinuity(app.repository).page(topic = filterTopic.trim().ifBlank { null }, limit = 3).items)
+        }) { (overview, page, threads) ->
+            experienceThreads = threads
             topics = overview
             currentPage = page
             renderIndexPage(page)
@@ -186,6 +190,7 @@ class KnowledgeActivity : ScreenActivity() {
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "knowledgeResults" }
         root.addView(results)
         renderTopics(results)
+        renderExperienceThreads(results)
         Ui.note(results, "已保存 ${page.currentCount + page.pendingCount} 条 · 当前条目 ${page.currentCount} 条 · 待更新或过期 ${page.pendingCount} 条")
         if (page.pendingCount > 0 && !includeInvalid) {
             addButton(results, "查看待更新与历史条目", "showPendingKnowledge") {
@@ -230,7 +235,7 @@ class KnowledgeActivity : ScreenActivity() {
         Ui.sectionTitle(card, if (filterTopic.isBlank()) "按主题回看" else filterTopic)
         if (filterTopic.isNotBlank()) {
             topics.firstOrNull { it.name == filterTopic }?.let {
-                Ui.note(card, "${it.records} 条经历 · ${it.saved} 条已保存 · ${it.pending} 条待更新")
+                Ui.note(card, "${it.records} 条经历 · ${it.saved} 条已保存 · ${it.pending} 条待更新${if (it.experienceThreads > 0) " · ${it.experienceThreads} 条经验线索" else ""}")
             }
             Ui.note(card, "下方并列查看这个主题留下的理解与原始经历；同一条资料可以属于多个主题。")
             addButton(card, "所有主题", "allKnowledgeTopics") {
@@ -240,7 +245,7 @@ class KnowledgeActivity : ScreenActivity() {
         } else {
             if (topics.isEmpty()) Ui.note(card, "记录或保存发现时添加主题，就能在这里逐渐串起相关经历。")
             topics.take(topicLimit).forEach { topic ->
-                listRow(card, "${topic.name}\n${topic.records} 条经历 · ${topic.saved} 条已保存${if (topic.pending > 0) " · ${topic.pending} 条待更新" else ""}", "knowledgeTopic:${topic.name}") {
+                listRow(card, "${topic.name}\n${topic.records} 条经历 · ${topic.saved} 条已保存${if (topic.pending > 0) " · ${topic.pending} 条待更新" else ""}${if (topic.experienceThreads > 0) " · ${topic.experienceThreads} 条经验线索" else ""}", "knowledgeTopic:${topic.name}") {
                     filterTopic = topic.name
                     shelf = KnowledgeShelf.ALL
                     showIndex()
@@ -250,6 +255,20 @@ class KnowledgeActivity : ScreenActivity() {
                 topicLimit += 12
                 currentPage?.let(::renderIndexPage)
             }
+        }
+    }
+
+    private fun renderExperienceThreads(parent: LinearLayout) {
+        val card = Ui.card(parent)
+        Ui.sectionTitle(card, "持续积累的经验")
+        if (experienceThreads.isEmpty()) Ui.note(card, "在知识详情里建立一条经验线索，下周的新发现可以继续加入同一条经验。")
+        experienceThreads.forEach { item ->
+            listRow(card, "${item.thread.title}\n${item.thread.version} 次积累 · ${item.current.knowledge?.let { evidenceStateLabel(it.evidenceState) } ?: "相关知识已删除"}", "experience:${item.thread.id}") {
+                startActivity(Intent(this, ExperienceActivity::class.java).putExtra(ExperienceActivity.EXTRA_THREAD_ID, item.thread.id))
+            }
+        }
+        addButton(card, "查看经验线索", "experienceThreads") {
+            startActivity(Intent(this, ExperienceActivity::class.java).putExtra(ExperienceActivity.EXTRA_TOPIC, filterTopic))
         }
     }
 
@@ -301,8 +320,9 @@ class KnowledgeActivity : ScreenActivity() {
         detailRevision = revision
         beginScreen("detail", if (revision == null) "知识详情" else "历史版本 · $revision")
         runIo({
-            requireNotNull(app.knowledge.get(id, revision)) { "知识条目不存在或已被删除" } to journey.relatedActions(id)
-        }) { (view, relatedActions) ->
+            Triple(requireNotNull(app.knowledge.get(id, revision)) { "知识条目不存在或已被删除" }, journey.relatedActions(id),
+                KnowledgeContinuity(app.repository).page(knowledgeId = id, limit = 10))
+        }) { (view, relatedActions, threads) ->
             val value = view.value
             Ui.card(root).also { card ->
                 Ui.note(card, readingLabel(value.category, value.claim.text) + value.topics.takeIf { it.isNotEmpty() }?.joinToString("、", prefix = " · ").orEmpty())
@@ -362,6 +382,24 @@ class KnowledgeActivity : ScreenActivity() {
                     }
                 }
             }
+            val continuity = card()
+            Ui.sectionTitle(continuity, "这条经验的变化")
+            Ui.note(continuity, "把不同时间留下的理解连接起来，保留补充、例外和改变想法的过程。")
+            threads.items.forEach { item ->
+                listRow(continuity, "${item.thread.title} · ${item.thread.version} 次积累", "experience:${item.thread.id}") {
+                    startActivity(Intent(this, ExperienceActivity::class.java).putExtra(ExperienceActivity.EXTRA_THREAD_ID, item.thread.id))
+                }
+            }
+            if (threads.nextOffset != null) addButton(continuity, "全部相关经验", "allRelatedExperiences") {
+                startActivity(Intent(this, ExperienceActivity::class.java).putExtra(ExperienceActivity.EXTRA_RELATED_KNOWLEDGE_ID, id))
+            }
+            if (view.isCurrentRevision && view.evidenceState == KnowledgeEvidenceState.CURRENT) {
+                addButton(continuity, "建立或加入经验线索", "connectExperience") {
+                    startActivity(Intent(this, ExperienceActivity::class.java)
+                        .putExtra(ExperienceActivity.EXTRA_KNOWLEDGE_ID, id)
+                        .putExtra(ExperienceActivity.EXTRA_KNOWLEDGE_REVISION, value.revision))
+                }
+            } else Ui.note(continuity, "待更新内容仍在形成过程中保留；新关联须选择当前有效的知识。")
             val followUp = card()
             renderRelatedActions(followUp, id, relatedActions)
             if (view.isCurrentRevision && view.evidenceState == KnowledgeEvidenceState.CURRENT) {

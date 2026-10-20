@@ -2,11 +2,11 @@
 
 面向个人的 Android AI 记录与知识管理应用。将日常随记和复盘组织成可追溯、可分析、可迁移的个人知识库，帮助理解近期变化、长期模式和下一步行动；计划扩展授权健康数据，餐食照片分析暂缓。
 
-**当前阶段：持续保留与串联知识。** 已有离线记录、DeepSeek 受控分析与核对、知识发布、行动回看、画像维护等后端及首轮页面；本轮修复无关资料影响旧知识与删除清理范围，补齐系统另存，连接主题、经历、经验与行动。健康数据和华为接入待验证，餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，真实模型、自动测试与模拟器分别记录。仓库管理代码和设计，个人资料保存在应用数据区。
+**当前阶段：跨周串联经验与历史纠正。** 已有离线记录、DeepSeek 受控分析与核对、知识发布、行动回看、画像维护等后端及首轮页面；已修复无关资料影响旧知识与手机导出，现已接通经验变化过程、历史意见对照和长期分析归档。健康数据和华为接入待验证，餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，真实模型、自动测试与模拟器分别记录。仓库管理代码和设计，个人资料保存在应用数据区。
 
-手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.4/trace-life-0.1.0-preview.4.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#知识持续积累优化验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
+手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.5/trace-life-0.1.0-preview.5.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#跨期经验与历史意见验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
 
-**用户旅程优化（2026-10-20）：** 根据[评审报告](docs/reviews/2026-10-20-user-knowledge-journey-review.md)修复保存与有效性混淆，新增范围维护、按依赖删除、主题阅读、经验到行动和手机文件交付。跨任务经验演化、长期任务归档、主题概况与画像维护的完整手机流程仍未完成；本轮范围见[实施计划](docs/plans/2026-10-20-durable-knowledge-journey.md)。
+**用户旅程优化（2026-10-20）：** 根据[评审报告](docs/reviews/2026-10-20-user-knowledge-journey-review.md)修复保存与有效性混淆，新增范围维护、按依赖删除、主题阅读、经验到行动和手机文件交付。经验演化、历史意见与任务归档已按[新一轮设计](docs/superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)接通；主题概况与画像维护等剩余流程仍在后续范围。
 
 ## 当前可用功能
 
@@ -16,6 +16,7 @@
 - 将图片作为受管附件保存；当前阶段尚不识别食物或生成 AI 分析。
 - 界面采用原生控件与单色设计语言：固定顶栏、侧边导航、内容优先的记录页、按需展开的筛选与补充信息，支持浅色／深色模式。设计与范围见[移动端优化](docs/superpowers/specs/2026-10-19-mobile-ui-polish-design.md)。
 - 首页可直接分析今天、近 7／30 天或自选日期的记录，查看经验、值得关注的问题和下一步建议；进度与历史可恢复，结果可查看依据、否定或确认后核对保存。知识库按主题连接经历与经验，默认保留待更新内容；有效知识可明确采纳为行动，再记录回看。
+- 同一经验可串联后续的补充、例外、收窄和替代，保留变化过程与用户说明；新分析带入预算内历史意见，保存前分页逐项对照；任务可归档与恢复，保留知识和依据。详情见[经验线索](docs/EXPERIENCE_CONTINUITY.md)、[历史意见](docs/HISTORICAL_FEEDBACK.md)和[分析归档](docs/TASK_ARCHIVE.md)。
 - 看板、核对与整理、知识库、行动实验、周期复盘材料、个人画像、备份与导出及设置（DeepSeek 密钥、后台增量整理）页面已接入对应后端接口；新增[主动分析](docs/REFLECTION.md)已接通文字综合、跨批归并、原文查阅与确认后保存；画像维护、纵向画像与行动周期分析流程及图表渲染仍后置。
 
 数据转移支持手机系统另存和完整本机副本重试：可移植口令加密备份、带预览与版本检查的恢复、分层 Markdown／JSONL 阅读包，以及指定问题／范围的证据包。用法、格式与限制见[数据转移接口](docs/DATA_TRANSFER.md)。完整备份保留修订、旧模板绑定、附件与删除记录；阅读包明确不用于恢复。
@@ -79,7 +80,7 @@ flowchart TD
     Store --> Export[完整备份 / 知识包 / 任务证据包]
 ```
 
-资料保存在本地；用户已选择 DeepSeek 云端模型，调用时会发送本次任务选中的原文片段、已登记的派生草稿或程序指标；画像维护还会按预算读取历史描述和相关用户反馈作为控制背景，行动周期分析读取已登记的计划与回看。凭据独立加密保存，不进入备份或 APK；供应商资料处理依据与限制见[接入调研](docs/research/2026-10-17-deepseek-integration.md)。
+资料保存在本地；用户已选择 DeepSeek 云端模型，调用时会发送本次任务选中的原文片段、已登记的派生草稿或程序指标；普通主动分析及画像维护还会按预算读取历史描述和相关用户反馈作为控制背景，行动周期分析读取已登记的计划与回看。凭据独立加密保存，不进入备份或 APK；供应商资料处理依据与限制见[接入调研](docs/research/2026-10-17-deepseek-integration.md)。
 
 ## 文档入口
 
@@ -108,4 +109,4 @@ flowchart TD
 | 由 AI Agent 继续工作 | [AGENTS.md](AGENTS.md) |
 | 提交问题、修改文档或代码 | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-当前采用 Kotlin、Android 系统控件和 SQLiteOpenHelper，最低支持 Android 8.0（API 26），编译与目标 API 36。备份采用口令派生密钥与 AES-GCM；当前自动测试、lint、APK 及真实调用结果统一见[本轮验证记录](docs/plans/2026-10-19-action-report-export.md#验证记录)。真实 API 测试默认关闭，分次合成样本验证不能代替更广泛的分析质量评估或实体手机验收。
+当前采用 Kotlin、Android 系统控件和 SQLiteOpenHelper，最低支持 Android 8.0（API 26），编译与目标 API 36。备份采用口令派生密钥与 AES-GCM；当前自动测试、lint、APK 及真实调用结果统一见[开发验证记录](docs/DEVELOPMENT.md)。真实 API 测试默认关闭，分次合成样本验证不能代替更广泛的分析质量评估或实体手机验收。

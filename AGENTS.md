@@ -17,6 +17,9 @@
 | 正式知识发布、知识索引或记录覆盖指标 | [知识与指标接口](docs/KNOWLEDGE.md)、[第四阶段计划](docs/plans/2026-10-17-knowledge-publication.md)；持久化和导出同时读数据转移接口 |
 | 自动整理、周期材料或报告导出 | [周期材料接口](docs/PERIOD_REFLECTION.md)、[第五阶段计划](docs/plans/2026-10-17-period-reflection.md) |
 | 主动分析入口、进度、发现保存或分析历史 | [主动分析接口](docs/REFLECTION.md)、[闭环设计](docs/superpowers/specs/2026-10-20-visible-reflection-design.md)；涉及模型调用同时读检索协议 |
+| 经验关联、补充／例外／收窄／替代或形成过程 | [经验线索](docs/EXPERIENCE_CONTINUITY.md)、[跨期积累设计](docs/superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)；恢复或导出同时读数据转移接口 |
+| 普通分析继承历史意见、逐项对照或反馈依赖清理 | [历史意见](docs/HISTORICAL_FEEDBACK.md)、检索协议；同时检查原文核对与知识发布门槛 |
+| 分析归档、任务容量或历史分页 | [分析归档](docs/TASK_ARCHIVE.md)；恢复同时读数据转移接口 |
 | 综合判断、行动采纳、回看或行动修订 | [综合与行动接口](docs/SYNTHESIS_ACTIONS.md)、[第六阶段计划](docs/plans/2026-10-17-synthesis-actions.md)；持久化与恢复同时读数据转移接口 |
 | 跨批归并、周期草稿或派生依赖 | [分层周期草稿接口](docs/PERIOD_REDUCTION.md)、[第七阶段计划](docs/plans/2026-10-19-period-reduction.md)；备份变更同时读数据转移接口 |
 | 周期草稿核对、归并反馈、正式发布或后代清理 | [周期原文核对接口](docs/PERIOD_REVIEW.md)、[第八阶段计划](docs/plans/2026-10-19-period-review-publication.md)；删除或恢复同时读数据转移接口 |

@@ -47,7 +47,7 @@ object BackupArchive {
     const val KDF_ITERATIONS = 600_000
     const val CHUNK_BYTES = 1024 * 1024
     const val HEADER_BYTES = 48
-    const val MAX_METADATA_BYTES = 32L * 1024 * 1024
+    const val MAX_METADATA_BYTES = 128L * 1024 * 1024
     const val MAX_MANIFEST_BYTES = 16L * 1024 * 1024
     const val MAX_ATTACHMENT_BYTES = 20L * 1024 * 1024
     const val MAX_TOTAL_BYTES = 1024L * 1024 * 1024

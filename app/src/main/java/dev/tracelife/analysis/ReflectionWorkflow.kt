@@ -32,6 +32,7 @@ data class ReflectionFinding(
     /** Durable saved identity; source or feedback changes do not undo the user's save. */
     val knowledgeId: String?,
     val knowledgeEvidenceState: KnowledgeEvidenceState? = null,
+    val historicalFeedback: HistoricalFeedbackCoverage = HistoricalFeedbackCoverage(0, 0, 0, 0),
 )
 
 data class ReflectionRun(
@@ -48,7 +49,10 @@ data class ReflectionRun(
     val unknowns: List<String>,
     /** Complete, current findings only. A failed review can still be resumed explicitly. */
     val canReviewFindings: Boolean,
+    val archivedAt: Instant? = null,
 )
+
+data class ReflectionHistoryPage(val items: List<ReflectionRun>, val nextOffset: Int?)
 
 data class ReflectionPass(val run: ReflectionRun, val modelRequestsThisPass: Int, val status: ReflectionStatus)
 data class ReflectionEvidencePage(val items: List<EvidenceReceipt>, val total: Int, val nextOffset: Int?)
@@ -66,14 +70,37 @@ class ReflectionWorkflow(
     private val reduction = PeriodReductionProcessor(analysis)
     private val review = PeriodReductionReviewProcessor(analysis)
 
-    fun start(scope: AnalysisQuery, limits: AnalysisLimits = AnalysisLimits()): ReflectionRun =
-        inspect(analysis.start(AnalysisRequest(QUESTION, scope, limits), PREFIX + UUID.randomUUID()).stored.id)
+    fun start(scope: AnalysisQuery, limits: AnalysisLimits = AnalysisLimits()): ReflectionRun {
+        val source = repository.analysisSourceStamp()
+        val focus = FeedbackContextCatalog(repository).routeTopics(source, scope)
+        return inspect(analysis.start(AnalysisRequest(QUESTION, scope, limits, focusTopics = focus,
+            inheritHistoricalFeedback = true), PREFIX + UUID.randomUUID()).stored.id)
+    }
 
     /** Filtering happens before limiting: unrelated extraction/profile tasks cannot hide history. */
     fun history(limit: Int = 20, offset: Int = 0): List<ReflectionRun> {
         require(limit in 1..100 && offset >= 0)
-        return analysis.tasks(limit = 100).filter { isReflection(it) }
-            .sortedByDescending { it.stored.createdAt }.drop(offset).take(limit).map { inspect(it.stored.id) }
+        return historyPage(false, offset, limit).items
+    }
+
+    fun historyPage(archived: Boolean = false, offset: Int = 0, limit: Int = 20): ReflectionHistoryPage {
+        require(limit in 1..100 && offset >= 0)
+        val page = repository.analysisRunIndex(PREFIX, archived, offset, limit)
+        val next = (offset + page.size).takeIf { page.size == limit && repository.analysisRunIndex(PREFIX, archived, it, 1).isNotEmpty() }
+        return ReflectionHistoryPage(page.map { inspect(it.id) }, next)
+    }
+
+    fun archive(runId: String, expectedRunVersion: Int): ReflectionRun {
+        val task = task(runId)
+        require(task.stored.version == expectedRunVersion && task.state.calls.none { it.status == CallStatus.IN_FLIGHT })
+        repository.archiveAnalysisRun(runId, expectedRunVersion)
+        return inspect(runId)
+    }
+
+    fun unarchive(runId: String, expectedRunVersion: Int): ReflectionRun {
+        task(runId)
+        repository.unarchiveAnalysisRun(runId, expectedRunVersion)
+        return inspect(runId)
     }
 
     fun inspect(runId: String): ReflectionRun {
@@ -122,7 +149,8 @@ class ReflectionWorkflow(
             ReflectionStatus.BUDGET_EXHAUSTED else status
         ensureUnchanged(task)
         return ReflectionRun(runId, task.stored.createdAt, task.state.request.scope, finalStatus, task.stored.version,
-            progress.coverage, leaves.size, nodes.size, task.state.calls.size, rows, unknowns, reviewable)
+            progress.coverage, leaves.size, nodes.size, task.state.calls.size, rows, unknowns,
+            reviewable && task.stored.archivedAt == null, task.stored.archivedAt)
     }
 
     /** A single shared pass limit spans original synthesis and all reduction levels. */
@@ -169,14 +197,40 @@ class ReflectionWorkflow(
 
     fun respond(runId: String, target: ReflectionTarget, expectedRunVersion: Int,
         decision: ClaimFeedbackDecision, expectedFeedbackVersion: Int? = null,
+        userText: String? = null,
     ): ReflectionRun {
-        requireCurrentFinding(runId, target)
+        val current = task(runId)
+        if (current.stored.archivedAt != null && decision != ClaimFeedbackDecision.CONFIRMED) {
+            currentTask(runId)
+            require(current.state.calls.none { it.status == CallStatus.IN_FLIGHT } &&
+                ReductionGraph.matchesFeedbackTarget(current.state, claimRef(target))) { "发现身份已变化" }
+        } else requireCurrentFinding(runId, target)
         when (target) {
             is ReflectionTarget.Claim -> feedback.respond(runId, target.ref, expectedRunVersion, decision,
-                expectedVersion = expectedFeedbackVersion)
+                expectedVersion = expectedFeedbackVersion, userText = userText)
             is ReflectionTarget.Reduction -> feedback.respondReduction(runId, target.ref, expectedRunVersion, decision,
-                expectedVersion = expectedFeedbackVersion)
+                expectedVersion = expectedFeedbackVersion, userText = userText)
         }
+        return inspect(runId)
+    }
+
+    /** Trusted UI read, separate from model evidence. Every related constraint is reachable. */
+    fun historicalFeedbackPage(runId: String, target: ReflectionTarget, offset: Int = 0, limit: Int = 16): HistoricalFeedbackPage {
+        require(offset >= 0 && limit in 1..100)
+        val task = currentTask(runId)
+        val refs = task.state.feedbackContext?.references.orEmpty()
+        require(ReductionGraph.matchesFeedbackTarget(task.state, claimRef(target)))
+        val catalog = FeedbackContextCatalog(repository)
+        val items = refs.drop(offset).take(limit).map { ref -> HistoricalFeedbackCheck(catalog.resolve(ref),
+            FeedbackContextProtocol.latest(task.state, claimRef(target), ref.id)) }
+        ensureUnchanged(task)
+        return HistoricalFeedbackPage(items, refs.size, (offset + items.size).takeIf { it < refs.size })
+    }
+
+    fun resolveHistoricalFeedback(runId: String, target: ReflectionTarget, feedbackId: String, expectedRunVersion: Int,
+        choice: HistoricalFeedbackChoice, reason: String, expectedResolutionVersion: Int? = null): ReflectionRun {
+        requireCurrentFinding(runId, target)
+        analysis.resolveHistoricalFeedback(runId, claimRef(target), feedbackId, expectedRunVersion, choice, reason, expectedResolutionVersion)
         return inspect(runId)
     }
 
@@ -189,6 +243,8 @@ class ReflectionWorkflow(
         require(maxRequests in 1..100)
         require(topics.size <= 30 && topics.all { it.isNotBlank() && it.length <= 80 })
         requireCurrentFinding(runId, target)
+        val history = FeedbackContextProtocol.coverage(task(runId).state, claimRef(target))
+        if (history.resolved != history.total) throw AnalysisDependencyBlockedException("请先逐项对照历史意见；存在未处理或冲突")
         val decision = decision(runId, target)
         require(decision?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED && decision.evidenceState == FeedbackEvidenceState.CURRENT) {
             "请先确认这条发现；未确认或已否定的内容不能保存"
@@ -209,7 +265,8 @@ class ReflectionWorkflow(
                             }
                         }
                         val key = "reflection-review-v1-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(
-                            target.ref.batchKey, target.ref.claimIndex, target.ref.claimSha256, decision.feedback.version)))
+                            target.ref.batchKey, target.ref.claimIndex, target.ref.claimSha256, decision.feedback.version) +
+                            listOfNotNull(FeedbackContextProtocol.reviewHash(task(runId).state, target.ref))))
                         analysis.reviewClaim(runId, key, target.ref, provider = counted)
                         onProgress(inspect(runId))
                     }
@@ -303,7 +360,7 @@ class ReflectionWorkflow(
         }
         val saved = knowledge.get(KnowledgeValidation.idFor(runId, claimRef(target)))
         return ReflectionFinding(target, text, decision(runId, target), verdict, progress,
-            saved?.value?.id, saved?.evidenceState)
+            saved?.value?.id, saved?.evidenceState, FeedbackContextProtocol.coverage(task.state, claimRef(target)))
     }
 
     private fun decision(runId: String, target: ReflectionTarget) = when (target) {
