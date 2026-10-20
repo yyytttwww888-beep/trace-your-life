@@ -42,6 +42,7 @@ class TraceLifeApplication : Application() {
     val periodSynthesis by lazy { PeriodSynthesisProcessor(analysis) }
     val periodReduction by lazy { PeriodReductionProcessor(analysis) }
     val periodReview by lazy { PeriodReductionReviewProcessor(analysis) }
+    val reflectionWorkflow by lazy { dev.tracelife.analysis.ReflectionWorkflow(repository, analysis, analysisFeedback, knowledge) }
     val actions by lazy { ActionExperiments(repository) }
     val actionPeriodReflection by lazy { dev.tracelife.actions.ActionPeriodReflection(analysis) }
     val dashboard by lazy { DashboardService(repository) }

@@ -2,17 +2,23 @@ package dev.tracelife.ui
 
 import android.content.Intent
 import android.view.View
+import android.widget.AdapterView
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import dev.tracelife.analysis.ClaimKind
+import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.EvidenceReceipt
 import dev.tracelife.analysis.ReviewIssue
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.knowledge.KnowledgeFilter
 import dev.tracelife.knowledge.KnowledgeIndexPage
+import dev.tracelife.knowledge.KnowledgeView
+import dev.tracelife.MainActivity
 import dev.tracelife.storage.ClaimFeedbackDecision
 import dev.tracelife.storage.KnowledgeCategory
+import dev.tracelife.storage.KnowledgeValidation
 import dev.tracelife.transfer.StaleSnapshotException
 
 class KnowledgeActivity : ScreenActivity() {
@@ -20,13 +26,31 @@ class KnowledgeActivity : ScreenActivity() {
     private var filterThrough = ""
     private var filterTopic = ""
     private var includeInvalid = false
+    private var category: KnowledgeCategory? = KnowledgeCategory.INSIGHT
     private var includeInvalidCheck: CheckBox? = null
     private val filterFields = linkedMapOf<String, EditText>()
     private var currentPage: KnowledgeIndexPage? = null
     private var detailId: String? = null
     private var detailRevision: Int? = null
+    private var refreshOnResume = false
 
     override fun showHome() = showIndex()
+
+    override fun onPause() {
+        super.onPause()
+        refreshOnResume = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (refreshOnResume && !busy) {
+            refreshOnResume = false
+            when (screen) {
+                "index" -> loadIndex()
+                "detail" -> detailId?.let { showDetail(it, detailRevision) }
+            }
+        }
+    }
 
     override fun navigateBack() {
         if (busy) return
@@ -42,13 +66,27 @@ class KnowledgeActivity : ScreenActivity() {
         detailId = null
         detailRevision = null
         beginScreen("index", "知识库", showBack = false)
+        Ui.note(root, "已保存的发现、经验与记录观察，可以在这里回看依据。")
+        primaryButton("分析记录", "analyzeRecords") { startActivity(Intent(this, ReflectionActivity::class.java)) }
+        val categories = listOf(KnowledgeCategory.INSIGHT, KnowledgeCategory.KNOWLEDGE_NOTE, KnowledgeCategory.OBSERVATION, null)
+        spinner(categories.map { it?.let(::categoryLabel) ?: "全部条目" }, categories.indexOf(category), "knowledgeCategory").also { choices ->
+            choices.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (category != categories[position]) {
+                        category = categories[position]
+                        loadIndex()
+                    }
+                }
+            }
+        }
         Ui.disclosure(root, "筛选知识", "knowledgeFilters", expanded = filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank() || includeInvalid) { filters ->
             Ui.note(filters, "按分析所涉及的日期和主题查找。")
             filterFields.clear()
             filterFields["from"] = labeledFieldIn(filters, "从哪天起", "YYYY-MM-DD · 可留空", filterFrom)
             filterFields["through"] = labeledFieldIn(filters, "到哪天", "YYYY-MM-DD · 可留空", filterThrough)
             filterFields["topic"] = labeledFieldIn(filters, "主题", "可留空", filterTopic)
-            includeInvalidCheck = checkIn(filters, "也看已失效的条目", includeInvalid)
+            includeInvalidCheck = checkIn(filters, "包含待更新与过期条目", includeInvalid)
             primaryIn(filters, "应用筛选", "applyFilter") {
                 captureFilters()
                 loadIndex()
@@ -73,15 +111,16 @@ class KnowledgeActivity : ScreenActivity() {
                 from = from,
                 through = through,
                 topics = filterTopic.trim().ifEmpty { null }?.let { setOf(it) },
+                category = category,
                 includeInvalid = includeInvalid,
             )
         } catch (failure: IllegalArgumentException) {
             showError(failure)
             return
         }
-        runIo({ app.knowledge.index(filter, PAGE_SIZE) }) { page ->
-            currentPage = page
-            renderIndexPage(page)
+        runIo({ readPage(app.knowledge.index(filter, PAGE_SIZE)) }) { result ->
+            currentPage = result.page
+            renderIndexPage(result)
         }
     }
 
@@ -89,7 +128,7 @@ class KnowledgeActivity : ScreenActivity() {
         val page = currentPage ?: return
         runIo({
             try {
-                app.knowledge.next(page)
+                readPage(app.knowledge.next(page))
             } catch (stale: StaleSnapshotException) {
                 null
             }
@@ -98,33 +137,62 @@ class KnowledgeActivity : ScreenActivity() {
                 toast("内容有更新，已刷新列表")
                 loadIndex()
             } else {
-                currentPage = next
+                currentPage = next.page
                 renderIndexPage(next)
             }
         }
     }
 
-    private fun renderIndexPage(page: KnowledgeIndexPage) {
+    /** Only this page's bodies are read for local display; the model receives none of them. */
+    private fun readPage(page: KnowledgeIndexPage): DisplayPage {
+        val counts = app.knowledge.index(page.filter.copy(category = null, includeInvalid = false), limit = 1)
+        val entries = page.items.map { item ->
+            val entry = app.knowledge.get(item.id, item.revision)
+                ?: throw StaleSnapshotException("知识已变化，请刷新列表")
+            if (!entry.isCurrentRevision || entry.evidenceState != item.evidenceState)
+                throw StaleSnapshotException("知识状态已变化，请刷新列表")
+            entry
+        }
+        if (counts.source != page.source || counts.analysisGeneration != page.analysisGeneration ||
+            app.repository.analysisSourceStamp() != page.source || app.repository.currentAnalysisGeneration() != page.analysisGeneration)
+            throw StaleSnapshotException("知识已变化，请刷新列表")
+        return DisplayPage(page, entries, counts.total, counts.omittedInvalid)
+    }
+
+    private fun renderIndexPage(result: DisplayPage) {
+        val page = result.page
         root.findViewWithTag<View>("knowledgeResults")?.let { root.removeView(it) }
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "knowledgeResults" }
         root.addView(results)
-        val summary = StringBuilder("共 ${page.total} 条")
-        if (page.omittedInvalid > 0) summary.append(" · ${page.omittedInvalid} 条已失效，筛选中可查看")
-        Ui.note(results, summary.toString())
-        if (page.items.isEmpty()) {
-            val empty = Ui.card(results)
-            emptyState(empty, "还没有积累到这里。\n从日常记录中整理出的观察与经验，会保存在知识库。")
-            addButton(empty, "去整理记录", "navReview") { startActivity(Intent(this, ReviewActivity::class.java)) }
-        } else {
-            Ui.disclosure(results, "整理更多记录", "knowledgeOrganize") { organize ->
-                Ui.note(organize, "整理并核对记录后，可以保存新的知识。")
-                addButton(organize, "去整理记录", "navReview") { startActivity(Intent(this, ReviewActivity::class.java)) }
+        Ui.note(results, "当前条目 ${result.currentCount} 条 · 待更新或过期 ${result.invalidCount} 条")
+        if (result.invalidCount > 0 && !includeInvalid) {
+            addButton(results, "查看待更新与历史条目", "showPendingKnowledge") {
+                captureFilters()
+                includeInvalid = true
+                category = null
+                showIndex()
             }
         }
-        page.items.forEach { item ->
+        if (includeInvalid) Ui.note(results, "当前与待更新条目一同显示。待更新或过期的内容仅供回顾，不能作为当前结论。")
+        Ui.sectionTitle(results, "${category?.let(::categoryLabel) ?: "全部条目"} · ${page.total}")
+        if (page.items.isEmpty()) {
+            val empty = Ui.card(results)
+            emptyState(empty, when (category) {
+                KnowledgeCategory.INSIGHT -> "这里还没有已保存的发现。\n点击「分析记录」，查看值得保留的经验、需要留意的问题和下一步建议；确认后再保存。"
+                KnowledgeCategory.KNOWLEDGE_NOTE -> "这里还没有已保存的经验与知识。\n它们是可以再次使用的方法或经验，和记录观察分别保存。"
+                KnowledgeCategory.OBSERVATION -> "这里还没有记录观察。\n观察描述发生过什么，不代表已经形成新的发现。"
+                null -> "这个范围内还没有知识条目。\n可以调整筛选，或点击「分析记录」开始。"
+            })
+            if (result.currentCount > 0) Ui.note(empty, "其他类型的条目可在上方切换查看。")
+        }
+        result.entries.forEach { view ->
+            val item = view.value
+            val wording = item.claim.text.trim().replace(Regex("\\s+"), " ")
+            val preview = if (wording.codePointCount(0, wording.length) > 160)
+                wording.substring(0, wording.offsetByCodePoints(0, 160)) + "…" else wording
             listRow(
                 results,
-                "${item.topics.joinToString("、").ifEmpty { "未分类" }} · ${categoryLabel(item.category)}\n${item.from} — ${item.through} · ${evidenceStateLabel(item.evidenceState)}",
+                "$preview\n${categoryLabel(item.category)}${item.topics.takeIf { it.isNotEmpty() }?.joinToString("、", prefix = " · ") ?: ""} · ${evidenceStateLabel(view.evidenceState)}\n分析范围 ${item.scope.from} — ${item.scope.through}",
                 "knowledge:${item.id}",
             ) {
                 showDetail(item.id)
@@ -142,8 +210,9 @@ class KnowledgeActivity : ScreenActivity() {
         }) { view ->
             val value = view.value
             Ui.card(root).also { card ->
-                Ui.note(card, "${categoryLabel(value.category)} · ${value.topics.joinToString("、").ifEmpty { "未分类" }}")
+                Ui.note(card, categoryLabel(value.category) + value.topics.takeIf { it.isNotEmpty() }?.joinToString("、", prefix = " · ").orEmpty())
                 if (!view.isCurrentRevision) Ui.note(card, "正在查看历史版本。")
+                if (view.evidenceState != KnowledgeEvidenceState.CURRENT) Ui.note(card, "这条内容需要重新分析或核对，暂不作为当前结论。")
                 Ui.body(card, value.claim.text)
                 chipsRow(card).also { row ->
                     chip(row, evidenceStateLabel(view.evidenceState), evidenceStateTone(view.evidenceState))
@@ -167,14 +236,25 @@ class KnowledgeActivity : ScreenActivity() {
                 if (value.review.issues.isNotEmpty()) Ui.note(card, "需要留意：${value.review.issues.joinToString("、") { issueLabel(it) }}")
                 value.review.unknowns.forEach { Ui.note(card, "· $it") }
             }
-            Ui.disclosure(root, "来源线索 · ${value.evidence.size} 处", "knowledgeEvidence") { card ->
-                Ui.note(card, "保留原始记录的位置，便于追溯。本页只展示引用位置。")
+            Ui.disclosure(root, "查看依据", "knowledgeEvidence") { card ->
+                Ui.note(card, "核对引用的原文 · ${value.evidence.size} 处")
+                Ui.note(card, "按需查看核对时读取的原文。来源发生变化后，需要重新分析。")
+                val scanned = KnowledgeValidation.allEvidence(value).size - value.evidence.distinctBy { it.id }.size
+                if (scanned > 0) Ui.note(card, "来源扫描另包含 $scanned 处原文；这里展示最终核对读取的部分。")
+                val actions = KnowledgeValidation.allActionEvidence(value).size
+                if (value.metricEvidence.isNotEmpty() || actions > 0) {
+                    Ui.note(card, "另有 ${value.metricEvidence.size} 份统计依据、$actions 份行动依据。本页暂未展开这两类材料，原文数量不代表全部依据。")
+                }
                 value.evidence.forEachIndexed { index, receipt ->
-                    Ui.note(card, "来源 ${index + 1} · 第 ${receipt.revision} 版 · 第 ${receipt.start + 1}–${receipt.end} 字")
-                    Ui.disclosure(card, "查看引用标识", "knowledgeReceipt:${receipt.id}") { identity ->
+                    val source = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                    card.addView(source)
+                    Ui.note(source, "来源 ${index + 1} · 第 ${receipt.revision} 版 · 第 ${receipt.start + 1}–${receipt.end} 字")
+                    addButton(source, "查看这段原文", "readEvidence:${receipt.id}") { showEvidence(id, value.revision, receipt, source) }
+                    Ui.disclosure(source, "引用位置", "knowledgeReceipt:${receipt.id}") { identity ->
                         Ui.note(identity, "记录 ${receipt.recordId}\n内容 ${receipt.field}\n引用 ${receipt.id}")
                     }
                 }
+                addButton(card, "查看原始记录", "navRecords") { startActivity(Intent(this, MainActivity::class.java)) }
             }
             card().also { actions ->
                 addButton(actions, "版本历史", "history") { showHistory(id) }
@@ -193,6 +273,29 @@ class KnowledgeActivity : ScreenActivity() {
                     addButton(actions, "查看最新版本", "currentRevision") { showDetail(id) }
                 }
             }
+        }
+    }
+
+    private fun showEvidence(id: String, revision: Int, receipt: EvidenceReceipt, parent: LinearLayout) {
+        val resultTag = "evidenceText:${receipt.id}"
+        parent.findViewWithTag<View>(resultTag)?.let(parent::removeView)
+        runIo({
+            val view = app.knowledge.get(id, revision)
+            if (view == null || receipt !in view.value.evidence || view.evidenceState != KnowledgeEvidenceState.CURRENT) {
+                "这份依据已发生变化、过期或不可用。请重新分析后查看当前原文。"
+            } else {
+                val fragment = app.repository.analysisSourceFragment(view.value.source, view.value.scope,
+                    receipt.recordId, receipt.field, receipt.start, receipt.end - receipt.start)
+                if (fragment.revision != receipt.revision || fragment.end != receipt.end ||
+                    fragment.totalCodePoints != receipt.totalCodePoints || AnalysisRunCodec.sha256(fragment.text) != receipt.sha256)
+                    throw StaleSnapshotException("引用与当前原文不一致，请重新分析")
+                val latest = app.knowledge.get(id, revision)
+                if (latest?.evidenceState != KnowledgeEvidenceState.CURRENT)
+                    throw StaleSnapshotException("依据已变化，请重新分析")
+                fragment.question?.let { "$it\n\n${fragment.text}" } ?: fragment.text
+            }
+        }) { wording ->
+            Ui.body(parent, wording).tag = resultTag
         }
     }
 
@@ -239,9 +342,9 @@ class KnowledgeActivity : ScreenActivity() {
     }
 
     private fun categoryLabel(category: KnowledgeCategory) = when (category) {
-        KnowledgeCategory.OBSERVATION -> "观察"
-        KnowledgeCategory.KNOWLEDGE_NOTE -> "知识"
-        KnowledgeCategory.INSIGHT -> "洞察"
+        KnowledgeCategory.OBSERVATION -> "记录观察"
+        KnowledgeCategory.KNOWLEDGE_NOTE -> "经验与知识"
+        KnowledgeCategory.INSIGHT -> "发现"
     }
 
     private fun kindLabel(kind: ClaimKind) = when (kind) {
@@ -283,4 +386,6 @@ class KnowledgeActivity : ScreenActivity() {
     companion object {
         private const val PAGE_SIZE = 25
     }
+
+    private data class DisplayPage(val page: KnowledgeIndexPage, val entries: List<KnowledgeView>, val currentCount: Int, val invalidCount: Int)
 }

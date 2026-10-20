@@ -1,6 +1,6 @@
 # 有界综合与行动实验接口
 
-本阶段对多条原文生成新的对照、解释和改进假设，并保存用户明确选定的行动及后续回看。它建立在[周期复盘材料](PERIOD_REFLECTION.md)、[受控分析](CONTROLLED_ANALYSIS.md)和[核对反馈](CLAIM_REVIEW.md)之上。实施与实际验证见[第六阶段计划](plans/2026-10-17-synthesis-actions.md)。所有接口在后台线程调用，尚未接入页面。
+本阶段对多条原文生成新的对照、解释和改进假设，并保存用户明确选定的行动及后续回看。它建立在[周期复盘材料](PERIOD_REFLECTION.md)、[受控分析](CONTROLLED_ANALYSIS.md)和[核对反馈](CLAIM_REVIEW.md)之上。实施与实际验证见[第六阶段计划](plans/2026-10-17-synthesis-actions.md)。所有接口在后台线程调用；文字综合、跨批归并和确认后保存已由[主动分析页面](REFLECTION.md)接入，行动编辑和回看有独立页面。
 
 ## 综合原始资料
 

@@ -48,7 +48,8 @@ object AppNavigation {
         Ui.sectionTitle(panel, "日常")
         row("记录", "navRecords") { }
         row("复盘模板", "navTemplates", templates)
-        destination("整理", "navReview", ReviewActivity::class.java)
+        destination("分析", "navReflection", ReflectionActivity::class.java)
+        destination("逐条整理", "navReview", ReviewActivity::class.java)
         Ui.sectionTitle(panel, "回看")
         destination("趋势", "navDashboard", DashboardActivity::class.java)
         destination("行动", "navActions", ActionsActivity::class.java)

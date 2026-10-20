@@ -53,6 +53,11 @@ class PeriodActivity : ScreenActivity() {
         }
         primaryIn(form, "查看回顾", "openReport") { openReport() }
         Ui.note(form, "这里只汇集已有材料，不生成新的判断。")
+        primaryButton("分析这段时间", "analyzePeriod") {
+            startActivity(android.content.Intent(this, ReflectionActivity::class.java)
+                .putExtra(ReflectionActivity.EXTRA_FROM, fromField?.text?.toString().orEmpty())
+                .putExtra(ReflectionActivity.EXTRA_THROUGH, throughField?.text?.toString().orEmpty()))
+        }
     }
 
     override fun navigateBack() {
