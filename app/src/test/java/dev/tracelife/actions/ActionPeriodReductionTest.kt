@@ -104,6 +104,20 @@ class ActionPeriodReductionTest {
         assertEquals(0, envelope.getJSONArray("evidence").length())
         assertEquals(2, envelope.getJSONArray("actionEvidence").length())
         assertTrue(envelope.getBoolean("actionPeriod"))
+        val coverage = envelope.getJSONObject("coverage")
+        assertTrue(coverage.getBoolean("allScopeTextProvided"))
+        assertEquals(0, coverage.getInt("scopeAttachments"))
+        assertEquals(0, coverage.getInt("attachmentsRead"))
+        assertFalse(coverage.getBoolean("semanticallyVerified"))
+        assertTrue(coverage.getBoolean("fullyScanned"))
+        assertEquals(3, coverage.getJSONObject("actionEvents").getInt("total"))
+        assertEquals(2, coverage.getJSONObject("actionEvents").getInt("provided"))
+        assertFalse(coverage.getJSONObject("actionEvents").getBoolean("allScopeProvided"))
+        assertEquals(listOf(2, 1), scanner.requests.map { it.getJSONObject("coverage").getJSONObject("actionEvents").getInt("provided") })
+        scanner.requests.forEach { scan ->
+            assertFalse(scan.getJSONObject("coverage").getJSONObject("actionEvents").getBoolean("allScopeProvided"))
+            assertEquals(0, scan.getJSONObject("coverage").getInt("scopeAttachments"))
+        }
         val knowledge = publish(target)
         assertEquals(2, knowledge.actionEvidence.size)
         assertEquals(3, requireNotNull(knowledge.reductionProof).originalActionEvidence.size)
@@ -190,6 +204,11 @@ class ActionPeriodReductionTest {
         assertEquals(ReductionReviewStatus.SUPPORTED, result.status)
         assertEquals(0, reviewer.requests.single().getJSONArray("actionEvidence").length())
         assertTrue(reviewer.requests.single().getBoolean("actionPeriod"))
+        val coverage = reviewer.requests.single().getJSONObject("coverage")
+        assertTrue(coverage.getBoolean("allScopeTextProvided"))
+        assertEquals(0, coverage.getJSONObject("actionEvents").getInt("provided"))
+        assertEquals(2, coverage.getJSONObject("actionEvents").getInt("total"))
+        assertFalse(coverage.getJSONObject("actionEvents").getBoolean("allScopeProvided"))
         val value = publish(target)
         assertTrue(value.actionEvidence.isEmpty())
         assertEquals(2, KnowledgeValidation.allActionEvidence(value).size)
@@ -264,9 +283,10 @@ class ActionPeriodReductionTest {
     private class Scanner(private val classify: (JSONObject) -> ReductionRelevance) : SemanticReductionScanProvider {
         override val id = "synthetic-action-scan"
         override val contextWindowTokens = 200_000
+        val requests = mutableListOf<JSONObject>()
         override fun prepareScan(request: ModelRequest) = PreparedModelRequest(request, request.payloadJson, 100)
         override fun scanPrepared(request: PreparedModelRequest): ReductionScanCompletion {
-            val root = JSONObject(request.original.payloadJson)
+            val root = JSONObject(request.original.payloadJson).also(requests::add)
             assertTrue(root.getBoolean("actionPeriod"))
             val inputs = root.optJSONArray("evidence").objects() + root.optJSONArray("actionEvidence").objects()
             return ReductionScanCompletion(ReductionScanResult(inputs.map { ReductionFinding(it.getString("id"), classify(it), "合成分类依据") }))

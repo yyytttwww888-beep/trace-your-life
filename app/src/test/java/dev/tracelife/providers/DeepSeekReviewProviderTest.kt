@@ -30,7 +30,7 @@ class DeepSeekReviewProviderTest {
     private val contradictingId = "b".repeat(64)
     private val syntheticKey = "synthetic-review-key"
     private val request = ModelRequest(AnalysisRunCodec.json(mapOf(
-        "target" to mapOf("text" to "合成提案：我每晚睡眠充足", "kind" to "REPORTED_EXPERIENCE"),
+        "target" to mapOf("text" to "合成提案：周一觉得睡够了；我每晚睡眠充足", "kind" to "REPORTED_EXPERIENCE"),
         "feedback" to mapOf("version" to 1, "decision" to "CONFIRM", "userText" to "合成反馈：我确认"),
         "evidence" to listOf(
             mapOf("id" to supportingId, "text" to "合成记录：周一我觉得睡够了。"),
@@ -59,7 +59,7 @@ class DeepSeekReviewProviderTest {
         }
         val prepared = provider.prepareReview(request)
         val json = JSONObject(prepared.payloadJson)
-        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1", provider.id)
+        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1:review-checks-v2", provider.id)
         assertEquals(TokenCountKind.CONSERVATIVE_UTF8_BOUND, prepared.tokenCountKind)
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         val messages = json.getJSONArray("messages")
@@ -68,11 +68,24 @@ class DeepSeekReviewProviderTest {
         assertEquals("system", messages.getJSONObject(0).getString("role"))
         assertTrue(prompt.contains("均不是独立证据"))
         assertTrue(prompt.contains("不代表客观事实正确"))
-        assertTrue(prompt.contains("本次 evidence"))
+        assertTrue(prompt.contains("本次evidence"))
         ReviewVerdict.entries.forEach { assertTrue(prompt.contains(it.name)) }
         ReviewIssue.entries.forEach { assertTrue(prompt.contains(it.name)) }
         assertEquals("user", messages.getJSONObject(1).getString("role"))
-        assertEquals(request.payloadJson, messages.getJSONObject(1).getString("content"))
+        assertEquals(request, prepared.original)
+        val originalPayload = JSONObject(request.payloadJson)
+        val wirePayload = JSONObject(messages.getJSONObject(1).getString("content"))
+        val originalTarget = originalPayload.getJSONObject("target")
+        val wireTarget = wirePayload.getJSONObject("target")
+        assertFalse(wireTarget.has("text"))
+        val parts = wireTarget.getJSONArray("parts")
+        assertEquals(2, parts.length())
+        assertEquals("p1", parts.getJSONObject(0).getString("partId"))
+        assertEquals("p2", parts.getJSONObject(1).getString("partId"))
+        assertEquals(originalTarget.getString("text"), (0 until parts.length()).joinToString("") { parts.getJSONObject(it).getString("text") })
+        assertEquals(originalPayload.getJSONArray("evidence").toString(), wirePayload.getJSONArray("evidence").toString())
+        assertEquals(originalPayload.getJSONObject("feedback").toString(), wirePayload.getJSONObject("feedback").toString())
+        assertEquals(originalTarget.getString("kind"), wireTarget.getString("kind"))
         assertEquals("disabled", json.getJSONObject("thinking").getString("type"))
         assertEquals("json_object", json.getJSONObject("response_format").getString("type"))
         assertEquals(request.maximumOutputTokens, json.getInt("max_tokens"))
@@ -120,7 +133,8 @@ class DeepSeekReviewProviderTest {
             val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(AnalysisRunCodec.json(content))) }
             val result = provider.reviewPrepared(provider.prepareReview(request)).review
             assertEquals(verdict, result.verdict)
-            assertEquals(listOf("合成缺口：只有两晚的自述，其他日期未知"), result.unknowns)
+            assertTrue(result.unknowns.contains("合成缺口：只有两晚的自述，其他日期未知"))
+            if (verdict != ReviewVerdict.SUPPORTED) assertTrue(result.issues.isNotEmpty())
         }
     }
 
@@ -135,9 +149,11 @@ class DeepSeekReviewProviderTest {
             valid + ("issues" to "OTHER"),
             valid + ("unknowns" to listOf(7)),
             valid + ("unknowns" to null),
-            valid + ("supportingEvidenceIds" to listOf(7)),
-            valid + ("supportingEvidenceIds" to supportingId),
-            valid + ("contradictingEvidenceIds" to listOf("invalid-hash")),
+            withFirstCheck(valid, "evidenceIds", listOf(7)),
+            withFirstCheck(valid, "evidenceIds", supportingId),
+            withFirstCheck(valid, "evidenceIds", listOf("invalid-hash")),
+            withFirstCheck(valid, "status", "INSUFFICIENT_CONTEXT"),
+            withFirstCheck(valid, "unexpected", true),
             valid + ("claims" to emptyList<Any>()),
             valid - "unknowns",
             mapOf("claims" to emptyList<Any>(), "unknowns" to emptyList<Any>()),
@@ -149,29 +165,39 @@ class DeepSeekReviewProviderTest {
         malformed.forEach { assertRejected(response(it)) }
     }
 
-    @Test fun `review validates evidence uniqueness disjoint sets counts and verdict prerequisites`() {
+    @Test fun `review validates per check evidence uniqueness counts and prerequisites`() {
         val valid = reviewMap()
         val tooMany = List(33) { it.toString(16).padStart(64, '0') }
         listOf(
-            valid + ("supportingEvidenceIds" to listOf(supportingId, supportingId)),
-            valid + ("contradictingEvidenceIds" to listOf(contradictingId, contradictingId)),
-            valid + ("contradictingEvidenceIds" to listOf(supportingId)),
-            valid + ("supportingEvidenceIds" to tooMany),
-            valid + ("contradictingEvidenceIds" to tooMany),
+            withFirstCheck(valid, "evidenceIds", listOf(supportingId, supportingId)),
+            withFirstCheck(valid, "evidenceIds", tooMany),
+            withFirstCheck(valid, "evidenceIds", emptyList<String>()),
+            withFirstCheck(valid, "evidenceIds", listOf("c".repeat(64))),
             reviewMap("SUPPORTED", emptyList<Any>(), emptyList<Any>(), emptyList<Any>()),
+            reviewMap("CONTRADICTED", listOf(supportingId), emptyList<Any>()),
+        ).forEach { assertRejected(response(AnalysisRunCodec.json(it))) }
+    }
+
+    @Test fun `overall support cannot bypass a counterexample or unresolved issue`() {
+        listOf(
             reviewMap("SUPPORTED", listOf(supportingId), listOf(contradictingId), emptyList<Any>()),
             reviewMap("SUPPORTED", listOf(supportingId), emptyList<Any>(), listOf("CAUSAL_OVERREACH")),
-            reviewMap("CONTRADICTED", listOf(supportingId), emptyList<Any>()),
-            reviewMap("INSUFFICIENT_CONTEXT", emptyList<Any>(), emptyList<Any>(), emptyList<Any>(), emptyList<Any>()),
-        ).forEach { assertRejected(response(AnalysisRunCodec.json(it))) }
+        ).forEach { value ->
+            val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(AnalysisRunCodec.json(value))) }
+            val actual = provider.reviewPrepared(provider.prepareReview(request)).review
+            assertNotEquals(ReviewVerdict.SUPPORTED, actual.verdict)
+            assertTrue(actual.issues.isNotEmpty())
+        }
     }
 
     @Test fun `review limits are bounded and require meaningful nonblank strings`() {
         val valid = reviewMap()
         listOf(
-            valid + ("unknowns" to listOf(" ")),
-            valid + ("unknowns" to listOf("x".repeat(2_001))),
-            valid + ("unknowns" to List(21) { "synthetic gap" }),
+            valid + ("unknowns" to listOf(mapOf("text" to " ", "blocksConclusion" to false))),
+            valid + ("unknowns" to listOf(mapOf("text" to "x".repeat(501), "blocksConclusion" to false))),
+            valid + ("unknowns" to List(13) { mapOf("text" to "synthetic gap", "blocksConclusion" to false) }),
+            withFirstCheck(valid, "reason", "x".repeat(161)),
+            withFirstCheck(valid, "partId", " "),
         ).forEach { assertRejected(response(AnalysisRunCodec.json(it))) }
         assertRejected(response(" ".repeat(65_537)))
     }
@@ -226,8 +252,26 @@ class DeepSeekReviewProviderTest {
         contradicting: List<*> = listOf(contradictingId),
         issues: List<*> = listOf("COUNTEREVIDENCE_OMISSION"),
         unknowns: List<*> = listOf("合成缺口：只有两晚的自述，其他日期未知"),
-    ): Map<String, Any?> = mapOf("verdict" to verdict, "supportingEvidenceIds" to supporting,
-        "contradictingEvidenceIds" to contradicting, "issues" to issues, "unknowns" to unknowns)
+    ): Map<String, Any?> {
+        fun check(partId: String, status: String, ids: List<*>) = mapOf("partId" to partId, "status" to status,
+            "reason" to "合成局部核对依据", "evidenceIds" to ids)
+        val checks = if (contradicting.isNotEmpty()) listOf(
+            check("p1", if (supporting.isEmpty()) "UNSUPPORTED" else "SUPPORTED", supporting),
+            check("p2", "CONTRADICTED", contradicting))
+        else listOf("p1", "p2").map { partId -> check(partId, when {
+            verdict == "CONTRADICTED" -> "CONTRADICTED"
+            verdict == "SUPPORTED" || supporting.isNotEmpty() -> "SUPPORTED"
+            else -> "UNSUPPORTED"
+        }, if (verdict == "CONTRADICTED") contradicting else supporting) }
+        return mapOf("verdict" to verdict, "checks" to checks, "issues" to issues,
+            "unknowns" to unknowns.map { mapOf("text" to it, "blocksConclusion" to false) })
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun withFirstCheck(value: Map<String, Any?>, key: String, changed: Any?): Map<String, Any?> {
+        val checks = value.getValue("checks") as List<Map<String, Any?>>
+        return value + ("checks" to listOf(checks.first() + (key to changed)) + checks.drop(1))
+    }
 
     private fun response(
         content: String = AnalysisRunCodec.json(reviewMap()),

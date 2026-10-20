@@ -7,7 +7,7 @@ import java.time.Instant
 import java.util.UUID
 
 /** Synthetic-only diagnostics. No credentials, personal database, or network headers are written. */
-internal class SyntheticQualityReport(kind: String) {
+internal class SyntheticQualityReport(kind: String, private val fixtureVersion: String = SyntheticQualityCases.VERSION) {
     val directory: File
     private val rows = JSONArray()
     private val started = Instant.now().toString()
@@ -27,11 +27,11 @@ internal class SyntheticQualityReport(kind: String) {
 
     private fun flush() {
         File(directory, "report.json").writeText(JSONObject()
-            .put("synthetic", true).put("fixtureVersion", SyntheticQualityCases.VERSION)
+            .put("synthetic", true).put("fixtureVersion", fixtureVersion)
             .put("startedAt", started).put("reportedAt", Instant.now().toString())
             .put("cases", rows).toString(2))
         File(directory, "report.md").writeText(buildString {
-            append("# 合成质量与规模运行报告\n\n全部输入为虚构资料。固定案例版本：${SyntheticQualityCases.VERSION}。\n\n")
+            append("# 合成质量与规模运行报告\n\n全部输入为虚构资料。固定案例版本：$fixtureVersion。\n\n")
             append("程序检查仅证明取证、范围和预算等契约；语义项目必须查看实际回答后单独评审，不由关键词命中自动判通过。\n\n")
             for (index in 0 until rows.length()) {
                 val row = rows.getJSONObject(index)
@@ -52,6 +52,19 @@ internal class SyntheticQualityReport(kind: String) {
                     if (values.length() > 0) append("实际未知项：\n\n")
                     for (i in 0 until values.length()) append("- ${values.getString(i)}\n")
                     append("\n")
+                }
+                row.optJSONArray("finalOriginalReviews")?.let { values ->
+                    append("原文核对与发布门禁（用户确认／历史对照为合成操作，不是正确性证明）：\n\n")
+                    for (i in 0 until values.length()) {
+                        val review = values.getJSONObject(i)
+                        append("- ${review.getString("verdict")}；实际发布 ${review.getBoolean("published")}：${review.getString("text")}\n")
+                        append("  问题：${review.getJSONArray("issues")}；未知项：${review.getJSONArray("unknowns")}\n")
+                    }
+                    append("\n不支持意见成功阻止发布是门禁正常，不当作产品失败；SUPPORTED 及已发布结果仍须独立评审。生成 unknowns 不是知识发布目标，另行检查与原文／正文是否冲突。\n\n")
+                }
+                if (row.has("target")) {
+                    append("固定原文：${row.optString("source")}\n\n固定目标：${row.getString("target")}\n\n")
+                    append("预期支持：${row.optBoolean("expectedSupported")}；实际意见：${row.optString("verdict", "未完成")}；实际发布：${row.optBoolean("published")}。\n\n")
                 }
                 append("完整范围、固定输入、禁止结论、请求台账与错误分类见同目录 report.json。\n\n")
             }

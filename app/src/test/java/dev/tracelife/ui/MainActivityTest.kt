@@ -1,6 +1,7 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Looper
 import android.view.View
 import android.widget.EditText
@@ -8,6 +9,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import dev.tracelife.MainActivity
 import dev.tracelife.TraceLifeApplication
+import dev.tracelife.knowledge.TopicAliases
 import dev.tracelife.model.Cadence
 import dev.tracelife.model.Occurrence
 import dev.tracelife.model.RecordDraft
@@ -247,6 +249,30 @@ class MainActivityTest {
         assertEquals(SettingsActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
     }
 
+    @Test fun `home shows life records and unknown dates without navigation configuration`() {
+        val life = app.repository.createRecord(RecordDraft("合成日记：日期暂不确定"))
+        val aliasIds = (0..3).map { TopicAliases(app.repository).save("合成导航主题$it", setOf("合成别名$it")).id }
+        controller.recreate()
+        drain()
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("record:${life.id}"))
+        aliasIds.forEach { assertNull(activity.window.decorView.findViewWithTag<View>("record:$it")) }
+        val results = activity.window.decorView.findViewWithTag<android.view.ViewGroup>("recordResults")
+        assertEquals("1 条记录 · 发生日期未知 1 条", (results.getChildAt(0) as TextView).text.toString())
+        assertEquals(5, app.repository.listRecords().total)
+        assertTrue(app.repository.analysisRuns(0, 10).isEmpty())
+    }
+
+    @Test fun `reflection template picker hides internal alias contract without hiding similarly named personal templates`() {
+        val ref = dev.tracelife.knowledge.TopicAliasTemplate.obtain(app.repository)
+        val personal = app.repository.saveTemplate(dev.tracelife.knowledge.TopicAliasTemplate.draft.copy(
+            questions = dev.tracelife.knowledge.TopicAliasTemplate.draft.questions.map { it.copy(prompt = "合成个人复盘问题") }))
+        click("templates")
+        assertNull(activity.window.decorView.findViewWithTag<View>("useTemplate:${ref.id}"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("editTemplate:${ref.id}"))
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("useTemplate:${personal.id}"))
+        assertNotNull(app.repository.template(ref.id, ref.version))
+    }
+
     @Test fun `clearing collapsed filters restores other records without changing data`() {
         val learning = app.repository.createRecord(RecordDraft("合成资料：学习记录", topics = setOf("学习")))
         val work = app.repository.createRecord(RecordDraft("合成资料：工作记录", topics = setOf("工作")))
@@ -291,6 +317,33 @@ class MainActivityTest {
         val intent = shadowOf(activity).nextStartedActivity
         assertEquals(started.id, intent.getStringExtra(ReflectionActivity.EXTRA_RUN_ID))
         assertEquals(0, app.reflectionWorkflow.inspect(started.id).totalRequests)
+    }
+
+    @Test fun `external source opens requested revision and back returns to its caller`() {
+        val first = app.repository.createRecord(RecordDraft("合成资料：最初原文"))
+        app.repository.updateRecord(first.id, first.revision, first.draft.copy(body = "合成资料：后来修订"))
+        controller.pause().stop().destroy()
+        controller = Robolectric.buildActivity(MainActivity::class.java, Intent(app, MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_RECORD_ID, first.id).putExtra(MainActivity.EXTRA_RECORD_REVISION, 1)).setup()
+        drain()
+        val shown = descendants(activity.window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text }
+        assertTrue(shown.contains("合成资料：最初原文"))
+        assertFalse(shown.contains("合成资料：后来修订"))
+        controller.recreate(); drain()
+        click("back")
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test fun `record opened from home returns to the local list`() {
+        val record = app.repository.createRecord(RecordDraft("合成资料：从记录列表打开"))
+        controller.recreate(); drain(); click("record:${record.id}"); click("back")
+        assertFalse(activity.isFinishing)
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("record:${record.id}"))
+    }
+
+    private fun descendants(view: View): Sequence<View> = sequence {
+        yield(view)
+        if (view is android.view.ViewGroup) for (index in 0 until view.childCount) yieldAll(descendants(view.getChildAt(index)))
     }
 
     private fun input(tag: String, value: String) { view<EditText>(tag).setText(value) }

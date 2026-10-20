@@ -102,6 +102,8 @@ data class ReadingExportOptions(
     val question: String? = null,
     val profileZoneId: String = "UTC",
     val profileRecentDays: Int = 30,
+    /** Explicitly selected independent user notes and historical organization, never machine drafts. */
+    val includePersonalHistory: Boolean = false,
 ) {
     init {
         require(pageSize in 1..100) { "索引分页须为 1 至 100 条" }

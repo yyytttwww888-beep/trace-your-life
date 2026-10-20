@@ -56,7 +56,7 @@ class SemanticReviewTest {
         val input = JSONObject(sent.original.payloadJson)
         assertEquals("合成：周一学习了方法。但是周二并没有实践。", input.getJSONArray("evidence").getJSONObject(0).getString("text"))
         assertEquals(ref.claimSha256, input.getJSONObject("target").getString("claimSha256"))
-        assertFalse(input.getJSONObject("coverage").getBoolean("counterevidenceSearchExhaustive"))
+        assertFalse(input.getJSONObject("coverage").getBoolean("lifeCounterevidenceExhaustive"))
         assertEquals(ReviewVerdict.SUPPORTED, result.verdict)
         val call = analysis.currentReview("run", ref)!!
         assertEquals(CallPurpose.REVIEW, call.purpose)

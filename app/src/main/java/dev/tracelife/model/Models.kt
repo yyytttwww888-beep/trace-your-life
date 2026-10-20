@@ -69,6 +69,7 @@ data class RecordFilter(
     val includeUnknown: Boolean = true,
     val limit: Int = 50,
     val offset: Int = 0,
+    val includeConfiguration: Boolean = true,
 )
 
 data class RecordPage(

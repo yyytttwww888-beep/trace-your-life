@@ -31,6 +31,7 @@ class IncrementalOrganizer internal constructor(
 
     private val store = BackgroundStore(directory)
     private val processor = AnalysisBatchProcessor(analysis)
+    private val recurring = RecurringAnalysisPlanner(repository, analysis, clock)
 
     fun settings(): BackgroundSettings = refresh()
     fun policy(): BackgroundPolicy = settings().policy
@@ -49,6 +50,7 @@ class IncrementalOrganizer internal constructor(
                 throw BackgroundConflictException("后台策略或恢复状态已变化，请重新读取")
             val freshAuthorization = policy.enabled && !previous.policy.enabled
             if (freshAuthorization || !policy.enabled) clearJobs()
+            recurring.configure(this, previous.policy, policy, clock.instant())
             previous.copy(version = next(previous.version), policy = policy,
                 eventCursor = if (freshAuthorization || !policy.enabled) latest else previous.eventCursor,
                 lastObservedAt = clock.instant(), requiresEnableAfterRestore = if (policy.enabled) false else previous.requiresEnableAfterRestore)
@@ -68,7 +70,35 @@ class IncrementalOrganizer internal constructor(
 
     fun jobs(offset: Int = 0, limit: Int = 25): List<BackgroundJob> {
         refresh()
-        return store.transaction { jobs(offset, limit) }
+        val page = store.transaction { jobs(offset, limit) }
+        return page.map { job ->
+            if (job.kind == BackgroundJobKind.RECORD || job.runId == null ||
+                job.status !in setOf(BackgroundJobStatus.PROPOSALS_READY, BackgroundJobStatus.NEEDS_ATTENTION,
+                    BackgroundJobStatus.REBUILD_REQUIRED)) job
+            else {
+                val task = taskOrNull(job.runId)
+                val status = when {
+                    task == null -> BackgroundJobStatus.SOURCE_UNAVAILABLE
+                    task.status in setOf(AnalysisStatus.STALE, AnalysisStatus.EXPIRED) -> BackgroundJobStatus.REBUILD_REQUIRED
+                    else -> job.status
+                }
+                if (status == job.status) job else store.transaction {
+                    val latest = job(job.id)
+                    if (latest?.version == job.version) updateJob(job.id) { it.copy(status = status) } else latest ?: job
+                }
+            }
+        }
+    }
+
+    /** Bounded calendar reconciliation; no model request and no original body is read here. */
+    fun synchronizePeriods(): Int {
+        val current = refresh()
+        checkClock(current)
+        return store.transaction {
+            val latest = requireNotNull(settings())
+            if (latest.storeId != current.storeId || latest.restoreEpoch != current.restoreEpoch) return@transaction 0
+            recurring.enqueue(this, latest, MAX_JOBS)
+        }
     }
 
     /** Replays one bounded outbox page. No provider is needed and no source body is sent anywhere. */
@@ -93,7 +123,7 @@ class IncrementalOrganizer internal constructor(
             changes.forEach { event ->
                 if (event.kind.startsWith("RECORD_")) {
                     val record = records[event.entityId]
-                    if (record == null || record.archived) unavailable(event.entityId, now)
+                    if (record == null || record.archived || dev.tracelife.knowledge.TopicAliases(repository).isConfiguration(record)) unavailable(event.entityId, now)
                     else {
                         // Reading the current revision coalesces several events from the same page.
                         val id = jobId(latest, event.entityId, record.revision)
@@ -121,11 +151,15 @@ class IncrementalOrganizer internal constructor(
             val job = store.transaction { requireNotNull(job(jobId)) }
             if (job.version != expectedVersion) throw BackgroundConflictException("后台任务已变化")
             require(job.status in setOf(BackgroundJobStatus.FAILED, BackgroundJobStatus.NEEDS_RECOVERY,
-                BackgroundJobStatus.STORAGE_BLOCKED, BackgroundJobStatus.BUDGET_EXHAUSTED))
+                BackgroundJobStatus.STORAGE_BLOCKED, BackgroundJobStatus.BUDGET_EXHAUSTED, BackgroundJobStatus.REBUILD_REQUIRED))
+            require(RecurringAnalysisPlanner.enabled(state.policy, job.kind)) { "该类自动整理已关闭" }
             require(job.reservedRequests < state.policy.maxRequestsPerJob) { "该任务累计请求额度已用尽" }
             var runId = job.runId
             runId?.let { id ->
                 val task = taskOrNull(id)
+                require(job.kind == BackgroundJobKind.RECORD || task != null || job.status == BackgroundJobStatus.STORAGE_BLOCKED) {
+                    "原整理任务已删除，不能由后台重新创建"
+                }
                 if (task == null || task.status == AnalysisStatus.STALE || task.status == AnalysisStatus.EXPIRED) runId = null
                 else if (task.state.calls.any { it.status == CallStatus.IN_FLIGHT }) analysis.recoverInterrupted(id)
             }
@@ -176,7 +210,7 @@ class IncrementalOrganizer internal constructor(
         lease.use {
             // Acquiring the OS lease proves no live dispatcher owns these leftover jobs.
             store.transaction { recoverOrphans(clock.instant()) }
-            try { synchronizeChanges() } catch (_: IllegalStateException) { return report(BackgroundPassStatus.STORAGE_BLOCKED) }
+            try { synchronizePeriods(); synchronizeChanges() } catch (_: IllegalStateException) { return report(BackgroundPassStatus.STORAGE_BLOCKED) }
             while (true) {
                 val current = refresh()
                 passBlock(current)?.let { return report(it) }
@@ -185,7 +219,7 @@ class IncrementalOrganizer internal constructor(
                 val pending = store.transaction { next() } ?: return report(when {
                     store.transaction { listOf(BackgroundJobStatus.FAILED, BackgroundJobStatus.NEEDS_RECOVERY,
                         BackgroundJobStatus.NEEDS_ATTENTION, BackgroundJobStatus.BUDGET_EXHAUSTED,
-                        BackgroundJobStatus.STORAGE_BLOCKED).any { count(it) > 0 } } -> BackgroundPassStatus.NEEDS_ATTENTION
+                        BackgroundJobStatus.STORAGE_BLOCKED, BackgroundJobStatus.REBUILD_REQUIRED).any { count(it) > 0 } } -> BackgroundPassStatus.NEEDS_ATTENTION
                     finished > 0 || dispatched > 0 -> BackgroundPassStatus.PROGRESSED
                     else -> BackgroundPassStatus.IDLE
                 })
@@ -202,6 +236,9 @@ class IncrementalOrganizer internal constructor(
                     }
                     val job = store.transaction { job(pending.id) }
                     if (job == null) { gateStop = BackgroundPassStatus.RESTORE_REQUIRES_ENABLE; throw DispatchStopped() }
+                    if (job.status != BackgroundJobStatus.RUNNING || !RecurringAnalysisPlanner.enabled(latest.policy, job.kind)) {
+                        gateStop = BackgroundPassStatus.CONSTRAINTS_CHANGED; throw DispatchStopped()
+                    }
                     if (job.reservedRequests >= latest.policy.maxRequestsPerJob) {
                         gateStop = BackgroundPassStatus.JOB_BUDGET_EXHAUSTED; throw DispatchStopped()
                     }
@@ -225,7 +262,13 @@ class IncrementalOrganizer internal constructor(
                             retryAuthorized = false, updatedAt = now))
                     }
                     // Check restore/consent again immediately before handing the bounded request to the adapter.
-                    passBlock(refresh())?.let { gateStop = it; throw DispatchStopped() }
+                    val authorized = refresh()
+                    passBlock(authorized)?.let { gateStop = it; throw DispatchStopped() }
+                    val reserved = store.transaction { job(pending.id) }
+                    if (reserved == null || reserved.status != BackgroundJobStatus.RUNNING ||
+                        !RecurringAnalysisPlanner.enabled(authorized.policy, reserved.kind)) {
+                        gateStop = BackgroundPassStatus.CONSTRAINTS_CHANGED; throw DispatchStopped()
+                    }
                     dispatched++
                 }
                 val countedExtractor = object : AnalysisProvider by extractor {
@@ -243,11 +286,11 @@ class IncrementalOrganizer internal constructor(
                     if (gateStop != null) {
                         // No adapter dispatch happened at this gate. A failed ledger entry can be
                         // retried after explicit resume/renewed budget without duplicating a paid call.
-                        updateIfPresent(pending.id) { it.copy(status = if (gateStop == BackgroundPassStatus.JOB_BUDGET_EXHAUSTED)
+                        updateIfPresent(pending.id) { if (it.status != BackgroundJobStatus.RUNNING) it else it.copy(status = if (gateStop == BackgroundPassStatus.JOB_BUDGET_EXHAUSTED)
                             BackgroundJobStatus.BUDGET_EXHAUSTED else BackgroundJobStatus.QUEUED, retryAuthorized = true) }
                         return report(requireNotNull(gateStop))
                     }
-                    updateIfPresent(pending.id) { it.copy(status = status) }
+                    updateIfPresent(pending.id) { if (it.status != BackgroundJobStatus.RUNNING) it else it.copy(status = status) }
                     if (status in setOf(BackgroundJobStatus.PROPOSALS_READY, BackgroundJobStatus.NEEDS_ATTENTION,
                             BackgroundJobStatus.SOURCE_UNAVAILABLE, BackgroundJobStatus.SUPERSEDED)) finished++
                     if (status in setOf(BackgroundJobStatus.FAILED, BackgroundJobStatus.NEEDS_RECOVERY,
@@ -257,7 +300,7 @@ class IncrementalOrganizer internal constructor(
                 } catch (_: Exception) {
                     // Exception messages can contain provider details; persist only a typed state.
                     val status = gateStop
-                    updateIfPresent(pending.id) { it.copy(status = when (status) {
+                    updateIfPresent(pending.id) { if (it.status != BackgroundJobStatus.RUNNING) it else it.copy(status = when (status) {
                         null -> BackgroundJobStatus.FAILED
                         BackgroundPassStatus.JOB_BUDGET_EXHAUSTED -> BackgroundJobStatus.BUDGET_EXHAUSTED
                         else -> BackgroundJobStatus.QUEUED
@@ -273,6 +316,9 @@ class IncrementalOrganizer internal constructor(
     private fun prepareOne(jobId: String, extractor: AnalysisProvider, reviewer: SemanticReviewProvider,
         gate: () -> Unit): BackgroundJobStatus {
         var job = store.transaction { requireNotNull(job(jobId)) }
+        if (job.kind != BackgroundJobKind.RECORD) return recurring.prepareOne(job, extractor, reviewer, gate) { id ->
+            updateJob(jobId) { it.copy(runId = id, runSequence = it.runSequence + 1) }
+        }
         val record = repository.record(job.recordId) ?: return BackgroundJobStatus.SOURCE_UNAVAILABLE
         if (record.archived) return BackgroundJobStatus.SOURCE_UNAVAILABLE
         if (record.revision != job.recordRevision) return BackgroundJobStatus.SUPERSEDED

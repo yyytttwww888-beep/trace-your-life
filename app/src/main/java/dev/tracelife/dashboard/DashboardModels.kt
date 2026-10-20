@@ -92,6 +92,8 @@ class DashboardSnapshot internal constructor(
     internal val previousInsightIndex: List<DashboardInsightRef>,
     internal val actionIndex: List<DashboardActionItem>,
     internal val markerIndex: List<DashboardActionMarker>,
+    val activityCurrent: dev.tracelife.metrics.ActivityMetricPeriod,
+    val activityPrevious: dev.tracelife.metrics.ActivityMetricPeriod,
 ) {
     val insightCount: Int get() = currentInsightIndex.size
     val previousInsightCount: Int get() = previousInsightIndex.size

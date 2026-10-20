@@ -5,6 +5,9 @@ import dev.tracelife.analysis.*
 import dev.tracelife.conversation.ConversationWorkflow
 import dev.tracelife.providers.*
 import dev.tracelife.storage.LifeRepository
+import dev.tracelife.storage.ClaimFeedbackDecision
+import dev.tracelife.storage.KnowledgeCategory
+import dev.tracelife.knowledge.KnowledgeLibrary
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -20,11 +23,14 @@ import java.nio.file.Files
 import java.util.UUID
 import javax.crypto.KeyGenerator
 
-/** Explicit opt-in: six fixed fictional cases, at most 12 paid calls total, no failed-call retry. */
+/** Explicit opt-in: unchanged six fictional cases, generation + every claim's review/publication.
+ * At most 54 paid calls total (9/case), no failed-call retry. Confirmation is a synthetic fixture. */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], application = android.app.Application::class)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class DeepSeekKnowledgeQualityLiveTest {
+    private val qualityModel = DeepSeekModel.valueOf(System.getProperty("traceLife.qualityModel", "FLASH"))
+
     @Test fun `fixed quality cases preserve complete evidence and produce a separately reviewable semantic report`() {
         assumeTrue("Live quality checks require explicit opt-in", System.getProperty("traceLife.deepSeek.quality") == "true")
         val root = File(requireNotNull(System.getProperty("traceLife.repositoryRoot"))).canonicalFile
@@ -56,7 +62,7 @@ class DeepSeekKnowledgeQualityLiveTest {
                         val reflection = ReflectionWorkflow(repository, analysis)
                         val workflow = ConversationWorkflow(repository, analysis, reflection, SyntheticQualityCases.clock)
                         val transport = DeepSeekTransport { body, secret ->
-                            check(casePaidRequests < 3 && totalPaidRequests < 12) { "Fixed synthetic benchmark request ceiling reached" }
+                            check(casePaidRequests < 9 && totalPaidRequests < 54) { "Fixed synthetic benchmark request ceiling reached" }
                             casePaidRequests++; totalPaidRequests++
                             // The wire body contains synthetic inputs only; the secret/header is never recorded.
                             File(report.directory, "${case.id}-request-$casePaidRequests.json").writeText(body)
@@ -64,16 +70,16 @@ class DeepSeekKnowledgeQualityLiveTest {
                                 if (response.status == 200) File(report.directory, "${case.id}-response-$casePaidRequests.json").writeBytes(response.body)
                             }
                         }
-                        val provider = DeepSeekProvider(credentials, DeepSeekModel.FLASH, transport)
+                        val provider = DeepSeekProvider(credentials, qualityModel, transport)
                         val turn = workflow.submit(workflow.prepare(case.question, scopeOverride = case.scope))
                         runId = turn.runId
                         val limits = analysis.task(turn.runId).state.request.limits
                         row.put("configuredLimits", JSONObject().put("inputTokenLimit", limits.inputTokenLimit)
                             .put("maxInputBytes", limits.maxInputBytes).put("totalInputBytes", limits.totalInputBytes)
                             .put("maxCalls", limits.maxCalls).put("fragmentCodePoints", limits.fragmentCodePoints)
-                            .put("paidRequestsPerCase", 3).put("paidRequestsSuite", 12))
+                            .put("paidRequestsPerCase", 9).put("paidRequestsSuite", 54))
                         try {
-                            val result = reflection.process(turn.runId, provider, maxRequests = 3)
+                            val result = workflow.process(turn, provider, maxRequests = 3)
                             val state = analysis.task(turn.runId).state
                             val coverage = requireNotNull(result.run.coverage)
                             row.put("reflectionStatus", result.status.name)
@@ -96,6 +102,38 @@ class DeepSeekKnowledgeQualityLiveTest {
                             assertTrue(result.run.findings.all { allEvidence(reflection, turn.runId, it.target).isNotEmpty() })
                             assertTrue("Generation is not user adoption", repository.knowledgeHeads().isEmpty())
                             if (case.prior != null) assertEquals(1, state.calls.flatMap { it.historicalFeedbackReadIds }.distinct().size)
+                            assertTrue("The conversation contract asks for at most six findings", result.run.findings.size <= 6)
+                            val reviews = JSONArray()
+                            row.put("finalOriginalReviews", reviews)
+                                .put("syntheticUserConfirmation", true).put("syntheticHistoryResolution", "RESPECTED_FOR_GATE_EXERCISE_NOT_SEMANTIC_PROOF")
+                                .put("unknownsReview", "REQUIRES_INDEPENDENT_REVIEW_NOT_A_PUBLICATION_TARGET")
+                            result.run.findings.forEachIndexed { index, finding ->
+                                val target = finding.target as? ReflectionTarget.Claim
+                                    ?: error("Fixed small fixtures unexpectedly required reduction; expand the explicit review budget before rerunning")
+                                // Exercise the model and publication fence even if a human made an
+                                // incorrect confirmation. It is not a human assessment of this answer.
+                                reflection.historicalFeedbackPage(turn.runId, target, limit = 100).items.forEach { old ->
+                                    reflection.resolveHistoricalFeedback(turn.runId, target, old.content.reference.id,
+                                        analysis.task(turn.runId).stored.version, HistoricalFeedbackChoice.RESPECTED,
+                                        "合成门禁验收：模拟人工完成对照；这不是对陈述正确性的证明。")
+                                }
+                                reflection.respond(turn.runId, target, analysis.task(turn.runId).stored.version, ClaimFeedbackDecision.CONFIRMED)
+                                val reviewKey = "quality-final-review-$index"
+                                val checked = analysis.reviewClaim(turn.runId, reviewKey, target.ref, provider = provider)
+                                val publication = runCatching { KnowledgeLibrary(repository, SyntheticQualityCases.clock).publish(
+                                    turn.runId, target.ref, reviewKey, KnowledgeCategory.INSIGHT,
+                                    analysis.task(turn.runId).stored.version, topics = setOf("学习")) }
+                                reviews.put(JSONObject().put("text", finding.text).put("verdict", checked.verdict.name)
+                                    .put("issues", JSONArray(checked.issues.map { it.name }))
+                                    .put("unknowns", JSONArray(checked.unknowns))
+                                    .put("supportingEvidenceIds", JSONArray(checked.supportingEvidenceIds))
+                                    .put("contradictingEvidenceIds", JSONArray(checked.contradictingEvidenceIds))
+                                    .put("publicationAttempted", true).put("published", publication.isSuccess)
+                                    .put("publicationFailureType", publication.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
+                                    .put("gateResult", if (checked.verdict == ReviewVerdict.SUPPORTED) "SUPPORTED_REQUIRES_SEMANTIC_REVIEW" else "NON_SUPPORTED_BLOCK_EXPECTED"))
+                                assertEquals("A non-supported finding must not pass publication", checked.verdict == ReviewVerdict.SUPPORTED, publication.isSuccess)
+                            }
+                            row.put("published", repository.knowledgeHeads().isNotEmpty()).put("finalOriginalReview", "EVERY_GENERATED_CLAIM_REVIEWED_AND_PUBLICATION_ATTEMPTED")
                             row.put("programmaticStatus", "PASS").put("semanticStatus", "REQUIRES_INDEPENDENT_REVIEW")
                         } finally {
                             row.put("calls", JSONArray(analysis.task(turn.runId).state.calls.map(::callRow)))
@@ -114,7 +152,7 @@ class DeepSeekKnowledgeQualityLiveTest {
                 }
             }
             assertEquals("Programmatic failures are retained in ${report.directory.path}; semantic assessment is separate", emptyList<String>(), failures)
-            assertTrue(totalPaidRequests in SyntheticQualityCases.all.size..12)
+            assertTrue(totalPaidRequests in SyntheticQualityCases.all.size..54)
         } finally {
             key.fill('\u0000')
             try { credentials.clear() } finally { keyDirectory.deleteRecursively() }
@@ -122,7 +160,7 @@ class DeepSeekKnowledgeQualityLiveTest {
     }
 
     private fun fixtureRow(case: SyntheticQualityCases.Case) = JSONObject()
-        .put("id", case.id).put("model", DeepSeekModel.FLASH.apiId).put("adapter", "DeepSeekProvider/json-v1:utf8-bound-v1")
+        .put("id", case.id).put("model", qualityModel.apiId).put("adapter", "deepseek:${qualityModel.apiId}:json-v1:utf8-bound-v1:review-checks-v2")
         .put("question", case.question).put("from", case.from).put("through", case.through).put("zoneId", "Asia/Shanghai")
         .put("requiredDistinctions", JSONArray(case.requiredDistinctions)).put("forbiddenConclusions", JSONArray(case.forbiddenConclusions))
         .put("expectedNewValue", case.expectedNewValue).put("sources", JSONArray(case.sources.map { source ->
@@ -131,8 +169,8 @@ class DeepSeekKnowledgeQualityLiveTest {
             .put("sourceId", prior.source.id).put("sourceDate", prior.source.date).put("sourceBody", prior.source.body)
             .put("oldClaim", prior.oldClaim).put("correction", prior.correction) } ?: JSONObject.NULL)
         .put("configuredLimits", JSONObject().put("inputTokenLimit", 32_000).put("maxInputBytes", 65_536)
-            .put("totalInputBytes", 1_048_576).put("paidRequestsPerCase", 3).put("paidRequestsSuite", 12))
-        .put("published", false).put("finalOriginalReview", "NOT_RUN_GENERATION_ONLY")
+            .put("totalInputBytes", 1_048_576).put("paidRequestsPerCase", 9).put("paidRequestsSuite", 54))
+        .put("published", false).put("finalOriginalReview", "NOT_YET_RUN")
 
     private fun callRow(call: AnalysisCall) = JSONObject()
         .put("purpose", call.purpose.name).put("status", call.status.name).put("failureCode", call.failureCode ?: JSONObject.NULL)

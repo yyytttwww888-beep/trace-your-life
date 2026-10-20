@@ -1,5 +1,7 @@
 package dev.tracelife.ui
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.widget.CheckBox
 import android.widget.LinearLayout
@@ -27,6 +29,9 @@ import dev.tracelife.storage.SourceFieldKind
 import dev.tracelife.storage.SourceTimeClass
 import dev.tracelife.transfer.CompletedExports
 import dev.tracelife.transfer.StaleSnapshotException
+import dev.tracelife.metrics.ActivityDomain
+import dev.tracelife.metrics.ActivityMeasure
+import dev.tracelife.templates.ActivityLogTemplate
 
 class DashboardActivity : ScreenActivity() {
     private var snapshot: DashboardSnapshot? = null
@@ -43,13 +48,23 @@ class DashboardActivity : ScreenActivity() {
     private var archivedCheck: CheckBox? = null
 
     private var selectedWindow: DashboardWindow? = null
+    private var activityDomain = ActivityDomain.LEARNING
+    private var activityMeasure = ActivityMeasure.MINUTES
+    private var activityPoint: Int? = null
+    private var activityOffset = 0
+    private var activityCorrections = false
+    private var activityRecordId: String? = null
 
     override fun restoreScreenState(savedInstanceState: Bundle?) {
         selectedWindow = savedInstanceState?.getString("trendWindow")?.let(DashboardWindow::valueOf)
+        activityDomain = savedInstanceState?.getString("activityDomain")?.let(ActivityDomain::valueOf) ?: ActivityDomain.LEARNING
+        activityMeasure = savedInstanceState?.getString("activityMeasure")?.let(ActivityMeasure::valueOf) ?: ActivityMeasure.MINUTES
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         selectedWindow?.let { outState.putString("trendWindow", it.name) }
+        outState.putString("activityDomain", activityDomain.name)
+        outState.putString("activityMeasure", activityMeasure.name)
         super.onSaveInstanceState(outState)
     }
 
@@ -70,10 +85,14 @@ class DashboardActivity : ScreenActivity() {
         if (busy) return
         when (screen) {
             "home" -> finish()
-            "sourceText" -> showSourceFields(requireNotNull(textRecordId))
+            "sourceText" -> activityRecordId?.let(::showActivityEntry) ?: showSourceFields(requireNotNull(textRecordId))
+            "activityEntry" -> showActivitySources(activityPoint, activityOffset, activityCorrections)
             "fields" -> showSources(sourceCategory, sourcePointIndex, sourceOffset)
             "actionDetail" -> showActions(actionSection, actionOffset)
-            else -> showHome()
+            else -> {
+                if (activityMeasure == ActivityMeasure.OUTCOMES) activityMeasure = ActivityMeasure.MINUTES
+                showHome()
+            }
         }
     }
 
@@ -93,6 +112,7 @@ class DashboardActivity : ScreenActivity() {
     }
 
     private fun renderHome(board: DashboardSnapshot) {
+        activityRecordId = null
         val values = board.current.metric.values
         card().also { overview ->
             Ui.note(overview, "${board.current.metric.scope.from} — ${board.current.metric.scope.through} · 最近 ${windowLabel(board.request.window)}")
@@ -124,6 +144,8 @@ class DashboardActivity : ScreenActivity() {
             }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(190)))
             Ui.note(trend, "点按图表查看来源。0 只表示没有保存精确日期记录；日期未知 ${values.unknownTimeRecords} 条、跨多天 ${values.intervalRecords} 条另列。")
         }
+
+        renderActivities(board)
 
         card().also { actions ->
             Ui.sectionTitle(actions, "行动回看")
@@ -164,6 +186,115 @@ class DashboardActivity : ScreenActivity() {
             listRow(details, "已保存的趋势说明 · ${board.insightCount} 条", "insights") { showInsights(DashboardPeriodSelection.CURRENT, 0) }
             addButton(details, "导出这份看板", "exportDashboard") { exportDashboard() }
         }
+    }
+
+    private fun renderActivities(board: DashboardSnapshot) {
+        val metrics = board.activityCurrent
+        val series = metrics.series.single { it.domain == activityDomain }
+        fun choice(parent: LinearLayout, label: String, tag: String, action: () -> Unit) {
+            Ui.button(parent, label, tag) { if (!busy) action() }.layoutParams =
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(dp(2), 0, dp(2), dp(8))
+                }
+        }
+        card().also { container ->
+            Ui.sectionTitle(container, "工作与学习")
+            val domains = chipRow(container)
+            ActivityDomain.entries.forEach { domain ->
+                choice(domains, (if (domain == activityDomain) "✓ " else "") + domain.label, "activityDomain:${domain.name}") {
+                    activityDomain = domain; showHome()
+                }
+            }
+            Ui.body(container, "${series.minutes?.let { "$it 分钟" } ?: "时长未记录"} · ${series.practices?.let { "$it 次实践" } ?: "实践次数未记录"}")
+            Ui.note(container, "时长覆盖 ${series.minutesRecordedDays}/${board.request.window.days} 天；实践次数覆盖 ${series.practicesRecordedDays}/${board.request.window.days} 天。只统计明确填写的数值。")
+            val measures = chipRow(container)
+            listOf(ActivityMeasure.MINUTES, ActivityMeasure.PRACTICES).forEach { measure ->
+                choice(measures, (if (measure == activityMeasure) "✓ " else "") + measure.label, "activityMeasure:${measure.name}") {
+                    activityMeasure = measure; showHome()
+                }
+            }
+            if (activityMeasure != ActivityMeasure.OUTCOMES) {
+                container.addView(ActivityTrendView(this, series.points, activityMeasure) { index ->
+                    if (!busy) showActivitySources(index, 0)
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(190)))
+                Ui.note(container, "空白是未记录，只有明确填 0 才显示 0。断线不表示停止活动；空心点仍在进行中。")
+            }
+            addButton(container, "记一次投入或实践", "newActivity") { openActivityEditor() }
+            listRow(container, "成果时间线", "activityOutcomes") {
+                activityMeasure = ActivityMeasure.OUTCOMES; showActivitySources(null, 0)
+            }
+            Ui.disclosure(container, "逐项查看与统计说明", "activityDetails") { details ->
+                series.points.forEachIndexed { index, point ->
+                    listRow(details, "${point.from} — ${point.through}\n${point.minutes?.let { "$it 分钟" } ?: "时长未记录"} · ${point.practices?.let { "$it 次实践" } ?: "实践次数未记录"}", "activityPoint:$index") {
+                        if (activityMeasure == ActivityMeasure.OUTCOMES) activityMeasure = ActivityMeasure.MINUTES
+                        showActivitySources(index, 0)
+                    }
+                }
+                listRow(details, "全部投入与实践来源", "activitySourcesAll") { showActivitySources(null, 0) }
+                val previous = board.activityPrevious.series.single { it.domain == activityDomain }
+                Ui.note(details, "前期同长度窗口：${previous.minutes?.let { "$it 分钟" } ?: "时长未记录"}（${previous.minutesRecordedDays} 天有填写），${previous.practices?.let { "$it 次实践" } ?: "实践次数未记录"}（${previous.practicesRecordedDays} 天有填写）。覆盖不等于全部活动，不能据此断言成长。")
+                Ui.note(details, "日期未知 ${metrics.undatedEntries} 条、跨多天 ${metrics.intervalEntries} 条另列，不分摊到图表或总量。同一活动重复录入会重复计数，请编辑原记录修正。")
+                if (metrics.entriesNeedingCorrection > 0) listRow(details, "${metrics.entriesNeedingCorrection} 条输入需要修正", "activityCorrections") {
+                    showActivitySources(null, 0, corrections = true)
+                }
+            }
+        }
+    }
+
+    private fun showActivitySources(point: Int?, offset: Int, corrections: Boolean = false) {
+        activityPoint = point; activityOffset = offset; activityCorrections = corrections; activityRecordId = null
+        val board = snapshot ?: return showHome()
+        beginScreen("activitySources", if (corrections) "需要修正的输入" else "${activityDomain.label} · ${activityMeasure.label}")
+        runIo({
+            val page = app.dashboard.activitySources(board, domain = if (corrections) null else activityDomain,
+                measure = if (corrections || point == null && activityMeasure != ActivityMeasure.OUTCOMES) null else activityMeasure,
+                pointIndex = point, correctionsOnly = corrections, offset = offset, limit = PAGE_SIZE)
+            val outcomes = if (activityMeasure == ActivityMeasure.OUTCOMES && !corrections) page.items.associate { item ->
+                item.recordId to app.dashboard.sourceText(board, item.recordId, "answer:${ActivityLogTemplate.OUTCOME}", 0, 180).text
+            } else emptyMap()
+            page to outcomes
+        }) { (page, outcomes) ->
+            note(if (activityMeasure == ActivityMeasure.OUTCOMES) "这里只展示明确填写的成果文字，不用条目数量评估成果大小。" else "未填写的数值保持未知。点开可核对和修改原记录。")
+            if (page.items.isEmpty()) emptyState(card(), "这段范围没有符合条件的明确记录。")
+            page.items.forEach { entry ->
+                val date = entry.exactDate?.toString() ?: entry.occurrence.startDate?.let { "$it 至 ${entry.occurrence.endDate} · 未计入每日总量" } ?: "日期未知 · 未计入每日总量"
+                val numbers = "${entry.minutes?.let { "$it 分钟" } ?: "时长未记录"} · ${entry.practices?.let { "$it 次实践" } ?: "实践次数未记录"}"
+                listRow(root, "$date · ${entry.domain?.label ?: "领域待修正"}\n$numbers" +
+                    outcomes[entry.recordId]?.let { "\n$it" }.orEmpty() + entry.issues.takeIf { it.isNotEmpty() }?.joinToString("；", "\n").orEmpty(), "activitySource:${entry.recordId}") {
+                    showActivityEntry(entry.recordId)
+                }
+            }
+            if (offset > 0) button("上一页", "activityPrevious") { showActivitySources(point, (offset - PAGE_SIZE).coerceAtLeast(0), corrections) }
+            page.nextOffset?.let { next -> button("下一页", "activityNext") { showActivitySources(point, next, corrections) } }
+        }
+    }
+
+    private fun showActivityEntry(recordId: String) {
+        val board = snapshot ?: return showHome()
+        activityRecordId = recordId
+        beginScreen("activityEntry", "投入与实践 · 原始记录")
+        runIo({ app.dashboard.sourceFields(board, recordId) }) { fields ->
+            fields.filter { it.kind == SourceFieldKind.TEXT }.forEach { field ->
+                listRow(root, activityFieldLabel(field.key), "activityField:${field.key}") { showSourceText(recordId, field.key, 0) }
+            }
+            button("修改这条记录", "editActivity") { openActivityEditor(recordId) }
+        }
+    }
+
+    private fun activityFieldLabel(key: String): String = ActivityLogTemplate.draft.questions
+        .firstOrNull { "answer:${it.id}" == key }?.prompt ?: fieldLabel(key)
+
+    @Suppress("DEPRECATION")
+    private fun openActivityEditor(recordId: String? = null) {
+        startActivityForResult(Intent(this, ActivityEntryActivity::class.java).apply {
+            recordId?.let { putExtra(ActivityEntryActivity.RECORD_ID, it) }
+        }, ACTIVITY_REQUEST)
+    }
+
+    @Deprecated("Deprecated in Android")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == ACTIVITY_REQUEST && resultCode == Activity.RESULT_OK) showHome()
     }
 
     private fun renderCard(metricCard: DashboardCard, parent: LinearLayout = root) {
@@ -210,6 +341,7 @@ class DashboardActivity : ScreenActivity() {
     }
 
     private fun showSources(category: DashboardSourceCategory, pointIndex: Int?, offset: Int) {
+        activityRecordId = null
         sourceCategory = category
         sourcePointIndex = pointIndex
         sourceOffset = offset
@@ -534,6 +666,7 @@ class DashboardActivity : ScreenActivity() {
     }
 
     companion object {
+        private const val ACTIVITY_REQUEST = 91
         private const val PAGE_SIZE = 25
         private const val FRAGMENT_CODE_POINTS = 1_024
     }

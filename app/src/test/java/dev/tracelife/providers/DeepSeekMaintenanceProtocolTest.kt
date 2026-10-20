@@ -96,6 +96,7 @@ class DeepSeekMaintenanceProtocolTest {
     private fun request(purpose: String, maintenance: Boolean = false) = ModelRequest(AnalysisRunCodec.json(mapOf(
         "protocolVersion" to 8, "purpose" to purpose, "profileTarget" to target,
         "maintenancePlanSha256" to "b".repeat(64), "profileMaintenance" to maintenance,
+        "target" to mapOf("text" to "合成候选"),
         "candidate" to mapOf("text" to "合成候选"), "evidence" to listOf(mapOf("id" to evidenceId, "text" to "合成原文")),
     )), "synthetic-operation", 2_000)
     private fun relation() = AnalysisRunCodec.json(mapOf("relation" to "SAME", "recommendation" to "KEEP", "reason" to "合成同义描述", "unknowns" to emptyList<String>()))

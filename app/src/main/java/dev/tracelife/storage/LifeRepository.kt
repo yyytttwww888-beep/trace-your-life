@@ -155,6 +155,11 @@ class LifeRepository(
         transaction(db) {
             val common = mutableListOf("r.revision = h.current_revision")
             val commonArgs = mutableListOf<String>()
+            if (!filter.includeConfiguration) {
+                val (condition, arguments) = TopicAliasStore.excludeConfiguration("r")
+                common += condition
+                commonArgs += arguments
+            }
             if (!filter.includeArchived) common += "r.archived = 0"
             if (filter.topic != null) {
                 common += "EXISTS (SELECT 1 FROM record_topics t WHERE t.record_id = r.record_id AND t.revision = r.revision AND t.topic = ?)"
@@ -199,13 +204,15 @@ class LifeRepository(
     fun deleteRecord(id: String, expectedRevision: Int) = access { db ->
         transaction(db) {
             val current = requireCurrent(db, id, expectedRevision)
+            val configurationOnly = TopicAliasStore.isEntirelyConfiguration(db, id)
             val attachmentIds = strings(db, "SELECT DISTINCT attachment_id FROM record_attachments WHERE record_id = ?", id)
             db.delete("records", "id = ?", arrayOf(id))
             db.delete("change_events", "entity_id = ? AND kind LIKE 'RECORD_%'", arrayOf(id))
             val now = clock.instant()
             db.insertOrThrow("deleted_records", null, values("id" to id, "last_revision" to current.revision, "deleted_at" to timestamp(now)))
             event(db, id, current.revision + 1, "RECORD_DELETED", now)
-            purgeRecordDependents(db, setOf(id))
+            purgeRecordDependents(db, setOf(id), includeExplicitScope = configurationOnly)
+            if (configurationOnly) SourceScopeLedger.forgetDeletedConfiguration(db, id)
             attachmentIds.forEach { queueUnreferencedAttachment(db, it) }
         }
         collectGarbage(db)
@@ -393,6 +400,17 @@ class LifeRepository(
 
     internal fun analysisSourceStamp(): SourceStamp = access { db ->
         storeState(db).let { SourceStamp(it.first, it.second) }
+    }
+
+    /** Trusted dashboard input, limited to explicitly selected structured fields. Not a model tool. */
+    internal fun activityMetricInputs(stamp: SourceStamp, query: AnalysisQuery, recordIds: List<String>): List<ActivityMetricInput> = access { db ->
+        validateAnalysisQuery(query)
+        require(recordIds.size <= 100 && recordIds.distinct().size == recordIds.size)
+        transaction(db) {
+            requireAnalysisSource(db, stamp, query)
+            val revisions = recordIds.associateWith { id -> validateId(id); scopedRevision(db, query, id) }
+            ActivityMetricStore.read(db, revisions)
+        }
     }
 
     /** Metadata only: no record bodies, answers or attachment bytes are selected. */
@@ -601,7 +619,7 @@ class LifeRepository(
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
             }
             val state = AnalysisRunCodec.decode(run.payload)
-            state.request.knowledgeContext?.let { context ->
+            state.knowledgeContext?.let { context ->
                 require(context.entries.none { it.runId == run.id } && dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(context)) { "已有知识、经验或画像已变化" }
             }
             state.request.conversationContext?.let { context ->
@@ -929,7 +947,7 @@ class LifeRepository(
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
             val publicationState = AnalysisRunCodec.decode(run.payload)
-            publicationState.request.knowledgeContext?.let {
+            publicationState.knowledgeContext?.let {
                 require(dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(it)) { "已有理解发生变化，不能保存旧结果" }
             }
             publicationState.request.conversationContext?.let {
@@ -1303,7 +1321,7 @@ class LifeRepository(
                 snapshot.currentAnalysisSourceRunIds = snapshot.analysisRuns.filter {
                     val state = AnalysisRunCodec.decode(it.payload)
                     SourceScopeLedger.current(db, it.source, state.request.scope) &&
-                        (state.request.knowledgeContext?.let { context -> dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(context) } ?: true) &&
+                        (state.knowledgeContext?.let { context -> dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(context) } ?: true) &&
                         (state.actionPlan?.let { plan -> actionEvidencePlanCurrent(state.request.scope, plan) } ?: true)
                 }.map { it.id }.toSet()
                 SnapshotValidation.validate(snapshot)
@@ -1560,15 +1578,15 @@ class LifeRepository(
         val retainedFeedbackIds = feedback.map { it.id }.toSet()
         val comparisonsByRun = comparisons.groupBy { it.runId }
         val missingReferenceRuns = analyses.filter { run ->
-            val state = AnalysisRunCodec.decode(run.payload)
+            val (state, formatVersion) = AnalysisRunCodec.decodeWithVersion(run.payload)
             state.profileMaintenancePlans.flatMap { it.references }.any { ref ->
                 ref.kind == ProfileMaintenanceReferenceKind.PROFILE && (ref.id to ref.version) !in retainedProfileIdentities
             } || FeedbackContextProtocol.usedReferences(state).any { ref ->
                 ref.id !in retainedFeedbackIds || ref.runId !in retainedRunIds &&
                     (ref.sourceRecordIds.isNotEmpty() || ref.runId in incomingRunIds)
-            } || state.request.knowledgeContext?.entries?.any { ref ->
+            } || state.knowledgeContexts.flatMap { it.entries }.any { ref ->
                 ref.runId !in retainedRunIds || !KnowledgeContextIdentity.matches(ref, retainedKnowledge,
-                    profileRevisions, experience.threads, experience.changes)
+                    profileRevisions, experience.threads, experience.changes, allowLegacyThreadVersion = formatVersion == 15)
             } == true || state.request.conversationContext?.let { it.parentRunId !in retainedRunIds } == true ||
                 run.id in comparisonDeletedRuns || state.historicalFeedbackResolutions.toSet() != comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()
         }.map { it.id }.toSet()
@@ -1809,10 +1827,20 @@ class LifeRepository(
         }
     }
 
+    internal fun <T> withTopicAliasTransaction(block: () -> T): T = access { db -> transaction(db, block) }
+
+    internal fun topicAliasInputs(offset: Int, limit: Int, includeArchived: Boolean): TopicAliasInputPage = access { db ->
+        transaction(db) { TopicAliasStore.page(db, offset, limit, includeArchived) }
+    }
+
     private fun analysisScope(query: AnalysisQuery): Pair<String, List<String>> {
         val where = mutableListOf("r.revision = h.current_revision", "(r.start_date IS NULL OR (r.end_date >= ? AND r.start_date <= ?))")
         val args = mutableListOf(query.from.toString(), query.through.toString())
         if (!query.includeArchived) where += "r.archived = 0"
+        if (query.recordIds == null) {
+            val (exclusion, values) = TopicAliasStore.excludeConfiguration("r")
+            where += exclusion; args += values
+        }
         query.recordIds?.let { ids ->
             where += "h.id IN (${ids.joinToString(",") { "?" }})"
             args += ids.sorted()
@@ -1972,7 +2000,7 @@ class LifeRepository(
 
     private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
         val state = AnalysisRunCodec.decode(run.payload)
-        if (state.request.knowledgeContext?.let { !dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(it) } == true) return false
+        if (state.knowledgeContext?.let { !dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(it) } == true) return false
         if (state.request.conversationContext?.let { !dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(it) } == true) return false
         if (state.feedbackContext?.let { !FeedbackContextCatalog(this).current(run.id, it) } == true) return false
         val dependencies = try {
@@ -1986,10 +2014,12 @@ class LifeRepository(
         }
     }
 
-    private fun purgeRecordDependents(db: SQLiteDatabase, recordIds: Set<String>) {
+    private fun purgeRecordDependents(db: SQLiteDatabase, recordIds: Set<String>, includeExplicitScope: Boolean = false) {
         val runs = allAnalysisRuns(db)
         val knowledge = allKnowledgeRevisions(db)
-        val directRuns = runs.filter { SourceDependencyDeletion.dependsOnRecords(it, recordIds) }.map { it.id }.toSet()
+        val directRuns = runs.filter { run -> SourceDependencyDeletion.dependsOnRecords(run, recordIds) ||
+            includeExplicitScope && AnalysisRunCodec.decode(run.payload).request.scope.recordIds?.any { it in recordIds } == true
+        }.map { it.id }.toSet()
         val directKnowledge = knowledge.filter { SourceDependencyDeletion.dependsOnRecords(it, recordIds) }.map { it.id }.toSet()
         val affectedRuns = directRuns + ProfileMaintenanceDeletion.affectedRuns(runs, ProfileStore.allRevisions(db),
             knowledge, allClaimFeedback(db), deletedKnowledge = directKnowledge, deletedRuns = directRuns)

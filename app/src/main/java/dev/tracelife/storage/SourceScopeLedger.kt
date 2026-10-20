@@ -64,6 +64,11 @@ internal object SourceScopeLedger {
         val where = mutableListOf("generation > ?", "(start_date IS NULL OR (end_date >= ? AND start_date <= ?))")
         val args = mutableListOf(source.generation.toString(), query.from.toString(), query.through.toString())
         if (!query.includeArchived) where += "archived = 0"
+        if (query.recordIds == null) {
+            val (configurationOnly, values) = TopicAliasStore.entirelyConfiguration("source_scope_changes.record_id")
+            where += "NOT ($configurationOnly)"
+            args += values
+        }
         query.recordIds?.let { ids ->
             where += "record_id IN (${ids.joinToString(",") { "?" }})"
             args += ids.sorted()
@@ -74,5 +79,12 @@ internal object SourceScopeLedger {
     fun resetAfterRestore(db: SQLiteDatabase) {
         db.delete("source_scope_changes", null, null)
         db.execSQL("UPDATE store_state SET scope_generation_floor = generation WHERE singleton = 1")
+    }
+
+    /** Caller first proves all revisions were configuration and erases explicit-scope tasks,
+     * including their deletion fences. No life evidence ever depended on these journal rows. */
+    fun forgetDeletedConfiguration(db: SQLiteDatabase, recordId: String) {
+        require(db.inTransaction())
+        db.delete("source_scope_changes", "record_id = ?", arrayOf(recordId))
     }
 }

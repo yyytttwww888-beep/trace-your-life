@@ -74,7 +74,7 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, ACTION_SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN, HISTORICAL_FEEDBACK_SCAN;
+    EXTRACTION, SYNTHESIS, ACTION_SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN, HISTORICAL_FEEDBACK_SCAN, NAVIGATION;
 
     val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS || this == ACTION_SYNTHESIS || this == METRIC_ANALYSIS
 }
@@ -158,13 +158,19 @@ data class AnalysisCall(
     val historicalFeedbackReadIds: List<String> = emptyList(),
     val feedbackContextSha256: String? = null,
     val historicalFeedbackScan: HistoricalFeedbackScan? = null,
+    val navigation: NavigationSuggestion? = null,
+    val navigationContext: KnowledgeContextPlan? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),
     val profileMaintenancePlans: List<ProfileMaintenancePlan> = emptyList(),
     val actionPlan: ActionEvidencePlan? = null,
     val feedbackContext: FeedbackContextPlan? = null,
-    val historicalFeedbackResolutions: List<HistoricalFeedbackResolution> = emptyList())
+    val historicalFeedbackResolutions: List<HistoricalFeedbackResolution> = emptyList()) {
+    /** A successful navigation fixes the context before the first content analysis; the request remains immutable. */
+    val knowledgeContext: KnowledgeContextPlan? get() = calls.lastOrNull { it.purpose == CallPurpose.NAVIGATION && it.status == CallStatus.SUCCEEDED }?.navigationContext ?: request.knowledgeContext
+    val knowledgeContexts: List<KnowledgeContextPlan> get() = (listOfNotNull(request.knowledgeContext) + calls.mapNotNull { it.navigationContext }).distinctBy { it.sha256 }
+}
 enum class AnalysisStatus { READY, NEEDS_REVIEW, NEEDS_RETRY, IN_FLIGHT, STALE, EXPIRED }
 data class AnalysisTask(val stored: StoredAnalysisRun, val state: AnalysisRunState, val status: AnalysisStatus)
 

@@ -17,7 +17,6 @@
         tools:targetApi="33">
         <activity
             android:name=".MainActivity"
-            android:launchMode="singleTask"
             android:exported="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -25,6 +24,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".ui.ActivityEntryActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.OverviewActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.MaintenanceInboxActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.TopicAliasesActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.TopicActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.DiscoveryActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.HistoricalFeedbackAssistActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />

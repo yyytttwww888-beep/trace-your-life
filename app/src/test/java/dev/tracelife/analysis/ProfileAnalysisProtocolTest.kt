@@ -61,8 +61,8 @@ class ProfileAnalysisProtocolTest {
         assertEquals(target.dimension.name, envelope.getJSONObject("profileTarget").getString("dimension"))
         assertEquals(target.layer.name, envelope.getJSONObject("profileTarget").getString("layer"))
         assertTrue(envelope.getString("system").contains("不得自动形成 LONG_TERM"))
-        assertFalse(envelope.getJSONObject("coverage").getBoolean("wholeScopeReviewed"))
-        assertFalse(envelope.getJSONObject("coverage").getBoolean("crossBatchIntegrated"))
+        assertTrue(envelope.getJSONObject("coverage").getBoolean("allScopeTextProvided"))
+        assertFalse(envelope.getJSONObject("coverage").getBoolean("semanticallyVerified"))
         assertEquals(0, repository.knowledgeHeads(0, 100).size)
         assertEquals(0, repository.profileHeads(0, 100).size)
         repository.close()
@@ -230,8 +230,11 @@ class ProfileAnalysisProtocolTest {
             val id = JSONObject(request.payloadJson).getJSONArray("evidence").getJSONObject(0).getString("id")
             return BatchProposal(listOf(ProposedClaim("合成候选：在本次练习情境中，先尝试可能帮助理解，陌生主题仍需要说明。", listOf(id), kind)), listOf("合成局限：未检查其他时期。"))
         }
-        override fun prepareReview(request: ModelRequest) = wireAdapter?.prepareReview(request)
-            ?: PreparedModelRequest(request, request.payloadJson, 100)
+        override fun prepareReview(request: ModelRequest) = wireAdapter?.prepareReview(request)?.also { prepared ->
+            val limit = AnalysisLimits().inputTokenLimit
+            assertTrue("Profile review framing inputTokens=${prepared.inputTokens}, inputLimit=$limit, " +
+                "wireUtf8Bytes=${prepared.payloadJson.toByteArray(Charsets.UTF_8).size}", prepared.inputTokens <= limit)
+        } ?: PreparedModelRequest(request, request.payloadJson, 100)
         override fun reviewPrepared(request: PreparedModelRequest): ReviewCompletion {
             reviewed += request.original
             val id = JSONObject(request.original.payloadJson).getJSONArray("evidence").getJSONObject(0).getString("id")

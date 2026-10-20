@@ -84,7 +84,28 @@ class DashboardService(private val repository: LifeRepository, private val clock
         }
         return DashboardSnapshot(UUID.randomUUID().toString(), fixed, source, generation, at, validUntil,
             current, previous, comparison, freeze(cards), freeze(currentInsights), freeze(previousInsights),
-            freeze(actions.items), freeze(actions.markers)).also(::assertCurrent)
+            freeze(actions.items), freeze(actions.markers),
+            dev.tracelife.metrics.ActivityMetrics(repository).calculate(source, scope, current.sourceIndex, current.points),
+            dev.tracelife.metrics.ActivityMetrics(repository).calculate(source, previousScope, previous.sourceIndex, previous.points)).also(::assertCurrent)
+    }
+
+    fun activitySources(snapshot: DashboardSnapshot, period: DashboardPeriodSelection = DashboardPeriodSelection.CURRENT,
+        domain: dev.tracelife.metrics.ActivityDomain? = null, measure: dev.tracelife.metrics.ActivityMeasure? = null,
+        pointIndex: Int? = null, correctionsOnly: Boolean = false, offset: Int = 0, limit: Int = 25): DashboardPage<dev.tracelife.metrics.ActivityMetricEntry> = current(snapshot) {
+        val selected = if (period == DashboardPeriodSelection.CURRENT) snapshot.activityCurrent else snapshot.activityPrevious
+        val point = pointIndex?.let { index ->
+            require(index in selected.series.first().points.indices) { "活动图表点不在看板中" }
+            selected.series.first().points[index]
+        }
+        page(selected.entries.filter { entry ->
+            (domain == null || entry.domain == domain) && (!correctionsOnly || entry.issues.isNotEmpty()) &&
+                (point == null || entry.exactDate?.let { it in point.from..point.through } == true) &&
+                when (measure) {
+                    dev.tracelife.metrics.ActivityMeasure.OUTCOMES -> entry.hasOutcome
+                    null -> true
+                    else -> entry.value(measure) != null
+                }
+        }, offset, limit)
     }
 
     /** Clock fences matter even when no database writes occurred. */
