@@ -69,7 +69,7 @@ data class BatchProposal(val claims: List<ProposedClaim>, val unknowns: List<Str
 
 data class ClaimRef(val batchKey: String, val claimIndex: Int, val claimSha256: String)
 enum class CallPurpose {
-    EXTRACTION, SYNTHESIS, ACTION_SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN;
+    EXTRACTION, SYNTHESIS, ACTION_SYNTHESIS, REVIEW, REDUCTION, REDUCTION_SCAN, REDUCTION_REVIEW, METRIC_ANALYSIS, PROFILE_RELATION, PROFILE_SCAN, HISTORICAL_FEEDBACK_SCAN;
 
     val producesClaims: Boolean get() = this == EXTRACTION || this == SYNTHESIS || this == ACTION_SYNTHESIS || this == METRIC_ANALYSIS
 }
@@ -152,6 +152,7 @@ data class AnalysisCall(
     val actionEvidence: List<ActionEvidenceReceipt> = emptyList(),
     val historicalFeedbackReadIds: List<String> = emptyList(),
     val feedbackContextSha256: String? = null,
+    val historicalFeedbackScan: HistoricalFeedbackScan? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),

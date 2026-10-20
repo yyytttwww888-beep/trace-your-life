@@ -17,8 +17,9 @@
 | 正式知识发布、知识索引或记录覆盖指标 | [知识与指标接口](docs/KNOWLEDGE.md)、[第四阶段计划](docs/plans/2026-10-17-knowledge-publication.md)；持久化和导出同时读数据转移接口 |
 | 自动整理、周期材料或报告导出 | [周期材料接口](docs/PERIOD_REFLECTION.md)、[第五阶段计划](docs/plans/2026-10-17-period-reflection.md) |
 | 主动分析入口、进度、发现保存或分析历史 | [主动分析接口](docs/REFLECTION.md)、[闭环设计](docs/superpowers/specs/2026-10-20-visible-reflection-design.md)；涉及模型调用同时读检索协议 |
+| 主题概况、本地查找或主题／经验推荐 | [知识导航](docs/KNOWLEDGE_DISCOVERY.md)、[流程设计](docs/superpowers/specs/2026-10-20-connected-knowledge-workflows-design.md)；模型质量评估读[质量验收](docs/ANALYSIS_QUALITY.md) |
 | 经验关联、补充／例外／收窄／替代或形成过程 | [经验线索](docs/EXPERIENCE_CONTINUITY.md)、[跨期积累设计](docs/superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)；恢复或导出同时读数据转移接口 |
-| 普通分析继承历史意见、逐项对照或反馈依赖清理 | [历史意见](docs/HISTORICAL_FEEDBACK.md)、检索协议；同时检查原文核对与知识发布门槛 |
+| 普通分析继承历史意见、辅助比较、逐项确认或反馈依赖清理 | [历史意见](docs/HISTORICAL_FEEDBACK.md)、检索协议；同时检查原文核对与知识发布门槛 |
 | 分析归档、任务容量或历史分页 | [分析归档](docs/TASK_ARCHIVE.md)；恢复同时读数据转移接口 |
 | 综合判断、行动采纳、回看或行动修订 | [综合与行动接口](docs/SYNTHESIS_ACTIONS.md)、[第六阶段计划](docs/plans/2026-10-17-synthesis-actions.md)；持久化与恢复同时读数据转移接口 |
 | 跨批归并、周期草稿或派生依赖 | [分层周期草稿接口](docs/PERIOD_REDUCTION.md)、[第七阶段计划](docs/plans/2026-10-19-period-reduction.md)；备份变更同时读数据转移接口 |
@@ -42,7 +43,7 @@
 ## 必须保留的边界
 
 - 实现状态以 [README.md](README.md) 和开发路线为准；仅以实际代码和验证结果报告能力，区分自动测试、APK 构建与真机验证。
-- 主动分析页面已接通原文综合、分层归并及确认后核对发布；画像跨任务维护、纵向画像与行动周期分析的流程页面仍后置。新增接口与手机可用能力分别报告。
+- 主动分析、行动复盘、画像维护与趋势图已接通手机页面；新增接口、页面路径和实际验证分别报告。主题及经验候选由用户确认，模型比较建议与用户决定分别保存。
 - 首版面向个人 Android 使用。通用历史资料导入、多用户平台和双向同步不在当前范围；模板导入与备份恢复是明确例外。
 - 记录、观察、洞察与画像采用统一词汇和证据关系。模型输出、用户自述、设备测量及用户确认分别管理。
 - 所有产品 AI 读取都经过程序执行的范围、快照、预算和证据登记；通过分层索引定位，禁止全库一次性灌入上下文。统计数值由明确口径的程序计算。

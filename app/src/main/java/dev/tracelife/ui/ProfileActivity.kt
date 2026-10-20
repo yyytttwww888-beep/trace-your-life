@@ -1,6 +1,10 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
+import android.content.Intent
+import android.os.Bundle
+import android.widget.EditText
+import android.widget.Spinner
 import android.widget.LinearLayout
 import dev.tracelife.analysis.AnalysisProviderException
 import dev.tracelife.analysis.AnalysisRequest
@@ -52,7 +56,56 @@ class ProfileActivity : ScreenActivity() {
     private var changesOffset = 0
     private var changesSnapshot: ProfileChangesSnapshot? = null
 
+    private var restoredPage: String? = null
+    private var generateDimension = 0
+    private var generateLayer = 0
+    private var generateFrom = ""
+    private var generateThrough = ""
+    private var generateQuestion = ""
+    private var generateInputs: List<EditText> = emptyList()
+    private var generateSelectors: List<Spinner> = emptyList()
+
+    override fun restoreScreenState(savedInstanceState: Bundle?) {
+        restoredPage = savedInstanceState?.getString("profileScreen")
+        runId = savedInstanceState?.getString("profileRunId")
+        candidateOffset = savedInstanceState?.getInt("candidateOffset") ?: 0
+        entryId = savedInstanceState?.getString("profileEntryId") ?: intent.getStringExtra("entryId")
+        if (restoredPage == null && entryId != null) restoredPage = "entry"
+        generateDimension = savedInstanceState?.getInt("generateDimension") ?: 0
+        generateLayer = savedInstanceState?.getInt("generateLayer") ?: 0
+        generateFrom = savedInstanceState?.getString("generateFrom").orEmpty()
+        generateThrough = savedInstanceState?.getString("generateThrough").orEmpty()
+        generateQuestion = savedInstanceState?.getString("generateQuestion").orEmpty()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (screen == "generate") captureGenerateForm()
+        outState.putString("profileScreen", screen)
+        outState.putString("profileRunId", runId)
+        outState.putString("profileEntryId", entryId)
+        outState.putInt("candidateOffset", candidateOffset)
+        outState.putInt("generateDimension", generateDimension)
+        outState.putInt("generateLayer", generateLayer)
+        outState.putString("generateFrom", generateFrom)
+        outState.putString("generateThrough", generateThrough)
+        outState.putString("generateQuestion", generateQuestion)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun captureGenerateForm() {
+        generateInputs.getOrNull(0)?.let { generateFrom = it.text.toString() }
+        generateInputs.getOrNull(1)?.let { generateThrough = it.text.toString() }
+        generateInputs.getOrNull(2)?.let { generateQuestion = it.text.toString() }
+        generateSelectors.getOrNull(0)?.let { generateDimension = it.selectedItemPosition }
+        generateSelectors.getOrNull(1)?.let { generateLayer = it.selectedItemPosition }
+    }
+
     override fun showHome() {
+        val restore = restoredPage
+        restoredPage = null
+        if (restore == "generate") { showGenerateForm(); return }
+        if (restore in setOf("candidates", "candidateDetail") && runId != null) { showCandidateProgress(requireNotNull(runId), candidateOffset); return }
+        if (restore == "entry" && entryId != null) { showEntry(requireNotNull(entryId)); return }
         entryRevision = null
         beginScreen("home", "关于我", showBack = false)
         note("从经历中慢慢认识自己。这里留下你选择采用的描述，也允许随时修正。")
@@ -75,18 +128,21 @@ class ProfileActivity : ScreenActivity() {
             }
             Ui.card(root).also { card ->
                 if (snapshot.total > 0) primaryIn(card, "了解近期的自己", "generate") { showGenerateForm() }
+                addButton(card, "从不同阶段认识自己", "longitudinalProfile") { startActivity(Intent(this, LongitudinalProfileActivity::class.java)) }
+                addButton(card, "整理历史与进度", "profileTaskHistory") { startActivity(Intent(this, LongitudinalProfileActivity::class.java).putExtra("history", true)) }
                 addButton(card, "待采用与历史描述", "manage") { showManagement() }
                 addButton(card, "变化记录", "changes") { showChangesForm() }
             }
             Ui.disclosure(root, "这些描述从哪里来", "profileAbout") { details ->
                 Ui.note(details, "描述来自已有记录与知识，由你明确采用，不是人格测验或固定标签。近期描述默认查看最近 30 天；没有描述只代表资料不足。")
-                Ui.note(details, "${snapshot.omittedNotCurrent} 条描述当前未纳入。已有画像之间的比较、反例检查与长期整理页面仍待接入。")
+                Ui.note(details, "${snapshot.omittedNotCurrent} 条描述当前未纳入。新描述可继续与历史判断对照、检查原文与反例；长期整理按多个完整月份比较。")
             }
         }
     }
 
     override fun navigateBack() {
         if (busy) return
+        if (screen == "generate") captureGenerateForm()
         when (screen) {
             "dimension", "manage", "generate", "candidates", "changesForm" -> showHome()
             "changes" -> showChangesForm()
@@ -327,15 +383,18 @@ class ProfileActivity : ScreenActivity() {
         beginScreen("generate", "了解近期的自己")
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "想了解哪个方面？")
-            Ui.note(card, "从这段时间的记录中整理可能的描述。核对、确认后可以保存，你再决定是否采用。长期描述尚不在本页整理。")
+            Ui.note(card, "从这段时间的记录中整理可能的描述。核对、确认后可以保存，你再决定是否采用。跨阶段描述可从「从不同阶段认识自己」进入。")
             Ui.fieldLabel(card, "画像维度")
-            val dimensionSpinner = spinnerIn(card, ProfileDimension.entries.map(::dimensionLabel), 0, "dimension")
+            val dimensionSpinner = spinnerIn(card, ProfileDimension.entries.map(::dimensionLabel), generateDimension, "dimension")
             Ui.fieldLabel(card, "层次")
-            val layerSpinner = spinnerIn(card, listOf("近期状态", "情境模式"), 0, "layer")
-            val fromField = labeledFieldIn(card, "范围起始日期", hint = "YYYY-MM-DD", value = LocalDate.now().minusDays(30).toString())
-            val throughField = labeledFieldIn(card, "范围结束日期", hint = "YYYY-MM-DD", value = LocalDate.now().toString())
-            val questionField = labeledFieldIn(card, "这次想了解什么？", multiline = true, maxLength = 2_000)
+            val layerSpinner = spinnerIn(card, listOf("近期状态", "情境模式"), generateLayer, "layer")
+            val fromField = labeledFieldIn(card, "范围起始日期", hint = "YYYY-MM-DD", value = generateFrom.ifEmpty { LocalDate.now().minusDays(30).toString() })
+            val throughField = labeledFieldIn(card, "范围结束日期", hint = "YYYY-MM-DD", value = generateThrough.ifEmpty { LocalDate.now().toString() })
+            val questionField = labeledFieldIn(card, "这次想了解什么？", value = generateQuestion, multiline = true, maxLength = 2_000)
+            generateInputs = listOf(fromField, throughField, questionField)
+            generateSelectors = listOf(dimensionSpinner, layerSpinner)
             primaryIn(card, "开始整理", "startGenerate") {
+                captureGenerateForm()
                 val request = try {
                     val from = parseDate(fromField.text.toString(), "起始日期")
                     val through = parseDate(throughField.text.toString(), "结束日期")
@@ -365,6 +424,9 @@ class ProfileActivity : ScreenActivity() {
     }
 
     private fun runCandidatePass(id: String) {
+        runId = id
+        beginScreen("candidates", "正在整理，进度会保留")
+        note("本轮最多 5 次请求。关闭后重新打开只查看已保存的进度。")
         runIo({
             val failure = try {
                 app.profileCandidates.process(id, app.deepSeekProvider, app.deepSeekProvider, maxModelRequests = 5)
@@ -479,7 +541,7 @@ class ProfileActivity : ScreenActivity() {
             }
             when (detail.item.disposition) {
                 ProfileCandidateDisposition.MAINTENANCE_REQUIRED ->
-                    Ui.note(card, "这条描述需要与已有画像或长期资料对照，暂时不能直接保存。对应的比较页面尚未接入。")
+                    Ui.note(card, "这条描述需要与历史判断及完整范围原文对照。请继续历史对照与反例检查。")
                 ProfileCandidateDisposition.READY_TO_MATERIALIZE ->
                     Ui.note(card, "已完成核对和你的确认，可以保存为待采用描述。")
                 ProfileCandidateDisposition.AWAITING_CONFIRMATION ->
@@ -488,12 +550,17 @@ class ProfileActivity : ScreenActivity() {
             }
         }
         val currentRunId = runId ?: return
+        primaryButton("历史对照与反例检查", "openProfileMaintenance") {
+            startActivity(ProfileMaintenanceActivity.intent(this, currentRunId, id))
+        }
         Ui.card(root).also { card ->
             Ui.sectionTitle(card, "操作")
             addButton(card, "确认这条描述", "confirmClaim") {
                 confirm("确认这条描述？", "确认表示你认可这段文字。之后需要重新核对，再决定是否保存；不会自动采用。", "确认") {
                     runIo({
-                        app.analysisFeedback.respond(currentRunId, id, app.analysis.task(currentRunId).stored.version, ClaimFeedbackDecision.CONFIRMED)
+                        val previous = app.analysisFeedback.forClaim(currentRunId, id)
+                        app.analysisFeedback.respond(currentRunId, id, app.analysis.task(currentRunId).stored.version, ClaimFeedbackDecision.CONFIRMED,
+                            previous?.feedback?.userText, previous?.feedback?.version)
                     }) {
                         toast("已确认，请返回列表继续整理，完成重新核对")
                         showCandidateProgress(currentRunId, candidateOffset)

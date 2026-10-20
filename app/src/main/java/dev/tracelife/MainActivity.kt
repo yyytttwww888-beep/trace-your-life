@@ -205,6 +205,9 @@ class MainActivity : Activity() {
         Ui.button(actions, "做个复盘", "templates") { if (!busy) showTemplates() }
             .layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         Ui.card(root).apply { tag = "reflectionOverview" }
+        Ui.textButton(root, "查找记录与知识", "searchAllContent") {
+            if (!busy) startActivity(Intent(this, dev.tracelife.ui.DiscoveryActivity::class.java))
+        }
         Ui.sectionTitle(root, "最近记录")
         val filtered = filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank() || includeArchived || !includeUnknown
         Ui.disclosure(root, if (filtered) "筛选 · 已设置" else "筛选记录", "recordFilters", expanded = filtered) { filters ->
@@ -315,7 +318,7 @@ class MainActivity : Activity() {
     private fun showDetail(id: String, revision: Int? = null) {
         recordId = id
         historicalRevision = revision
-        beginScreen("detail", if (revision == null) "记录详情" else "历史版本 · $revision")
+        beginScreen("detail", if (revision == null) "记录详情" else "记录 · 第 $revision 版")
         runIo({
             val record = requireNotNull(repository.record(id, revision)) { "记录不存在或已被删除" }
             RecordDetail(record, record.draft.template?.let { repository.template(it.id, it.version) }, record.draft.attachmentIds.mapNotNull(repository::attachment))
@@ -340,6 +343,10 @@ class MainActivity : Activity() {
             }
             Ui.disclosure(root, "记录信息", "recordInformation") { details ->
                 Ui.note(details, "录入：${record.createdAt}\n最近修改：${record.updatedAt}\n时区：${record.draft.occurrence.zoneId}")
+            }
+            if (revision != null) {
+                Ui.note(root, "这里展示查阅时固定的版本。要继续编辑，请打开当前记录。")
+                addButton(root, "查看当前记录", "viewCurrentRecord") { if (!busy) showDetail(id) }
             }
             if (revision == null) {
                 val reflection = Ui.card(root)
@@ -426,6 +433,25 @@ class MainActivity : Activity() {
         dateVisibility()
         dev.tracelife.ui.Ui.note(dateCard, "时区：${state.zoneId}")
         field("topics", "多个主题用逗号隔开，例如：工作，学习", state.topics, parent = dateCard, label = "主题")
+        addButton(dateCard, "根据内容推荐主题", "suggestRecordTopics") {
+            captureInputs()
+            val body = (listOf(state.body) + state.answers.values).joinToString("\n")
+            val selected = state.topics.split(',', '，', '\n').map(String::trim).filter(String::isNotEmpty).toSet()
+            runIo({ dev.tracelife.knowledge.KnowledgeDiscovery(repository).suggestTopics(body, selected) }) { suggestions ->
+                if (suggestions.isEmpty()) Toast.makeText(this, "暂时没有明确的主题建议，可以自己填写。", Toast.LENGTH_SHORT).show()
+                else {
+                    val checked = BooleanArray(suggestions.size)
+                    android.app.AlertDialog.Builder(this).setTitle("选择想加的主题")
+                        .setMultiChoiceItems(suggestions.map { "${it.topic} · ${it.reason}" }.toTypedArray(), checked) { _, which, yes -> checked[which] = yes }
+                        .setNegativeButton("取消", null).setPositiveButton("加入所选主题") { _, _ ->
+                            captureInputs()
+                            val current = state.topics.split(',', '，', '\n').map(String::trim).filter(String::isNotEmpty)
+                            state.topics = (current + suggestions.filterIndexed { index, _ -> checked[index] }.map { it.topic }).distinct().joinToString("，")
+                            editorFields["topics"]?.setText(state.topics)
+                        }.show()
+                }
+            }
+        }
         val attachmentCard = Ui.disclosure(root, "图片${if (state.attachments.isEmpty()) "" else " · ${state.attachments.size} 张"}", "recordImages", expanded = state.attachments.isNotEmpty()) { }
         Ui.note(attachmentCard, "图片随记录保存，暂不识别内容。")
         state.attachments.forEach { id ->

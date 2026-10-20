@@ -25,6 +25,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".ui.TopicActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.DiscoveryActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.HistoricalFeedbackAssistActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.ActionReflectionActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.ProfileMaintenanceActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.LongitudinalProfileActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.DashboardActivity" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.FeedbackNotesActivity" android:exported="false" />
         <activity android:name=".ui.ExperienceActivity" android:exported="false" />

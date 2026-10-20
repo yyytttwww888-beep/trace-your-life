@@ -18,6 +18,8 @@
 - [M3 第二阶段计划](plans/2026-10-17-deepseek-analysis.md)：模型适配与分批整理的实现范围。
 - [核对与反馈接口](CLAIM_REVIEW.md)：原文核对、用户纠正、反馈有效性与删除规则。
 - [M3 第三阶段计划](plans/2026-10-17-evidence-review-and-feedback.md)：证据核对与用户反馈的实现和验收。
+- [主题概况与本地查找](KNOWLEDGE_DISCOVERY.md)：汇集主题理解、关注与行动，定位原始记录、知识和经验历史。
+- [分析质量回归](ANALYSIS_QUALITY.md)：合成验收矩阵与真实语义评估的区分。
 - [知识与指标接口](KNOWLEDGE.md)：条件发布、分层查阅、依赖失效与确定性记录指标。
 - [M3 第四阶段计划](plans/2026-10-17-knowledge-publication.md)：正式知识、阅读索引及记录指标的实施与验证。
 - [自动整理与周期复盘材料](PERIOD_REFLECTION.md)：有界执行、材料分组、指标证据、原文下钻和报告导出。

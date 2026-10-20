@@ -7,6 +7,7 @@ import dev.tracelife.knowledge.ExperienceMemberView
 import dev.tracelife.knowledge.ExperiencePage
 import dev.tracelife.knowledge.ExperienceRelation
 import dev.tracelife.knowledge.ExperienceView
+import dev.tracelife.knowledge.KnowledgeDiscovery
 import dev.tracelife.knowledge.KnowledgeContinuity
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.storage.ClaimFeedbackDecision
@@ -16,6 +17,7 @@ class ExperienceActivity : ScreenActivity() {
     private val continuity get() = KnowledgeContinuity(app.repository)
     private var mode = "catalog"
     private var threadId: String? = null
+    private var targetSequence: Int? = null
     private var knowledgeId: String? = null
     private var knowledgeRevision = -1
     private var relatedKnowledgeId: String? = null
@@ -35,6 +37,7 @@ class ExperienceActivity : ScreenActivity() {
         if (savedInstanceState != null) {
             mode = savedInstanceState.getString("mode", "catalog")
             threadId = savedInstanceState.getString("threadId")
+            targetSequence = savedInstanceState.getInt("targetSequence", -1).takeIf { it > 0 }
             knowledgeId = savedInstanceState.getString("knowledgeId")
             knowledgeRevision = savedInstanceState.getInt("knowledgeRevision", -1)
             relatedKnowledgeId = savedInstanceState.getString("relatedKnowledgeId")
@@ -46,6 +49,7 @@ class ExperienceActivity : ScreenActivity() {
             draftThreadId = savedInstanceState.getString("draftThreadId") ?: draftThreadId
         } else {
             threadId = intent.getStringExtra(EXTRA_THREAD_ID)
+            targetSequence = intent.getIntExtra(EXTRA_SEQUENCE, -1).takeIf { it > 0 }
             knowledgeId = intent.getStringExtra(EXTRA_KNOWLEDGE_ID)
             knowledgeRevision = intent.getIntExtra(EXTRA_KNOWLEDGE_REVISION, -1)
             relatedKnowledgeId = intent.getStringExtra(EXTRA_RELATED_KNOWLEDGE_ID)
@@ -56,6 +60,7 @@ class ExperienceActivity : ScreenActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         captureDraft()
+        outState.putInt("targetSequence", targetSequence ?: -1)
         outState.putString("mode", mode); outState.putString("threadId", threadId)
         outState.putString("knowledgeId", knowledgeId); outState.putInt("knowledgeRevision", knowledgeRevision)
         outState.putString("relatedKnowledgeId", relatedKnowledgeId); outState.putString("topic", topic)
@@ -84,7 +89,7 @@ class ExperienceActivity : ScreenActivity() {
         if (busy) return
         when (mode) {
             "create", "append" -> { captureDraft(); expectedVersion = null; showCatalog() }
-            "detail" -> { threadId = null; showCatalog() }
+            "detail" -> { threadId = null; targetSequence = null; showCatalog() }
             else -> finish()
         }
     }
@@ -107,12 +112,31 @@ class ExperienceActivity : ScreenActivity() {
             section("或加入一条已有经验")
         }
         topic?.let { note("主题：$it") }
-        runIo({ continuity.page(topic, relatedKnowledgeId, offset, 20, previous) }) { result ->
+        runIo({
+            val suggestions = if (knowledgeId != null && offset == 0)
+                KnowledgeDiscovery(app.repository).suggestExperiences(requireNotNull(knowledgeId), knowledgeRevision) else emptyList()
+            suggestions to continuity.page(topic, relatedKnowledgeId, offset, 20, previous)
+        }) { (suggestions, result) ->
             page = result
+            if (knowledgeId != null && offset == 0) {
+                section("可能有关的经验")
+                note("根据共同主题和文字查找候选；是否属于同一条经验、是补充还是例外，由你决定。")
+                if (suggestions.isEmpty()) note("暂时没有找到合适候选。仍可浏览完整目录，或建立新线索。")
+                suggestions.forEach { candidate ->
+                    listRow(root, "${candidate.thread.title}\n${candidate.reasons.joinToString("；")}\n${candidate.current.value.claim.text.take(140)}",
+                        "suggestedExperience:${candidate.thread.id}") {
+                        targetSequence = null
+                        threadId = candidate.thread.id; expectedVersion = candidate.thread.version
+                        mode = "append"; showForm()
+                    }
+                }
+                section("完整经验目录")
+            }
             if (result.items.isEmpty()) note(if (knowledgeId == null) "还没有经验线索。打开一条已保存的知识，从它开始积累。" else "这里还没有经验线索，可以先为这条理解起一个名字。")
             result.items.forEach { item ->
                 val wording = item.current.knowledge?.value?.claim?.text?.take(100) ?: "相关知识已删除，独立说明仍保留"
                 listRow(root, "${item.thread.title}\n${item.thread.version} 次积累 · ${memberState(item.current)}\n$wording", "experienceChoice:${item.thread.id}") {
+                    targetSequence = null
                     threadId = item.thread.id
                     if (knowledgeId != null) {
                         expectedVersion = item.thread.version; mode = "append"; showForm()
@@ -180,7 +204,14 @@ class ExperienceActivity : ScreenActivity() {
     private fun showThread(id: String, offset: Int = 0, previous: ExperienceView? = null) {
         mode = "detail"; threadId = id
         beginScreen("detail", "这条经验的变化")
-        runIo({ requireNotNull(continuity.get(id, offset, 20, previous)) { "经验线索已删除" } }) { view ->
+        runIo({
+            val actualOffset = if (offset == 0 && previous == null && targetSequence != null) {
+                val version = requireNotNull(app.repository.experienceThread(id)) { "经验线索已删除" }.version
+                val distance = (version - requireNotNull(targetSequence)).coerceAtLeast(0)
+                distance / 20 * 20
+            } else offset
+            requireNotNull(continuity.get(id, actualOffset, 20, previous)) { "经验线索已删除" }
+        }) { view ->
             detail = view
             section(view.thread.title)
             note("${view.thread.version} 次积累 · ${view.thread.topics.joinToString("、").ifBlank { "未设置主题" }}")
@@ -192,6 +223,7 @@ class ExperienceActivity : ScreenActivity() {
             }
             note("新发现可从知识详情的「建立或加入经验线索」继续接到这里。")
             section("形成过程 · 从最近一次变化回看")
+            targetSequence?.let { note("查找命中第 $it 次变化；下面保留那次的理解与说明，不代表目前采用的结论。") }
             note("补充与例外保留在过程中；每次收窄或替代都有原来的理解可以回看。")
             view.changes.forEach { item ->
                 card().also { change ->
@@ -201,7 +233,7 @@ class ExperienceActivity : ScreenActivity() {
                     } else renderMember(change, item, "change:${item.change.sequence}")
                 }
             }
-            if (offset > 0) button("回到最近变化", "experienceHistoryFirst") { showThread(id) }
+            if (offset > 0 || targetSequence != null) button("回到最近变化", "experienceHistoryFirst") { targetSequence = null; showThread(id) }
             view.nextOffset?.let { next -> button("更早的形成过程", "experienceHistoryNext") { showThread(id, next, view) } }
             Ui.disclosure(root, "管理这条经验", "experienceManagement") { management ->
                 dangerIn(management, "永久删除经验线索", "deleteExperience") {
@@ -252,6 +284,7 @@ class ExperienceActivity : ScreenActivity() {
     }
     companion object {
         private val DISPLAY_TIME = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        const val EXTRA_SEQUENCE = "experienceSequence"
         const val EXTRA_THREAD_ID = "experienceThreadId"
         const val EXTRA_KNOWLEDGE_ID = "experienceSourceKnowledgeId"
         const val EXTRA_KNOWLEDGE_REVISION = "experienceSourceRevision"

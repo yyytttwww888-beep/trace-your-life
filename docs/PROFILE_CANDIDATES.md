@@ -84,3 +84,7 @@ val saved = app.profileCandidates.materialize(
 真实 DeepSeek 验证采用独立默认关闭的开关，只使用合成资料；命令和实际边界见[DeepSeek 接入](DEEPSEEK.md)。接口自动化测试、真实模型小样本和真机验收分别记录。
 
 新候选已确认、局部核对支持、尚未物化且适用历史目录非空时，状态返回 `MAINTENANCE_REQUIRED`；必须经[跨任务维护](PROFILE_MAINTENANCE.md)比较、扫描并明确应用，普通局部核对通过仍不能直接物化。
+
+## 手机任务接续
+
+近期／情境生成表单保留输入、维度、层次和日期，页面重建恢复任务身份与候选页；恢复不会重新请求模型。候选详情现可进入[历史对照与反例检查](PROFILE_MAINTENANCE.md#手机核对流程)，长期入口及包括近期任务在内的分页历史见[跨阶段手机流程](LONGITUDINAL_PROFILE.md#手机跨阶段整理)。普通候选保存与画像采用仍是两个独立操作。

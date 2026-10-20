@@ -30,7 +30,9 @@ object AnalysisRunCodec {
 
     private val PROFILE_FIELDS = setOf("profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof")
 
-    fun encode(state: AnalysisRunState): String = encodeVersion(state, 12)
+    // Legacy tasks keep v12's exact shape until the new purpose is actually used.
+    fun encode(state: AnalysisRunState): String = encodeVersion(state,
+        if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -43,6 +45,7 @@ object AnalysisRunCodec {
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
         require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
         require(version >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
+        require(version >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(version >= 12 || state.feedbackContext == null && !state.request.inheritHistoricalFeedback)
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
@@ -54,6 +57,7 @@ object AnalysisRunCodec {
         }
         return json(mapOf("formatVersion" to version, "request" to request, "calls" to state.calls.map {
             var fields = callMap(it)
+            if (version < 13) fields = fields - "historicalFeedbackScan"
             if (version < 12) fields = fields - setOf("historicalFeedbackReadIds", "feedbackContextSha256")
             if (version < 10) fields = fields - "actionEvidence"
             if (version < 9) fields = fields - PROFILE_FIELDS
@@ -86,7 +90,13 @@ object AnalysisRunCodec {
             val ownReduction = if (call.purpose == CallPurpose.REDUCTION && call.reductionOutput != null)
                 call.reductionOutput.statements.indices.map { ReductionGraph.feedbackRef(ReductionGraph.statementRef(call, it)) }
                 else call.redactedReductionIdentity?.statements.orEmpty()
-            val dependencies = if (call.purpose == CallPurpose.REDUCTION) call.reductionInputs.flatMap {
+            val historicalTarget = if (call.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN)
+                state.calls.take(index).lastOrNull { it.batchKey == ref?.batchKey && it.purpose == CallPurpose.REDUCTION }
+                else null
+            val dependencies = if (historicalTarget != null) ReductionGraph.feedbackClaims(state.calls.take(index),
+                if (ReductionGraph.isRedacted(historicalTarget)) ReductionNodeRef(historicalTarget.batchKey, historicalTarget.attempt,
+                    requireNotNull(historicalTarget.redactedReductionIdentity).outputSha256) else ReductionGraph.nodeRef(historicalTarget), true, true)
+            else if (call.purpose == CallPurpose.REDUCTION) call.reductionInputs.flatMap {
                 ReductionGraph.feedbackClaims(state.calls.take(index), it.node, true, true)
             } + ownReduction else call.reductionReviewTokens.map { it.claim }
             val affected = call.purpose == CallPurpose.REVIEW && ref != null && call.feedbackVersion > 0 && feedbackId(run.id, ref) in deletedFeedbackIds ||
@@ -96,7 +106,8 @@ object AnalysisRunCodec {
                 val identity = if (call.purpose == CallPurpose.REDUCTION && call.reductionOutput != null)
                     RedactedReductionIdentity(ReductionGraph.outputSha256(call), ownReduction) else call.redactedReductionIdentity
                 call.copy(status = CallStatus.FAILED, failureCode = "FEEDBACK_DELETED", finishedAt = maxOf(now, call.startedAt),
-                    review = null, reductionOutput = null, reductionScan = null, usage = null, redactedReductionIdentity = identity)
+                    review = null, reductionOutput = null, reductionScan = null, historicalFeedbackScan = null,
+                    usage = null, redactedReductionIdentity = identity)
             } else call
         }
         if (!changed) return run
@@ -143,7 +154,7 @@ object AnalysisRunCodec {
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 12) arrayOf("feedbackContext", "historicalFeedbackResolutions") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..12)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..13)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
@@ -177,7 +188,8 @@ object AnalysisRunCodec {
                     7, 8 -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray()
                     else -> reviewed + arrayOf("reductionInputs", "reductionOutput", "metricEvidence") + NEW_FIELDS.toTypedArray() + PROFILE_FIELDS.toTypedArray() +
                         (if (format >= 10) arrayOf("actionEvidence") else emptyArray()) +
-                        (if (format >= 12) arrayOf("historicalFeedbackReadIds", "feedbackContextSha256") else emptyArray())
+                        (if (format >= 12) arrayOf("historicalFeedbackReadIds", "feedbackContextSha256") else emptyArray()) +
+                        (if (format >= 13) arrayOf("historicalFeedbackScan") else emptyArray())
                 })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
@@ -207,13 +219,15 @@ object AnalysisRunCodec {
                     call["profileMaintenanceProof"]?.let(ProfileMaintenanceProtocol::parseProof),
                     if (format >= 10) call.list("actionEvidence").map(ActionEvidenceProtocol::parseReceipt) else emptyList(),
                     if (format >= 12) call.strings("historicalFeedbackReadIds") else emptyList(),
-                    call["feedbackContextSha256"]?.let { call.string("feedbackContextSha256") })
+                    call["feedbackContextSha256"]?.let { call.string("feedbackContextSha256") },
+                    call["historicalFeedbackScan"]?.let(HistoricalFeedbackAssistProtocol::parseResult))
             },
             if (format < 9) emptyList() else root.list("profileMaintenancePlans").map(ProfileMaintenanceProtocol::parsePlan),
             root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
             root["feedbackContext"]?.let(FeedbackContextProtocol::parsePlan),
             if (format >= 12) root.list("historicalFeedbackResolutions").map(FeedbackContextProtocol::parseResolution) else emptyList(),
         )
+        require(format >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(format >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         require(format >= 10 || state.calls.none { it.purpose == CallPurpose.ACTION_SYNTHESIS })
         require(format >= 9 || state.calls.none { it.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN) })
@@ -360,6 +374,7 @@ object AnalysisRunCodec {
         }
         state.calls.forEachIndexed { index, call ->
             validId(call.batchKey); validId(call.providerId)
+            HistoricalFeedbackAssistProtocol.validateCall(state.copy(calls = state.calls.take(index)), call)
             require(digest.matches(call.requestSha256) && call.inputBytes in 1..limits.maxInputBytes && call.inputTokens in 1..limits.inputTokenLimit)
             call.usage?.let { require(call.status == CallStatus.SUCCEEDED && it.promptTokens in 1..call.inputTokens && it.completionTokens in 0..limits.outputTokenReserve) }
             val actionCall = state.request.actionPeriod
@@ -373,7 +388,7 @@ object AnalysisRunCodec {
                 require(call.evidence.isEmpty() && call.metricEvidence.size == 1) { "指标调用只能提供一个完整范围指标" }
                 call.metricEvidence.forEach { RecordMetricProtocol.validate(it, scope) }
             } else require(call.metricEvidence.isEmpty()) { "本调用类型不支持指标证据" }
-            if (call.purpose == CallPurpose.REDUCTION || call.purpose == CallPurpose.PROFILE_RELATION || metricCall) require(call.evidence.isEmpty() && call.actionEvidence.isEmpty())
+            if (call.purpose == CallPurpose.REDUCTION || call.purpose == CallPurpose.PROFILE_RELATION || call.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN || metricCall) require(call.evidence.isEmpty() && call.actionEvidence.isEmpty())
             else require(call.evidence.size + call.actionEvidence.size in 1..32 && call.evidence.map { it.id }.distinct().size == call.evidence.size)
             call.evidence.forEach { ref ->
                 validId(ref.recordId)
@@ -430,6 +445,9 @@ object AnalysisRunCodec {
             }
             if (call.purpose.producesClaims) {
                 require(call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
+            } else if (call.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN) {
+                // Identity, complete per-page coverage and output are checked by its protocol above.
+                require(call.review == null && call.proposal == null && call.feedbackVersion == 0)
             } else if (call.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)) {
                 require(call.proposal == null && call.review == null && call.feedbackVersion == 0)
                 val ref = requireNotNull(call.reviewTarget)
@@ -473,17 +491,20 @@ object AnalysisRunCodec {
                     if (call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS, CallPurpose.METRIC_ANALYSIS)) require(proposal.claims.all { it.kind == ClaimKind.POSSIBLE_INTERPRETATION }) {
                         "综合判断必须保留为可能解释"
                     }
+                } else if (call.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN) {
+                    HistoricalFeedbackAssistProtocol.validateResult(requireNotNull(call.historicalFeedbackScan), call.historicalFeedbackReadIds, limits.maxOutputBytes)
                 } else if (call.purpose == CallPurpose.PROFILE_RELATION) ProfileMaintenanceProtocol.validateRelation(requireNotNull(call.profileRelation), limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.PROFILE_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.profileScan), call.evidence, limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.REDUCTION) validateReduction(requireNotNull(call.reductionOutput), call.reductionInputs, limits.maxOutputBytes)
                 else if (call.purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(call.reductionScan), call.evidence, limits.maxOutputBytes, call.actionEvidence)
                 else validateReview(requireNotNull(call.review), call.evidence, limits.maxOutputBytes, call.metricEvidence, call.actionEvidence)
             } else {
-                require(call.proposal == null && call.review == null && call.reductionOutput == null && call.reductionScan == null && call.profileRelation == null && call.profileScan == null)
+                require(call.proposal == null && call.review == null && call.reductionOutput == null && call.reductionScan == null && call.profileRelation == null && call.profileScan == null && call.historicalFeedbackScan == null)
                 if (call.status == CallStatus.IN_FLIGHT) require(call.finishedAt == null && call.failureCode == null)
                 else require(call.finishedAt != null && call.failureCode in setOf("PROVIDER_FAILED", "INVALID_RESPONSE", "INTERRUPTED", "FEEDBACK_DELETED") + ProviderFailureCode.entries.map { "PROVIDER_${it.name}" })
                 if (call.failureCode == "FEEDBACK_DELETED") require(call.status == CallStatus.FAILED &&
-                    (call.purpose == CallPurpose.REVIEW && call.feedbackVersion > 0 || call.purpose == CallPurpose.REDUCTION || reductionReview))
+                    (call.purpose == CallPurpose.REVIEW && call.feedbackVersion > 0 || call.purpose == CallPurpose.REDUCTION ||
+                        call.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN || reductionReview))
             }
         }
     }
@@ -577,7 +598,8 @@ object AnalysisRunCodec {
         "profileScan" to call.profileScan?.let(ReductionReviewProtocol::scanMap),
         "profileMaintenanceProof" to call.profileMaintenanceProof?.let(ProfileMaintenanceProtocol::proofMap),
         "actionEvidence" to call.actionEvidence.map(ActionEvidenceProtocol::receiptMap),
-        "historicalFeedbackReadIds" to call.historicalFeedbackReadIds, "feedbackContextSha256" to call.feedbackContextSha256)
+        "historicalFeedbackReadIds" to call.historicalFeedbackReadIds, "feedbackContextSha256" to call.feedbackContextSha256,
+        "historicalFeedbackScan" to call.historicalFeedbackScan?.let(HistoricalFeedbackAssistProtocol::resultMap))
     internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
     internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)

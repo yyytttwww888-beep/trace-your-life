@@ -57,6 +57,11 @@ class PeriodActivity : ScreenActivity() {
                 .putExtra(ReflectionActivity.EXTRA_FROM, fromField?.text?.toString().orEmpty())
                 .putExtra(ReflectionActivity.EXTRA_THROUGH, throughField?.text?.toString().orEmpty()))
         }
+        button("对照原计划与执行回看", "analyzeActionsPeriod") {
+            startActivity(android.content.Intent(this, ActionReflectionActivity::class.java)
+                .putExtra(ActionReflectionActivity.EXTRA_FROM, fromField?.text?.toString().orEmpty())
+                .putExtra(ActionReflectionActivity.EXTRA_THROUGH, throughField?.text?.toString().orEmpty()))
+        }
     }
 
     override fun navigateBack() {

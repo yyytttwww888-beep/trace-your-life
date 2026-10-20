@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tracelife.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.0-preview.5"
+        versionCode = 6
+        versionName = "0.1.0-preview.6"
     }
 
     compileOptions {
@@ -40,7 +40,8 @@ android {
             val actionPeriodEnabled = providers.gradleProperty("traceLifeDeepSeekActionPeriod").orNull == "true"
             val actionReportEnabled = providers.gradleProperty("traceLifeDeepSeekActionReport").orNull == "true"
             val reflectionEnabled = providers.gradleProperty("traceLifeDeepSeekReflection").orNull == "true"
-            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
+            val historicalAssistEnabled = providers.gradleProperty("traceLifeDeepSeekHistoricalAssist").orNull == "true"
+            if (historicalAssistEnabled || smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
                 if (synthesisEnabled) it.systemProperty("traceLife.deepSeekSynthesis", "true")
@@ -51,6 +52,7 @@ android {
                 if (maintenanceEnabled) it.systemProperty("traceLife.deepSeekMaintenance", "true")
                 if (actionPeriodEnabled) it.systemProperty("traceLife.deepSeekActionPeriod", "true")
                 if (actionReportEnabled) it.systemProperty("traceLife.deepSeekActionReport", "true")
+                if (historicalAssistEnabled) it.systemProperty("traceLife.deepSeekHistoricalAssist", "true")
                 if (reflectionEnabled) it.systemProperty("traceLife.deepSeekReflection", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
