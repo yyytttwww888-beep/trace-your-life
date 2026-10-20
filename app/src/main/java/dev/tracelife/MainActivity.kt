@@ -32,6 +32,9 @@ import dev.tracelife.model.TemplateVersion
 import dev.tracelife.templates.TemplateImporter
 import dev.tracelife.ui.Ui
 import dev.tracelife.ui.AppNavigation
+import dev.tracelife.ui.ReflectionActivity
+import dev.tracelife.analysis.ReflectionRun
+import dev.tracelife.analysis.ReflectionStatus
 import dev.tracelife.ui.EditorState
 import dev.tracelife.ui.TemplateEditorState
 import dev.tracelife.ui.parseDate
@@ -46,6 +49,7 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private var screen = "records"
     private var busy = false
+    private var resumedOnce = false
     private var generation = 0
     private var recordId: String? = null
     private var historicalRevision: Int? = null
@@ -70,6 +74,13 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) {
+            intent.getStringExtra(EXTRA_RECORD_ID)?.let {
+                recordId = it
+                historicalRevision = intent.getIntExtra(EXTRA_RECORD_REVISION, -1).takeIf { version -> version > 0 }
+                screen = "detail"
+            }
+        }
         savedInstanceState?.let { state ->
             screen = state.getString("screen") ?: "records"
             recordId = state.getString("recordId")
@@ -105,6 +116,12 @@ class MainActivity : Activity() {
             else -> showRecords()
         }
         consumePendingDocument()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (resumedOnce && screen == "records" && !busy) loadRecords()
+        resumedOnce = true
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -187,6 +204,7 @@ class MainActivity : Activity() {
         }
         Ui.button(actions, "做个复盘", "templates") { if (!busy) showTemplates() }
             .layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        Ui.card(root).apply { tag = "reflectionOverview" }
         Ui.sectionTitle(root, "最近记录")
         val filtered = filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank() || includeArchived || !includeUnknown
         Ui.disclosure(root, if (filtered) "筛选 · 已设置" else "筛选记录", "recordFilters", expanded = filtered) { filters ->
@@ -231,7 +249,8 @@ class MainActivity : Activity() {
         if (existing != null) root.removeView(existing)
         val results = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; tag = "recordResults" }
         root.addView(results)
-        runIo({ repository.listRecords(filter) }) { page ->
+        runIo({ repository.listRecords(filter) to runCatching { app.reflectionWorkflow.history(limit = 1).firstOrNull() } }) { (page, reflection) ->
+            renderReflectionOverview(reflection)
             addText(results, if (page.unknownTimeCount > 0) "${page.total} 条记录 · 发生日期未知 ${page.unknownTimeCount} 条" else "${page.total} 条记录", 13f)
             if (page.items.isEmpty()) {
                 Ui.emptyState(results, if (filterFrom.isNotBlank() || filterThrough.isNotBlank() || filterTopic.isNotBlank())
@@ -247,6 +266,47 @@ class MainActivity : Activity() {
             }
             if (offset > 0) addButton(results, "上一页", "previousPage") { offset = (offset - PAGE_SIZE).coerceAtLeast(0); loadRecords() }
             page.nextOffset?.let { next -> addButton(results, "下一页", "nextPage") { offset = next; loadRecords() } }
+        }
+    }
+
+    private fun renderReflectionOverview(latest: Result<ReflectionRun?>) {
+        val card = root.findViewWithTag<LinearLayout>("reflectionOverview") ?: return
+        card.removeAllViews()
+        Ui.sectionTitle(card, "分析与发现")
+        val run = latest.getOrNull()
+        if (latest.isFailure) {
+            Ui.note(card, "暂时无法读取上次分析，可以进入分析页重新查看。")
+        } else if (run == null) {
+            Ui.note(card, "还没有综合分析。看看这些记录里，有哪些经验、问题和下一步。")
+        } else {
+            val label = when (run.status) {
+                ReflectionStatus.ANALYZING -> if (run.totalRequests == 0) "尚未开始" else "尚有记录待分析"
+                ReflectionStatus.INTEGRATING -> "正在汇总 · 需要继续"
+                ReflectionStatus.READY -> "已有发现"
+                ReflectionStatus.NO_TEXT -> "没有可分析的文字"
+                ReflectionStatus.RETRY_NEEDED -> "上次未完成 · 可以重试"
+                ReflectionStatus.NEEDS_RECOVERY -> "上次中断 · 等待恢复"
+                ReflectionStatus.BUDGET_EXHAUSTED -> "已达请求上限"
+                ReflectionStatus.DEPENDENCY_BLOCKED -> "依据或意见变化 · 需要更新"
+                ReflectionStatus.STALE -> "有新记录或修改 · 需要更新"
+                ReflectionStatus.EXPIRED -> "已过期 · 需要更新"
+                ReflectionStatus.CONFLICT -> "内容变化 · 请重新查看"
+            }
+            Ui.note(card, "上次范围 ${run.scope.from} — ${run.scope.through}\n$label")
+            val saved = run.findings.count { it.knowledgeId != null }
+            Ui.note(card, "${run.findings.size} 项发现 · $saved 项已保存")
+            val pending = run.findings.count { it.knowledgeId != null && it.knowledgeEvidenceState != dev.tracelife.knowledge.KnowledgeEvidenceState.CURRENT }
+            if (pending > 0) Ui.note(card, "其中 $pending 项待更新，已保存的内容仍可在知识库回看。")
+            if (run.status == ReflectionStatus.READY) {
+                run.findings.firstOrNull { it.feedback?.feedback?.decision != dev.tracelife.storage.ClaimFeedbackDecision.REJECTED }
+                    ?.let { Ui.body(card, it.text.take(180)) }
+            }
+            Ui.button(card, "查看上次分析", "latestReflection") {
+                if (!busy) startActivity(Intent(this, ReflectionActivity::class.java).putExtra(ReflectionActivity.EXTRA_RUN_ID, run.id))
+            }
+        }
+        Ui.primary(card, "分析记录", "analyzeRecords") {
+            if (!busy) startActivity(Intent(this, ReflectionActivity::class.java))
         }
     }
 
@@ -282,6 +342,15 @@ class MainActivity : Activity() {
                 Ui.note(details, "录入：${record.createdAt}\n最近修改：${record.updatedAt}\n时区：${record.draft.occurrence.zoneId}")
             }
             if (revision == null) {
+                val reflection = Ui.card(root)
+                Ui.sectionTitle(reflection, "从记录里发现一点什么")
+                Ui.note(reflection, "结合这段时间的记录，找出值得留下的经验和可以改进的地方。")
+                Ui.primary(reflection, "分析这段时间", "analyzeRecordPeriod") {
+                    if (!busy) startActivity(Intent(this, ReflectionActivity::class.java).apply {
+                        record.draft.occurrence.startDate?.let { putExtra(ReflectionActivity.EXTRA_FROM, it.toString()) }
+                        record.draft.occurrence.endDate?.let { putExtra(ReflectionActivity.EXTRA_THROUGH, it.toString()) }
+                    })
+                }
                 val actionsCard = dev.tracelife.ui.Ui.card(root)
                 dev.tracelife.ui.Ui.primary(actionsCard, "编辑记录", "editRecord") { if (!busy) { editor = EditorState.from(record); showEditor() } }
                 addButton(actionsCard, "修改历史", "history") {
@@ -710,6 +779,8 @@ class MainActivity : Activity() {
         })
     }
     companion object {
+        const val EXTRA_RECORD_ID = "recordId"
+        const val EXTRA_RECORD_REVISION = "recordRevision"
         private const val PAGE_SIZE = 20
         private const val TEMPLATE_REQUEST = 41
         private const val IMAGE_REQUEST = 42

@@ -100,7 +100,7 @@ class DashboardPreferencesTest {
         val source = snapshot()
         val bytes = ByteArrayOutputStream().also { SnapshotJsonCodec.write(source, it) }.toByteArray()
         val json = JSONObject(bytes.toString(Charsets.UTF_8))
-        assertEquals(7, json.getInt("formatVersion")); assertEquals(8, json.getInt("sourceSchemaVersion"))
+        assertEquals(8, json.getInt("formatVersion")); assertEquals(9, json.getInt("sourceSchemaVersion"))
         assertEquals(source, SnapshotJsonCodec.read(bytes.inputStream()))
         val archive = File(workspace, "synthetic.tlb")
         val password = "synthetic-settings-test-passphrase".toCharArray()
@@ -148,6 +148,7 @@ class DashboardPreferencesTest {
         val source = repository.analysisSourceStamp(); val generation = repository.currentAnalysisGeneration()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            dev.tracelife.storage.removeVersionNineForMigration(this)
             execSQL("DROP TABLE dashboard_preferences")
             execSQL("ALTER TABLE store_state DROP COLUMN restore_epoch")
             version = 7
@@ -156,7 +157,7 @@ class DashboardPreferencesTest {
         assertEquals(source, repository.analysisSourceStamp()); assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(record, repository.record(record.id)); assertEquals(0L, repository.localRestoreEpoch())
         assertNull(repository.dashboardPreferences()); service.save(0, custom)
-        assertEquals(8, snapshot().sourceSchemaVersion)
+        assertEquals(9, snapshot().sourceSchemaVersion)
     }
     private fun directory() = File(workspace, UUID.randomUUID().toString()).apply { check(mkdir()) }
     private fun snapshot() = repository.captureSnapshot(directory())

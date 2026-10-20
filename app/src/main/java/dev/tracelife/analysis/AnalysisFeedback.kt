@@ -86,7 +86,7 @@ class AnalysisFeedback(private val repository: LifeRepository, private val clock
         val run = repository.analysisRun(feedback.runId)
         val validity = when {
             run == null -> FeedbackEvidenceState.TASK_UNAVAILABLE
-            run.source != feedback.source || run.source != repository.analysisSourceStamp() -> FeedbackEvidenceState.STALE
+            run.source != feedback.source || !repository.analysisSourceCurrent(run.source, AnalysisRunCodec.decode(run.payload).request.scope) -> FeedbackEvidenceState.STALE
             run.expiresAt != null && !clock.instant().isBefore(run.expiresAt) -> FeedbackEvidenceState.EXPIRED
             !repository.claimFeedbackDependenciesCurrent(run.id,
                 ClaimRef(feedback.batchKey, feedback.claimIndex, feedback.claimSha256), run.version) -> FeedbackEvidenceState.DEPENDENCY_CHANGED

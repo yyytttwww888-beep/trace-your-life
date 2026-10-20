@@ -29,7 +29,7 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 8,
+    val sourceSchemaVersion: Int = 9,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
@@ -45,7 +45,11 @@ data class RepositorySnapshot(
     val profileHeads: List<ProfileHead> = emptyList(),
     val deletedProfiles: List<Deletion> = emptyList(),
     val dashboardPreferences: StoredDashboardPreferences? = null,
-)
+) {
+    // Derived locally during capture; deliberately absent from the constructor/codec so copies
+    // and imported backups never inherit a trusted current-source classification.
+    internal var currentKnowledgeSourceRevisions: Set<Pair<String, Int>>? = null
+}
 
 data class Deletion(val id: String, val lastRevision: Int, val deletedAt: Instant)
 

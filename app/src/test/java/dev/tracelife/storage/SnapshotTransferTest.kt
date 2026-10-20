@@ -278,6 +278,7 @@ class SnapshotTransferTest {
         // Remove v2/v3/v4/v5/v6 additions to recreate the released v1 schema and its ID-only outbox.
         LifeDatabase(context, sourceName).use { helper ->
             val db = helper.writableDatabase
+            removeVersionNineForMigration(db)
             val triggers = db.rawQuery("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'generation_%'", null).use { cursor ->
                 buildList { while (cursor.moveToNext()) add(cursor.getString(0)) }
             }

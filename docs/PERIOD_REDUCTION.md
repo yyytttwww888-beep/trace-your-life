@@ -1,6 +1,6 @@
 # 分层周期草稿接口
 
-本模块把多个[原文综合批次](SYNTHESIS_ACTIONS.md)逐层归并为有来源的周期草稿。草稿保留局部解释、不同情况和未知项，可以回查原文；它不是已经通过原文核对的正式洞察。依据[检索协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，实施和验证记录见[第七阶段计划](plans/2026-10-19-period-reduction.md)。新增接口在后台线程使用，页面后置。
+本模块把多个[原文综合批次](SYNTHESIS_ACTIONS.md)逐层归并为有来源的周期草稿。草稿保留局部解释、不同情况和未知项，可以回查原文；它不是已经通过原文核对的正式洞察。依据[检索协议](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，实施和验证记录见[第七阶段计划](plans/2026-10-19-period-reduction.md)。接口在后台线程使用，文字周期任务已由[主动分析页面](REFLECTION.md)串联原文综合与分层归并。
 
 ## 从原文批次形成周期草稿
 

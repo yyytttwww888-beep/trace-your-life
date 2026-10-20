@@ -36,6 +36,9 @@ class ReviewActivity : ScreenActivity() {
 
     override fun showHome() {
         beginScreen("home", "整理", showBack = false)
+        primaryButton("分析经验与问题", "navReflection") {
+            startActivity(android.content.Intent(this, ReflectionActivity::class.java))
+        }
         runId = preferences.getString("lastRunId", "").orEmpty()
         note("从记录里，留下值得回看的经历和想法。整理出的内容可以逐条核对、补充，再收进知识库。")
         if (runId.isNotEmpty()) Ui.card(root).also { card ->

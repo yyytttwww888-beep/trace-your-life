@@ -56,32 +56,54 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
     private val staging = File(context.applicationContext.noBackupFilesDir, "transfer-staging").canonicalFile
     private val databaseDirectory = context.applicationContext.getDatabasePath("placeholder").parentFile!!.canonicalFile
     private val managedAttachments = File(context.applicationContext.filesDir, "attachments").canonicalFile
+    private val privateExports = PrivateExportDestination.root(context)
     private val lock = locks.getOrPut(staging.path) { Any() }
 
     init { recoverInterruptedTransfers() }
 
-    fun exportBackup(destination: File, password: CharArray): ExportResult = workspace { directory ->
-        val target = destinationFor(destination)
+    fun exportBackup(destination: File, password: CharArray): ExportResult = exportBackup(destination, password, null)
+    fun exportBackup(destination: PrivateExportDestination, password: CharArray): ExportResult =
+        exportBackup(destination.file, password, destination)
+
+    private fun exportBackup(destination: File, password: CharArray, privateDestination: PrivateExportDestination?): ExportResult = workspace { directory ->
+        val target = targetFor(destination, privateDestination)
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val snapshot = repository.captureSnapshot(attachments)
         val archive = File(directory, "backup.tlb")
         val result = BackupArchive.write(snapshot, attachments, archive, password)
-        publish(archive, target, directory) { adjacent, published -> repository.publishSnapshot(snapshot, adjacent, published) }
+        publish(archive, target, directory) { adjacent, published ->
+            if (privateDestination == null) repository.publishSnapshot(snapshot, adjacent, published)
+            else {
+                privateDestination.prepare(adjacent)
+                repository.publishPrivateExport(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
+                    snapshot.analysisGeneration, null, adjacent, privateDestination)
+            }
+        }
         result.copy(bytes = target.length())
     }
 
     fun exportReadingPackage(
         destination: File,
         options: ReadingExportOptions = ReadingExportOptions(),
-    ): ExportResult = workspace { directory ->
-        val target = destinationFor(destination)
+    ): ExportResult = exportReadingPackage(destination, options, null)
+
+    fun exportReadingPackage(destination: PrivateExportDestination, options: ReadingExportOptions = ReadingExportOptions()): ExportResult =
+        exportReadingPackage(destination.file, options, destination)
+
+    private fun exportReadingPackage(destination: File, options: ReadingExportOptions, privateDestination: PrivateExportDestination?): ExportResult = workspace { directory ->
+        val target = targetFor(destination, privateDestination)
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val snapshot = repository.captureSnapshot(attachments)
         val archive = File(directory, "knowledge.zip")
         val written = KnowledgeArchive.writeForPublication(snapshot, attachments, archive, options)
         publish(archive, target, directory) { adjacent, published ->
-            repository.publishDerivedFile(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
+            if (privateDestination == null) repository.publishDerivedFile(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
                 snapshot.analysisGeneration, written.validUntil, adjacent, published, validFrom = snapshot.capturedAt)
+            else {
+                privateDestination.prepare(adjacent)
+                repository.publishPrivateExport(dev.tracelife.storage.SourceStamp(snapshot.storeId, snapshot.generation),
+                    snapshot.analysisGeneration, written.validUntil, adjacent, privateDestination, validFrom = snapshot.capturedAt)
+            }
         }
         written.result.copy(bytes = target.length())
     }
@@ -91,8 +113,12 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         exportPeriodReport(destination, PeriodReports(repository, clock).open(scope))
 
     /** Export exactly the report the caller reviewed; any intervening change requires reopening it. */
-    fun exportPeriodReport(destination: File, report: PeriodReport): ExportResult = workspace { directory ->
-        val target = destinationFor(destination)
+    fun exportPeriodReport(destination: File, report: PeriodReport): ExportResult = exportPeriodReport(destination, report, null)
+    fun exportPeriodReport(destination: PrivateExportDestination, report: PeriodReport): ExportResult =
+        exportPeriodReport(destination.file, report, destination)
+
+    private fun exportPeriodReport(destination: File, report: PeriodReport, privateDestination: PrivateExportDestination?): ExportResult = workspace { directory ->
+        val target = targetFor(destination, privateDestination)
         val reports = PeriodReports(repository, clock)
         reports.assertCurrent(report)
         val metricEvidence = RecordMetricEvidenceService(repository, clock).describe(report.metrics)
@@ -100,7 +126,11 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         val result = PeriodReportArchive.write(reports, report, metricEvidence, archive)
         reports.assertCurrent(report)
         publish(archive, target, directory) { adjacent, published ->
-            repository.publishDerivedFile(report.source, report.analysisGeneration, report.validUntil, adjacent, published)
+            if (privateDestination == null) repository.publishDerivedFile(report.source, report.analysisGeneration, report.validUntil, adjacent, published)
+            else {
+                privateDestination.prepare(adjacent)
+                repository.publishPrivateExport(report.source, report.analysisGeneration, report.validUntil, adjacent, privateDestination)
+            }
         }
         result.copy(bytes = target.length())
     }
@@ -110,16 +140,25 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
         exportDashboard(destination, DashboardService(repository, clock).open(request))
 
     /** Publishes the same dashboard the caller read; midnight and changed dependencies reject it. */
-    fun exportDashboard(destination: File, dashboard: DashboardSnapshot): ExportResult = workspace { directory ->
-        val target = destinationFor(destination)
+    fun exportDashboard(destination: File, dashboard: DashboardSnapshot): ExportResult = exportDashboard(destination, dashboard, null)
+    fun exportDashboard(destination: PrivateExportDestination, dashboard: DashboardSnapshot): ExportResult =
+        exportDashboard(destination.file, dashboard, destination)
+
+    private fun exportDashboard(destination: File, dashboard: DashboardSnapshot, privateDestination: PrivateExportDestination?): ExportResult = workspace { directory ->
+        val target = targetFor(destination, privateDestination)
         val dashboards = DashboardService(repository, clock)
         dashboards.assertCurrent(dashboard)
         val archive = File(directory, "dashboard.zip")
         val result = DashboardArchive.write(dashboards, dashboard, archive)
         dashboards.assertCurrent(dashboard)
         publish(archive, target, directory) { adjacent, published ->
-            repository.publishDerivedFile(dashboard.source, dashboard.analysisGeneration, dashboard.validUntil, adjacent, published,
+            if (privateDestination == null) repository.publishDerivedFile(dashboard.source, dashboard.analysisGeneration, dashboard.validUntil, adjacent, published,
                 validFrom = dashboard.evaluatedAt)
+            else {
+                privateDestination.prepare(adjacent)
+                repository.publishPrivateExport(dashboard.source, dashboard.analysisGeneration, dashboard.validUntil, adjacent,
+                    privateDestination, validFrom = dashboard.evaluatedAt)
+            }
         }
         result.copy(bytes = target.length())
     }
@@ -180,6 +219,9 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
 
     private fun destinationFor(destination: File): File {
         val target = destination.canonicalFile
+        require(target != privateExports && !target.path.startsWith(privateExports.path + File.separator)) {
+            "私有导出目录必须通过独立所有权接口发布"
+        }
         require(!target.exists()) { "目标文件已存在，请选择新文件名" }
         require(target.parentFile?.isDirectory == true) { "目标目录不存在" }
         require(target != staging && !target.path.startsWith(staging.path + File.separator)) {
@@ -189,6 +231,12 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
             target == it || target.path.startsWith(it.path + File.separator)
         }) { "导出目标不能位于权威资料目录内" }
         return target
+    }
+
+    private fun targetFor(destination: File, privateDestination: PrivateExportDestination?): File {
+        if (privateDestination == null) return destinationFor(destination)
+        require(destination == privateDestination.file && !destination.exists()) { "私有导出目标已存在或所有权不匹配" }
+        return destination
     }
 
     private fun publish(archive: File, target: File, directory: File, commit: (File, File) -> Unit) {

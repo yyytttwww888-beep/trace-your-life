@@ -217,7 +217,7 @@ class MainActivityTest {
         click("navigation")
         val menu = ShadowDialog.getLatestDialog()
         assertTrue(menu.isShowing)
-        listOf("navDashboard", "navReview", "navKnowledge", "navActions", "navPeriod", "navProfile", "navTransfer", "navSettings")
+        listOf("navReflection", "navDashboard", "navReview", "navKnowledge", "navActions", "navPeriod", "navProfile", "navTransfer", "navSettings")
             .forEach { assertNotNull(menu.findViewById<View>(android.R.id.content).findViewWithTag<View>(it)) }
         menu.findViewById<View>(android.R.id.content).findViewWithTag<View>("navSettings").performClick()
         assertFalse(menu.isShowing)
@@ -239,6 +239,35 @@ class MainActivityTest {
         assertNotNull(activity.window.decorView.findViewWithTag<View>("record:${work.id}"))
         assertEquals(View.GONE, view<View>("recordFilters:content").visibility)
         assertEquals(2, app.repository.listRecords().total)
+    }
+
+    @Test fun `analysis is reachable from home and a saved records actual period`() {
+        click("analyzeRecords")
+        assertEquals(ReflectionActivity::class.java.name, shadowOf(activity).nextStartedActivity.component!!.className)
+        assertTrue(app.reflectionWorkflow.history().isEmpty())
+        val date = LocalDate.parse("2026-09-12")
+        val record = app.repository.createRecord(RecordDraft("合成资料：先动手再查资料，更容易找到具体问题", Occurrence(date)))
+        controller.recreate()
+        drain()
+        click("record:${record.id}")
+        click("analyzeRecordPeriod")
+        val intent = shadowOf(activity).nextStartedActivity
+        assertEquals(ReflectionActivity::class.java.name, intent.component!!.className)
+        assertEquals(date.toString(), intent.getStringExtra(ReflectionActivity.EXTRA_FROM))
+        assertEquals(date.toString(), intent.getStringExtra(ReflectionActivity.EXTRA_THROUGH))
+        assertTrue(app.reflectionWorkflow.history().isEmpty())
+    }
+
+    @Test fun `returning home refreshes persisted analysis without dispatching a model`() {
+        controller.pause().stop()
+        val date = LocalDate.now()
+        val started = app.reflectionWorkflow.start(dev.tracelife.storage.AnalysisQuery(date, date, "Asia/Shanghai"))
+        controller.start().resume()
+        drain()
+        click("latestReflection")
+        val intent = shadowOf(activity).nextStartedActivity
+        assertEquals(started.id, intent.getStringExtra(ReflectionActivity.EXTRA_RUN_ID))
+        assertEquals(0, app.reflectionWorkflow.inspect(started.id).totalRequests)
     }
 
     private fun input(tag: String, value: String) { view<EditText>(tag).setText(value) }

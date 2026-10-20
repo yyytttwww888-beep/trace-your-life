@@ -115,6 +115,21 @@ class ProfileMaintenanceStorageTest {
         assertEquals("合成保留的独立背景。", repository.profileRevision(old.id)!!.userText)
     }
 
+    @Test fun `record deletion follows cross task profile references even when child read another record`() {
+        val old = profile()
+        repository.createRecord(RecordDraft("合成资料：另一次任务记录", Occurrence(date.plusDays(10))), "other-source")
+        val maintenance = generate("maintenance", sourceId = "other-source", sourceDate = date.plusDays(10))
+        analysis.planProfileMaintenance("maintenance", maintenance)
+        generate("unrelated", profileTarget = null, sourceId = "other-source", sourceDate = date.plusDays(10))
+        repository.deleteRecord("source", 1)
+        assertNull(repository.analysisRun("old"))
+        assertNull(repository.analysisRun("maintenance"))
+        assertNotNull(repository.analysisRun("unrelated"))
+        assertNull(repository.knowledgeRevision(old.draft.knowledge.knowledgeId))
+        assertEquals("合成保留的独立背景。", repository.profileRevision(old.id)!!.userText)
+        SnapshotValidation.validate(repository.captureSnapshot(directory))
+    }
+
     @Test fun `old backups cannot restore deleted cross task history and keep surviving user profile text`() {
         val old = profile()
         val claim = generate("maintenance")
@@ -211,9 +226,9 @@ class ProfileMaintenanceStorageTest {
         assertEquals(snapshot, SnapshotJsonCodec.read(ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toByteArray().inputStream()))
     }
 
-    private fun generate(runId: String, profileTarget: ProfileAnalysisTarget? = target): ClaimRef {
-        analysis.start(AnalysisRequest("合成任务：保留具体情境和未知。", AnalysisQuery(date, date, "UTC"), profileTarget = profileTarget), runId)
-        analysis.synthesize(runId, "candidate", listOf(EvidenceSelection("source", "body")), object : AnalysisProvider {
+    private fun generate(runId: String, profileTarget: ProfileAnalysisTarget? = target, sourceId: String = "source", sourceDate: LocalDate = date): ClaimRef {
+        analysis.start(AnalysisRequest("合成任务：保留具体情境和未知。", AnalysisQuery(sourceDate, sourceDate, "UTC"), profileTarget = profileTarget), runId)
+        analysis.synthesize(runId, "candidate", listOf(EvidenceSelection(sourceId, "body")), object : AnalysisProvider {
             override val id = "synthetic-maintenance-storage-generator"
             override val contextWindowTokens = 20_000
             override fun countInputTokens(request: ModelRequest) = 100

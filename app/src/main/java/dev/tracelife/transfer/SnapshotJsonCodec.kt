@@ -42,7 +42,7 @@ import java.time.LocalDate
 
 /** Versioned logical transfer format. Streams belong to the caller; no credentials are serialized. */
 object SnapshotJsonCodec {
-    const val FORMAT_VERSION = 7
+    const val FORMAT_VERSION = 8
     private const val MAX_DEPTH = 16
     internal const val MAX_NODES = 2_000_000L
     private const val MAX_STRING_CHARACTERS = 1_048_576
@@ -373,7 +373,7 @@ object SnapshotJsonCodec {
     }
 
     private fun validateWriteBudget(snapshot: RepositorySnapshot) {
-        checkBackup(snapshot.sourceSchemaVersion == 8, "新建备份必须使用当前来源数据库版本")
+        checkBackup(snapshot.sourceSchemaVersion == 9, "新建备份必须使用当前来源数据库版本")
         snapshot.dashboardPreferences?.let(DashboardPreferencesCodec::encode)
         ClaimFeedbackValidation.validateCollection(snapshot.claimFeedback)
         checkBackup(snapshot.deletedClaimFeedback.size <= ClaimFeedbackValidation.MAX_DELETIONS, "反馈删除标记过多")

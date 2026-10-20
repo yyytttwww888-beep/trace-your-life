@@ -1,6 +1,5 @@
 package dev.tracelife.ui
 
-import android.app.AlertDialog
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -19,7 +18,7 @@ import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.KnowledgeValidation
 import dev.tracelife.storage.SourceFragment
 import dev.tracelife.storage.SourceTimeClass
-import java.io.File
+import dev.tracelife.transfer.CompletedExports
 import java.time.ZoneId
 import java.time.LocalDate
 
@@ -53,6 +52,11 @@ class PeriodActivity : ScreenActivity() {
         }
         primaryIn(form, "查看回顾", "openReport") { openReport() }
         Ui.note(form, "这里只汇集已有材料，不生成新的判断。")
+        primaryButton("分析这段时间", "analyzePeriod") {
+            startActivity(android.content.Intent(this, ReflectionActivity::class.java)
+                .putExtra(ReflectionActivity.EXTRA_FROM, fromField?.text?.toString().orEmpty())
+                .putExtra(ReflectionActivity.EXTRA_THROUGH, throughField?.text?.toString().orEmpty()))
+        }
     }
 
     override fun navigateBack() {
@@ -146,12 +150,8 @@ class PeriodActivity : ScreenActivity() {
     }
 
     private fun exportReport(current: PeriodReport) {
-        val directory = getExternalFilesDir(null) ?: filesDir
-        val target = File(directory, "period-${current.scope.from}-${current.scope.through}-${System.currentTimeMillis()}.zip")
-        runIo({ app.dataTransfer.exportPeriodReport(target, current) }) { result ->
-            AlertDialog.Builder(this).setTitle("导出完成")
-                .setMessage("文件：${target.absolutePath}\n记录 ${result.records} 条；附件 ${result.attachments} 个；文件 ${result.files} 个；共 ${result.bytes / 1024} KiB。\n导出是生成时的历史材料，不是完整恢复备份；导出期间任何资料变化都会导致导出被拒绝，届时请重新生成报告后再导出。")
-                .setPositiveButton("知道了", null).show()
+        runIo({ CompletedExports(this).create("period") { app.dataTransfer.exportPeriodReport(it, current) } }) { (_, file) ->
+            TransferActivity.saveCompleted(this, file.name)
         }
     }
 

@@ -4,7 +4,7 @@
 
 ## 配置 KEY 后的开发机验证
 
-前端仍后置。目前可先将 KEY 保存到**仓库外**的纯文本文件：
+手机可在设置中填写密钥；开发机验证将 KEY 保存到**仓库外**的纯文本文件：
 
 ```text
 ~/.config/trace-life/deepseek-api-key
@@ -212,3 +212,15 @@ val result = app.analysisProcessor.process(
 ```
 
 默认关闭，使用同一仓库外 KEY。先用明确合成的期初计划、补记回看及日常记录构造三个局部草稿，再最多调用真实 DeepSeek 三次：整体归并、全部原始来源扫描、最终相关原文独立核对。测试显式模拟确认后发布，再导出指定周的知识包，检查结论和旧／新计划均可定位。没有重试或追加压缩调用，JVM 使用临时包装密钥。实际结果见[本轮验证](plans/2026-10-19-action-report-export.md#验证记录)；不代表局部提取质量、复杂反例召回或总体分析准确率。
+
+
+## 主动分析闭环真实验证
+
+新增 `DeepSeekReflectionLiveTest`，通过[主动分析编排](REFLECTION.md)执行与手机相同的综合、用户确认和原文核对保存。每次测试最多 2 次真实请求，使用三条明确标注的合成学习记录，检查有内容的经验与问题、跨记录引用、正式保存和重新读取历史；普通测试默认跳过。
+
+```bash
+./gradlew testDebugUnitTest --tests 'dev.tracelife.providers.DeepSeekReflectionLiveTest' \
+  -PtraceLifeDeepSeekReflection=true
+```
+
+运行结果和实际范围见[开发验证](DEVELOPMENT.md#主动分析闭环验证)。测试不读取真实个人记录或把密钥写入 APK；生成的合成文字用于人工检查表达质量，不代表个人任务总体准确率。

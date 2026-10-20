@@ -272,6 +272,7 @@ class ProfileStorageTest {
         val before = snapshot()
         repository.close()
         LifeDatabase(context, name).use { helper -> helper.writableDatabase.apply {
+            dev.tracelife.storage.removeVersionNineForMigration(this)
             execSQL("DROP TABLE dashboard_preferences")
             execSQL("ALTER TABLE store_state DROP COLUMN restore_epoch")
             execSQL("DROP TABLE profile_heads")
@@ -285,7 +286,7 @@ class ProfileStorageTest {
         assertEquals(action, repository.actionRevision(action.id))
         assertEquals(knowledge, repository.knowledgeRevision(knowledge.id))
         assertEquals(before.analysisRuns.single(), repository.analysisRun(knowledge.runId))
-        assertEquals(8, snapshot().sourceSchemaVersion)
+        assertEquals(9, snapshot().sourceSchemaVersion)
         assertTrue(repository.profileHeads().isEmpty())
         repository.saveProfile(initial("after-upgrade", knowledge), null)
         assertEquals(before.generation, repository.currentGeneration())

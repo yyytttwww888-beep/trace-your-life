@@ -36,6 +36,9 @@ abstract class ScreenActivity : Activity() {
     /** Render the entry screen of this activity. Called once from onCreate. */
     protected abstract fun showHome()
 
+    /** Restore local navigation before the first render; this must never restart an online call. */
+    protected open fun restoreScreenState(savedInstanceState: Bundle?) = Unit
+
     /** Back navigation within this activity; default leaves the activity. */
     protected open fun navigateBack() {
         if (busy) return
@@ -49,6 +52,7 @@ abstract class ScreenActivity : Activity() {
                 navigateBack()
             }
         }
+        restoreScreenState(savedInstanceState)
         showHome()
     }
 

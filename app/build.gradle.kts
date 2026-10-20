@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tracelife.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.0-preview.2"
+        versionCode = 4
+        versionName = "0.1.0-preview.4"
     }
 
     compileOptions {
@@ -39,7 +39,8 @@ android {
             val maintenanceEnabled = providers.gradleProperty("traceLifeDeepSeekMaintenance").orNull == "true"
             val actionPeriodEnabled = providers.gradleProperty("traceLifeDeepSeekActionPeriod").orNull == "true"
             val actionReportEnabled = providers.gradleProperty("traceLifeDeepSeekActionReport").orNull == "true"
-            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled) {
+            val reflectionEnabled = providers.gradleProperty("traceLifeDeepSeekReflection").orNull == "true"
+            if (smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")
                 if (synthesisEnabled) it.systemProperty("traceLife.deepSeekSynthesis", "true")
@@ -50,6 +51,7 @@ android {
                 if (maintenanceEnabled) it.systemProperty("traceLife.deepSeekMaintenance", "true")
                 if (actionPeriodEnabled) it.systemProperty("traceLife.deepSeekActionPeriod", "true")
                 if (actionReportEnabled) it.systemProperty("traceLife.deepSeekActionReport", "true")
+                if (reflectionEnabled) it.systemProperty("traceLife.deepSeekReflection", "true")
                 it.systemProperty("traceLife.repositoryRoot", rootProject.projectDir.absolutePath)
                 System.getenv("TRACE_LIFE_DEEPSEEK_KEY_FILE")?.let { path -> it.systemProperty("traceLife.deepSeekKeyFile", path) }
             }

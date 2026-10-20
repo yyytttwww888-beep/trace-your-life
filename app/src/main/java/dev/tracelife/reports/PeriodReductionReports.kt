@@ -99,7 +99,7 @@ class PeriodReductionReports(private val repository: LifeRepository, private val
         analysis.currentReduction(draft.runId, draft.node)
         val task = analysis.task(draft.runId)
         if (task.stored.version != draft.taskVersion || task.stored.source != draft.source ||
-            repository.analysisSourceStamp() != draft.source || task.status in setOf(AnalysisStatus.STALE, AnalysisStatus.EXPIRED)) {
+            !repository.analysisSourceCurrent(draft.source, draft.scope) || task.status in setOf(AnalysisStatus.STALE, AnalysisStatus.EXPIRED)) {
             throw AnalysisConflictException("草稿任务或来源已变化，请重新打开")
         }
     }
