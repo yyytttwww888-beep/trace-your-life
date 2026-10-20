@@ -1,7 +1,6 @@
 package dev.tracelife.analysis
 
 import dev.tracelife.storage.SourceFieldKind
-import dev.tracelife.storage.UnreadableSourceException
 
 /** Metadata-only inventory, shared by extraction and synthesis with separate receipt ledgers. */
 internal class TextAnalysisInventory(private val analysis: ControlledAnalysis) {
@@ -29,15 +28,14 @@ internal class TextAnalysisInventory(private val analysis: ControlledAnalysis) {
         var unreadable = 0
         var offset: Int? = 0
         while (offset != null) {
-            val page = analysis.evidencePage(runId, offset).page
+            val metadata = analysis.fieldMetadataPage(runId, offset, task.stored.version)
+            val page = metadata.page
             for (record in page.items) {
-                val fields = try {
-                    analysis.fields(runId, record.id)
-                } catch (_: UnreadableSourceException) {
+                if (record.id in metadata.unreadableRecordIds) {
                     unreadable++
                     continue
                 }
-                for (field in fields) {
+                for (field in metadata.fields.getValue(record.id)) {
                     if (field.kind == SourceFieldKind.ATTACHMENT) { attachments++; continue }
                     val ranges = merged(successful[Triple(record.id, record.revision, field.key)].orEmpty())
                     textLength += field.codePoints

@@ -10,6 +10,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import dev.tracelife.analysis.ReflectionRun
 import dev.tracelife.analysis.ReflectionStatus
+import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.conversation.ConversationPlan
 import dev.tracelife.conversation.ConversationThread
 import dev.tracelife.conversation.ConversationTurn
@@ -20,7 +21,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** Question drafts are local; opening, restoring and previewing never initiate a model request. */
-class ConversationActivity : ScreenActivity() {
+class ConversationActivity : FindingCaptureActivity() {
     private var threadId: String? = null
     private var parentTurnId: String? = null
     private var parentFindingIndex: Int? = null
@@ -232,6 +233,8 @@ class ConversationActivity : ScreenActivity() {
             Ui.body(scope, message)
             Ui.note(scope, "可修改问题、调整日期；追问也可以点选具体发现。")
         }
+        if (plan.includeActions) Ui.note(scope, "同时查看 ${plan.actionEvents} 份计划与执行回看。计划不等于已经执行，未回看时结果仍未知。")
+        showKnowledgeContext(scope, plan.knowledgeContext, "conversationPlannedKnowledge")
         addButton(scope, "更新日期范围", "conversationUpdateRange") {
             rememberFields(); readScope()?.let { preparePreview(explicitScope = it) }
         }
@@ -282,16 +285,25 @@ class ConversationActivity : ScreenActivity() {
         runIo({
             val offset = if (turnOffset < 0) app.conversations.latestTurn(id)?.position?.let { ((it - 1) / PAGE_SIZE) * PAGE_SIZE } ?: 0 else turnOffset
             val turns = app.conversations.turns(id, offset = offset, limit = PAGE_SIZE)
-            Triple(offset, turns.map { it to app.conversations.inspect(it) },
+            val selected = turns.firstOrNull { it.id == focusTurnId }
+                ?: if (focusTurnId == null) turns.lastOrNull() else turns.firstOrNull()
+            // Question metadata is cheap. Resolve current evidence/review state only for the answer
+            // being read, and resolve it again on every open; no stale evidence-state cache exists.
+            Triple(offset, turns.map { it to if (it.id == selected?.id) app.conversations.inspect(it) else null },
                 turns.size == PAGE_SIZE && app.conversations.turns(id, offset = offset + PAGE_SIZE, limit = 1).isNotEmpty())
-        }) { (offset, turns, hasNext) -> turnOffset = offset; renderThread(turns, hasNext) }
+        }) { (offset, turns, hasNext) ->
+            turnOffset = offset
+            focusTurnId = turns.firstOrNull { it.first.id == focusTurnId }?.first?.id
+                ?: if (focusTurnId == null) turns.lastOrNull()?.first?.id else turns.firstOrNull()?.first?.id
+            renderThread(turns, hasNext)
+        }
     }
 
     private fun renderThread(turns: List<Pair<ConversationTurn, ReflectionRun?>>, hasNext: Boolean) {
         mount("thread", "问一问")
         addButton(root, "换一个话题", "conversationNewTopic") { clearConversation(); showEntry() }
         if (turns.isEmpty()) emptyState(root, "这里暂时没有回答。可以补充一个具体问题。")
-        turns.forEach { (turn, run) -> renderTurn(turn, run) }
+        turns.forEach { (turn, run) -> renderTurn(turn, run, expanded = turn.id == focusTurnId) }
         if (turnOffset > 0) addButton(root, "前面的问题", "conversationTurnsPrevious") {
             rememberFields(); turnOffset = maxOf(0, turnOffset - PAGE_SIZE); openThread()
         }
@@ -311,9 +323,15 @@ class ConversationActivity : ScreenActivity() {
         restoreTurnPosition()
     }
 
-    private fun renderTurn(turn: ConversationTurn, run: ReflectionRun?) {
+    private fun renderTurn(turn: ConversationTurn, run: ReflectionRun?, expanded: Boolean) {
         turnAnchors[turn.id] = section(turn.question).apply { tag = "conversationTurn:${turn.id}" }
         note("${turn.scope.from} 至 ${turn.scope.through}${if (turn.focusTopics.isEmpty()) "" else " · ${turn.focusTopics.joinToString("、")}"}")
+        if (!expanded) {
+            button("查看这次回答", "conversationExpand:${turn.id}") {
+                rememberFields(); chooseTurn(turn.id); openThread()
+            }
+            return
+        }
         if (run == null) {
             note("相关分析已不可用。你的问题仍然保留，可以重新提问。")
             button("根据最新记录重问", "conversationReask:${turn.id}") { reask(turn) }
@@ -348,11 +366,38 @@ class ConversationActivity : ScreenActivity() {
         run.findings.forEachIndexed { index, finding ->
             val answer = card()
             Ui.fieldLabel(answer, "${index + 1}")
+            chip(answer, FindingCapture.status(finding), FindingCapture.tone(finding))
             Ui.body(answer, finding.text)
-            if (finding.knowledgeId != null) Ui.note(answer, "已经保存过；当前有效性与后续尝试可在回答详情查看。")
-            addButton(answer, "查看依据与保存", "conversationFinding:${turn.id}:$index") {
+            addButton(answer, "查看依据与我的意见", "conversationFinding:${turn.id}:$index") {
                 chooseTurn(turn.id)
                 startActivity(ReflectionActivity.intent(this, turn.runId, finding.target))
+            }
+            if (FindingCapture.canSave(run, finding)) primaryIn(answer,
+                if (finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED) "继续核对并保存" else "保留到知识库",
+                "conversationKeep:${turn.id}:$index") {
+                rememberFields()
+                chooseTurn(turn.id)
+                captureFinding(run.id, finding.target, REQUESTS_PER_PASS,
+                    onProgress = { updated -> runOnUiThread {
+                        if (!isDestroyed && !isFinishing && busy && threadId == turn.threadId)
+                            root.findViewWithTag<TextView>("conversationProgress:${run.id}")?.text = "正在核对依据…\n${ConversationPresentation.progress(updated)}"
+                    } },
+                    onComplete = { openThread() })
+            } else if (run.canReviewFindings && finding.knowledgeId == null &&
+                (finding.historicalFeedback.resolved != finding.historicalFeedback.total || finding.historicalFeedback.conflicts > 0)) {
+                Ui.note(answer, "保存前还需对照以前的意见。")
+                addButton(answer, "对照以前的意见", "conversationHistoryReview:${turn.id}:$index") {
+                    chooseTurn(turn.id)
+                    startActivity(ReflectionActivity.intent(this, turn.runId, finding.target, historicalFeedback = true))
+                }
+            }
+            finding.knowledgeId?.let { savedId ->
+                addButton(answer, "查看已保存内容", "conversationSaved:${turn.id}:$index") {
+                    chooseTurn(turn.id)
+                    startActivity(Intent(this, KnowledgeActivity::class.java).putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID, savedId))
+                }
+                if (finding.knowledgeEvidenceState == KnowledgeEvidenceState.CURRENT)
+                    savedFindingActions(answer, savedId, "conversationSaved:${turn.id}:$index") { chooseTurn(turn.id) }
             }
             if (run.canReviewFindings && run.status == ReflectionStatus.READY && run.archivedAt == null &&
                 (finding.feedback == null || finding.feedback.feedback.decision == ClaimFeedbackDecision.CONFIRMED)) addButton(answer, "接着这条问", "conversationFollowup:${turn.id}:$index") {
@@ -371,6 +416,7 @@ class ConversationActivity : ScreenActivity() {
         Ui.disclosure(root, "这次看了哪些资料", "conversationCoverage:${turn.id}") { block ->
             Ui.note(block, ConversationPresentation.coverage(run))
         }
+        showKnowledgeContext(root, run.knowledgeContext, "conversationKnowledge:${turn.id}")
     }
 
     private fun process(turn: ConversationTurn) {

@@ -130,6 +130,56 @@ class ProfileFlowActivityTest {
         assertEquals(before, requests)
         assertTrue(app.repository.profileHeads().isEmpty())
     }
+    @Test fun `integrated long term candidate opens exact root and all original inputs without online calls`() {
+        val run = "synthetic-integrated-ui"
+        val from = day.withDayOfMonth(1).minusMonths(2)
+        val middle = from.plusMonths(1)
+        val through = middle.plusMonths(1).minusDays(1)
+        val ref = io {
+            listOf(from, from.plusDays(1), middle, middle.plusDays(1)).forEachIndexed { i, date ->
+                app.repository.createRecord(RecordDraft("合成阶段练习 $i：做法需要情境限制。", Occurrence(date)), "integrated-$i")
+            }
+            app.longitudinalProfiles.start(AnalysisRequest("合成跨阶段整理", AnalysisQuery(from, through, "Asia/Shanghai"),
+                profileTarget = ProfileAnalysisTarget(ProfileDimension.ABILITIES_AND_STRATEGIES, ProfileLayer.LONG_TERM,
+                    listOf(ProfileComparisonPeriod(from, middle.minusDays(1)), ProfileComparisonPeriod(middle, through)))), run)
+            val provider = object : AnalysisProvider {
+                override val id = "synthetic-integrated-ui-model"
+                override val contextWindowTokens = 20_000
+                override fun countInputTokens(request: ModelRequest) = 100
+                override fun complete(request: ModelRequest): BatchProposal {
+                    requests++
+                    val payload = JSONObject(request.payloadJson)
+                    val integrated = payload.getString("purpose") == "REDUCTION"
+                    val values = payload.getJSONArray(if (integrated) "derivedInputs" else "evidence")
+                    return BatchProposal(listOf(ProposedClaim(if (integrated) "合成整体描述：策略仍受时间条件限制。" else "合成局部线索：两个阶段都记录过小步骤。",
+                        (0 until values.length()).map { values.getJSONObject(it).getString("id") }, ClaimKind.POSSIBLE_INTERPRETATION)))
+                }
+            }
+            app.analysis.synthesize(run, "first", listOf(EvidenceSelection("integrated-0", "body"), EvidenceSelection("integrated-2", "body")), provider)
+            app.analysis.synthesize(run, "second", listOf(EvidenceSelection("integrated-1", "body"), EvidenceSelection("integrated-3", "body")), provider)
+            val leaves = app.analysis.task(run).state.calls.map(ReductionGraph::nodeRef)
+            app.analysis.reduce(run, "whole", leaves, provider)
+            app.longitudinalProfiles.inspect(run).integratedCandidates.single()
+        }
+        val before = requests
+        val list = Robolectric.buildActivity(LongitudinalProfileActivity::class.java,
+            Intent(app, LongitudinalProfileActivity::class.java).putExtra("runId", run)).setup().also(controllers::add)
+        drain()
+        assertTrue(text(list.get()).contains("整体候选 · 1"))
+        assertTrue(text(list.get()).contains("分批形成的线索 · 2"))
+        click(list.get(), "integratedProfile:${ref.claimSha256.take(12)}")
+        val intent = shadowOf(list.get()).nextStartedActivity
+        assertEquals("whole", intent.getStringExtra("batchKey"))
+        val detail = Robolectric.buildActivity(ProfileMaintenanceActivity::class.java, intent).setup().also(controllers::add)
+        drain()
+        assertTrue(text(detail.get()).contains("合成整体描述"))
+        click(detail.get(), "maintenanceEvidence")
+        assertTrue(text(detail.get()).contains("原文 4"))
+        detail.recreate(); drain()
+        assertTrue(text(detail.get()).contains("合成整体描述"))
+        assertEquals(before, requests)
+        assertNull(detail.get().window.decorView.findViewWithTag<View>("applyMaintenance:NEW:new"))
+    }
     private fun candidate(id: String): ClaimRef = io {
         app.profileCandidates.start(AnalysisRequest("合成问题：检查情境策略", AnalysisQuery(day, day, "Asia/Shanghai"),
             profileTarget = ProfileAnalysisTarget(ProfileDimension.ABILITIES_AND_STRATEGIES, ProfileLayer.CONTEXTUAL_PATTERN)), id)

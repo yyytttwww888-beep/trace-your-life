@@ -44,7 +44,7 @@ internal object PublishedKnowledgeExport {
             val state = runStates.getOrPut(run.id) { AnalysisRunCodec.decode(run.payload) }
             if (!historyCurrent.getOrPut(run.id) { (state.feedbackContext?.let {
                 dev.tracelife.analysis.FeedbackContextProtocol.snapshotCurrent(run.id, it, runs, snapshot.claimFeedback)
-            } ?: true) && (state.request.conversationContext?.let {
+            } ?: true) && (state.request.knowledgeContext == null || run.id in snapshot.currentAnalysisSourceRunIds.orEmpty()) && (state.request.conversationContext?.let {
                 dev.tracelife.analysis.ConversationContextProtocol.snapshotCurrent(it, runs, snapshot.claimFeedback,
                     snapshot.currentAnalysisSourceRunIds, SourceStamp(snapshot.storeId, snapshot.generation), snapshot.capturedAt)
             } ?: true) }) return false

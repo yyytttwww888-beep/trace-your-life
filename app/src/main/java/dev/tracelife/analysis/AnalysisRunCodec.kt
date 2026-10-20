@@ -13,6 +13,7 @@ import dev.tracelife.profile.ProfileAnalysisTarget
 import dev.tracelife.profile.ProfileDimension
 import dev.tracelife.profile.ProfileLayer
 import dev.tracelife.profile.ProfileMaintenanceProtocol
+import dev.tracelife.profile.ProfileIntegrationProtocol
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.StoredAnalysisRun
 import java.io.StringReader
@@ -32,7 +33,8 @@ object AnalysisRunCodec {
 
     // Legacy tasks keep v12's exact shape until the new purpose is actually used.
     fun encode(state: AnalysisRunState): String = encodeVersion(state,
-        if (state.request.conversationContext != null) 14 else if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
+        if (state.request.profileTarget != null && state.calls.any { it.purpose == CallPurpose.REDUCTION }) 16
+        else if (state.request.knowledgeContext != null) 15 else if (state.request.conversationContext != null) 14 else if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -45,12 +47,15 @@ object AnalysisRunCodec {
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
         require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
         require(version >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
+        require(version >= 16 || state.request.profileTarget == null || state.calls.none { it.purpose == CallPurpose.REDUCTION })
+        require(version >= 15 || state.request.knowledgeContext == null)
         require(version >= 14 || state.request.conversationContext == null)
         require(version >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(version >= 12 || state.feedbackContext == null && !state.request.inheritHistoricalFeedback)
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
-            var value = if (version < 14) raw - "conversationContext" else raw
+            var value = if (version < 15) raw - "knowledgeContext" else raw
+            if (version < 14) value = value - "conversationContext"
             if (version < 12) value = value - "inheritHistoricalFeedback"
             if (version < 10) value = value - "actionPeriod"
             if (version < 8) value = value - "profileTarget"
@@ -156,11 +161,11 @@ object AnalysisRunCodec {
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 12) arrayOf("feedbackContext", "historicalFeedbackResolutions") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..14)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..16)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
-            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray()) + (if (format >= 12) arrayOf("inheritHistoricalFeedback") else emptyArray()) + (if (format >= 14) arrayOf("conversationContext") else emptyArray())))
+            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray()) + (if (format >= 12) arrayOf("inheritHistoricalFeedback") else emptyArray()) + (if (format >= 14) arrayOf("conversationContext") else emptyArray()) + (if (format >= 15) arrayOf("knowledgeContext") else emptyArray())))
         val profileTarget = request["profileTarget"]?.let { raw ->
             LongitudinalProfileProtocol.parseTarget(raw, allowLongTerm = format >= 10)
         }
@@ -177,7 +182,8 @@ object AnalysisRunCodec {
                 request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget,
                 if (format >= 10) request["actionPeriod"] as? Boolean ?: error("行动复盘标记无效") else false,
                 if (format >= 12) request["inheritHistoricalFeedback"] as? Boolean ?: error("历史意见标记无效") else false,
-                request["conversationContext"]?.let(ConversationContextProtocol::parse)),
+                request["conversationContext"]?.let(ConversationContextProtocol::parse),
+                request["knowledgeContext"]?.let(KnowledgeContextProtocol::parse)),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
@@ -231,6 +237,7 @@ object AnalysisRunCodec {
             if (format >= 12) root.list("historicalFeedbackResolutions").map(FeedbackContextProtocol::parseResolution) else emptyList(),
         )
         require(format >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
+        require(format >= 16 || state.request.profileTarget == null || state.calls.none { it.purpose == CallPurpose.REDUCTION })
         require(format >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
         require(format >= 10 || state.calls.none { it.purpose == CallPurpose.ACTION_SYNTHESIS })
         require(format >= 9 || state.calls.none { it.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN) })
@@ -343,18 +350,19 @@ object AnalysisRunCodec {
         FeedbackContextProtocol.validate(state)
         require(state.request.actionPeriod == (state.actionPlan != null)) { "行动复盘缺少固定目录" }
         state.actionPlan?.let(ActionEvidenceProtocol::validatePlan)
-        require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW, CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
+        require(!state.request.actionPeriod || state.calls.all { it.purpose in setOf(CallPurpose.ACTION_SYNTHESIS, CallPurpose.REVIEW, CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW, CallPurpose.HISTORICAL_FEEDBACK_SCAN) })
         state.request.profileTarget?.let { LongitudinalProfileProtocol.validateScope(it, state.request.scope) }
         require(state.request.profileTarget == null || state.calls.all {
-            it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)
+            it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REVIEW, CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN) ||
+                state.request.profileTarget.layer == ProfileLayer.LONG_TERM && it.purpose == CallPurpose.REDUCTION
         }) { "画像任务只允许原文候选综合与核对" }
         require(state.profileMaintenancePlans.size <= 2_000 && state.profileMaintenancePlans.map { it.target }.distinct().size == state.profileMaintenancePlans.size)
         state.profileMaintenancePlans.forEach { plan ->
             ProfileMaintenanceProtocol.validatePlan(plan)
             require(plan.profileTarget == state.request.profileTarget)
-            val generated = requireNotNull(state.calls.lastOrNull { it.batchKey == plan.target.batchKey && it.purpose == CallPurpose.SYNTHESIS && it.status == CallStatus.SUCCEEDED })
-            require(claimSha256(requireNotNull(generated.proposal).claims[plan.target.claimIndex]) == plan.target.claimSha256)
-            require(plan.createdAt >= requireNotNull(generated.finishedAt))
+            val generated = ProfileIntegrationProtocol.resolve(state, plan.target)
+            require(plan.integration == generated.integration) { "画像维护缺少完整归并来源链" }
+            require(plan.createdAt >= requireNotNull(generated.call.finishedAt))
         }
         val scope = state.request.scope
         require(scope.from.year in 1..9999 && scope.through.year in 1..9999 && scope.from <= scope.through)
@@ -454,8 +462,7 @@ object AnalysisRunCodec {
             } else if (call.purpose in setOf(CallPurpose.PROFILE_RELATION, CallPurpose.PROFILE_SCAN)) {
                 require(call.proposal == null && call.review == null && call.feedbackVersion == 0)
                 val ref = requireNotNull(call.reviewTarget)
-                require(state.calls.take(index).any { it.purpose == CallPurpose.SYNTHESIS && it.status == CallStatus.SUCCEEDED && it.batchKey == ref.batchKey &&
-                    it.proposal?.claims?.getOrNull(ref.claimIndex)?.let(::claimSha256) == ref.claimSha256 })
+                ProfileIntegrationProtocol.resolve(state.copy(calls = state.calls.take(index)), ref)
             } else if (call.purpose == CallPurpose.REDUCTION) {
                 require(call.proposal == null && call.reviewTarget == null && call.review == null && call.feedbackVersion == 0)
                 ReductionGraph.validateInputs(state.calls.take(index), call)
@@ -467,17 +474,22 @@ object AnalysisRunCodec {
                 val target = requireNotNull(call.reviewTarget)
                 validId(target.batchKey)
                 require(target.claimIndex in 0..19 && digest.matches(target.claimSha256))
-                val extraction = requireNotNull(state.calls.take(index).lastOrNull {
+                val profileSource = if (state.request.profileTarget != null)
+                    ProfileIntegrationProtocol.resolve(state.copy(calls = state.calls.take(index)), target) else null
+                val extraction = profileSource?.call ?: requireNotNull(state.calls.take(index).lastOrNull {
                     it.batchKey == target.batchKey && it.purpose.producesClaims && it.status == CallStatus.SUCCEEDED
                 }) { "核对缺少已成功生成的目标" }
-                val claim = requireNotNull(extraction.proposal?.claims?.getOrNull(target.claimIndex))
-                require(claimSha256(claim) == target.claimSha256) { "核对目标文字或引用已变化" }
+                val claim = profileSource?.claim ?: requireNotNull(extraction.proposal?.claims?.getOrNull(target.claimIndex))
+                require(profileSource?.integration != null || claimSha256(claim) == target.claimSha256) { "核对目标文字或引用已变化" }
+                require(profileSource?.integration == null || call.profileMaintenanceProof?.plan?.integration == profileSource.integration) {
+                    "整体画像不允许跳过完整维护核对"
+                }
                 if (extraction.purpose == CallPurpose.METRIC_ANALYSIS) {
                     require(metricCall && call.metricEvidence == extraction.metricEvidence) { "核对没有重新提供目标完整指标" }
                 } else {
                     require(!metricCall) { "原文核对不能替换成指标证据" }
                     require(call.actionEvidence == extraction.actionEvidence) { "核对没有重新提供全部行动上下文" }
-                    val mandatory = if (extraction.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS)) extraction.evidence
+                    val mandatory = profileSource?.originalEvidence ?: if (extraction.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS)) extraction.evidence
                         else claim.evidenceIds.map { id -> extraction.evidence.single { it.id == id } }
                     require(mandatory.all { it in call.evidence }) { "核对没有重新提供全部目标原文及综合上下文" }
                     call.profileMaintenanceProof?.let { proof ->
@@ -576,7 +588,8 @@ object AnalysisRunCodec {
         "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString(),
         "profileTarget" to request.profileTarget?.let(::profileTargetMap), "actionPeriod" to request.actionPeriod,
         "inheritHistoricalFeedback" to request.inheritHistoricalFeedback,
-        "conversationContext" to request.conversationContext?.let(ConversationContextProtocol::map))
+        "conversationContext" to request.conversationContext?.let(ConversationContextProtocol::map),
+        "knowledgeContext" to request.knowledgeContext?.let(KnowledgeContextProtocol::map))
 
     internal fun profileTargetMap(target: ProfileAnalysisTarget): Map<String, Any?> =
         LongitudinalProfileProtocol.targetMap(target)

@@ -1,6 +1,6 @@
 # Trace Life 文档入口
 
-当前推进手机上的主动分析与发现保存闭环，餐食照片分析暂缓；代码及页面接入状态见[项目入口](../README.md)与开发路线。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
+当前推进统一知识问答、回答内沉淀和纵向画像整体整理，餐食照片分析暂缓；代码及页面接入状态见[项目入口](../README.md)与开发路线，实际验证见[开发与验证](DEVELOPMENT.md)。设计描述完整目标；研究笔记区分一手来源事实、访问限制和产品推导，不等同于已验证的实现能力。
 
 ## 开始与协作
 
@@ -19,7 +19,7 @@
 - [核对与反馈接口](CLAIM_REVIEW.md)：原文核对、用户纠正、反馈有效性与删除规则。
 - [M3 第三阶段计划](plans/2026-10-17-evidence-review-and-feedback.md)：证据核对与用户反馈的实现和验收。
 - [主题概况与本地查找](KNOWLEDGE_DISCOVERY.md)：汇集主题理解、关注与行动，定位原始记录、知识和经验历史。
-- [分析质量回归](ANALYSIS_QUALITY.md)：合成验收矩阵与真实语义评估的区分。
+- [分析质量回归](ANALYSIS_QUALITY.md)：固定合成案例、长期规模测试、真实模型报告与独立语义评审。
 - [知识与指标接口](KNOWLEDGE.md)：条件发布、分层查阅、依赖失效与确定性记录指标。
 - [M3 第四阶段计划](plans/2026-10-17-knowledge-publication.md)：正式知识、阅读索引及记录指标的实施与验证。
 - [自动整理与周期复盘材料](PERIOD_REFLECTION.md)：有界执行、材料分组、指标证据、原文下钻和报告导出。
@@ -45,7 +45,7 @@
 
 - [行动周期分析](ACTION_PERIOD_REFLECTION.md)：独立行动证据、综合、全批核对及依赖维护。
 - [行动归并与知识包计划](plans/2026-10-19-action-report-export.md)：多批整体归并、双类型原文扫描、固定行动证据导出与验证。
-- [纵向画像与变化摘要](LONGITUDINAL_PROFILE.md)：多周期分批候选、跨期维护门槛及修订比较。
+- [纵向画像与变化摘要](LONGITUDINAL_PROFILE.md)：多周期分批、整体候选、全范围维护门槛及修订比较。
 - [后台增量整理](BACKGROUND_ANALYSIS.md)：启用、调度、持久额度、失败恢复及恢复授权。
 - [看板偏好](DASHBOARD_PREFERENCES.md)：偏好版本、默认值、保存与迁移。
 - [四项后端实施计划](plans/2026-10-19-backend-completion.md)：范围和统一验证记录。
@@ -60,6 +60,7 @@
 - [主设计：本地存储与导出、知识库、复盘、看板及第一版范围](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md)
 - [长期个人画像：维度、分析、证据与更新](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)
 - [强制检索协议：分层索引、取证、维护与发布](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)
+- [统一个人知识闭环：已有理解、行动、整体画像与质量验收](superpowers/specs/2026-10-20-integrated-personal-knowledge-design.md)
 - [统一领域词汇](../CONTEXT.md)
 
 ## 研究依据
@@ -86,5 +87,5 @@
 
 ## 对话式回看
 
-- [使用与接口](CONVERSATION.md)：自由提问、固定范围、受控追问及独立保存。
+- [使用与接口](CONVERSATION.md)：自由提问、已有理解与行动范围、受控追问及回答内确认保存。
 - [行为设计](superpowers/specs/2026-10-20-conversational-reflection-design.md)与[实施计划](plans/2026-10-20-conversational-reflection.md)。

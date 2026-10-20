@@ -61,11 +61,12 @@ class ConversationContextCatalog(private val repository: LifeRepository, private
     }
 
     private fun requireParentCurrent(run: StoredAnalysisRun, state: AnalysisRunState, requireActive: Boolean = false) {
-        require(state.request.profileTarget == null && !state.request.actionPeriod) { "追问目前支持普通记录分析，请在对应页面继续画像或行动维护" }
+        require(state.request.profileTarget == null) { "画像候选仍须在画像维护中核对" }
         if (requireActive && run.archivedAt != null || run.expiresAt?.let { !clock.instant().isBefore(it) } == true ||
             !repository.analysisSourceCurrent(run.source, state.request.scope) ||
             state.feedbackContext?.let { !FeedbackContextCatalog(repository).current(run.id, it) } == true ||
-            state.actionPlan?.let { !repository.actionEvidencePlanCurrent(state.request.scope, it) } == true)
+            state.actionPlan?.let { !repository.actionEvidencePlanCurrent(state.request.scope, it) } == true ||
+            state.request.knowledgeContext?.let { !KnowledgeContextCatalog(repository, clock).current(it) } == true)
             throw StaleSnapshotException("之前的回答已归档、到期或依据发生变化，请重新提问")
     }
 
@@ -139,7 +140,7 @@ object ConversationContextProtocol {
             if (depth >= MAX_ANCESTORS || !visited.add(value.parentRunId)) return false
             val run = runs[value.parentRunId] ?: return false
             val state = AnalysisRunCodec.decode(run.payload)
-            if (state.request.profileTarget != null || state.request.actionPeriod || !matches(value, run, state)) return false
+            if (state.request.profileTarget != null || !matches(value, run, state)) return false
             if (currentSourceRunIds?.let { run.id !in it } ?: (source != null && run.source != source)) return false
             if (at != null && (run.updatedAt > at || run.expiresAt?.let { it <= at } == true)) return false
             if (state.feedbackContext?.let { !FeedbackContextProtocol.snapshotCurrent(run.id, it, runs, feedback) } == true) return false

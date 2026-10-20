@@ -150,8 +150,14 @@ internal object SnapshotValidation {
             }
             val runs = snapshot.analysisRuns.associateBy { it.id }
             snapshot.analysisRuns.forEach { run ->
+                val request = AnalysisRunCodec.decode(run.payload).request
+                request.knowledgeContext?.entries?.forEach { ref ->
+                    require(ref.runId != run.id && ref.runId in runs) { "已有理解缺少原分析或形成循环" }
+                    require(KnowledgeContextIdentity.matches(ref, snapshot.knowledgeRevisions, snapshot.profileRevisions,
+                        snapshot.experienceThreads, snapshot.experienceChanges)) { "已有理解与固定资料修订不一致" }
+                }
                 val visited = mutableSetOf(run.id)
-                var context = AnalysisRunCodec.decode(run.payload).request.conversationContext
+                var context = request.conversationContext
                 var depth = 0
                 while (context != null) {
                     val parentContext = context
@@ -186,7 +192,9 @@ internal object SnapshotValidation {
                             val sourceRun = requireNotNull(runs[response.runId]) { "维护知识的旧陈述来源已不存在" }
                             val sourceState = AnalysisRunCodec.decode(sourceRun.payload)
                             val claim = sourceState.calls.lastOrNull { it.batchKey == response.batchKey }?.proposal?.claims?.getOrNull(response.claimIndex)
-                            require(claim != null && AnalysisRunCodec.claimSha256(claim) == response.claimSha256) { "维护知识的旧陈述已被清理" }
+                            val target = dev.tracelife.analysis.ClaimRef(response.batchKey, response.claimIndex, response.claimSha256)
+                            require(claim != null && AnalysisRunCodec.claimSha256(claim) == response.claimSha256 ||
+                                dev.tracelife.analysis.ReductionGraph.matchesFeedbackTarget(sourceState, target)) { "维护知识的旧陈述已被清理" }
                         }
                     }
                 }

@@ -22,6 +22,10 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
+import java.io.File
+import java.io.ByteArrayOutputStream
+import dev.tracelife.transfer.SnapshotJsonCodec
+import dev.tracelife.knowledge.KnowledgeEvidenceState
 
 /** Synthetic longitudinal records, typed providers and explicit confirmations; no network. */
 @RunWith(RobolectricTestRunner::class)
@@ -182,6 +186,146 @@ class LongitudinalProfileGeneratorTest {
         assertEquals(2L, report.progress.candidates.coverage!!.remainingTextFragments)
     }
 
+    @Test fun `multiple batches form one original backed candidate after explicit full maintenance and survive backup`() {
+        repeat(5) { record("aug-integrate-$it", first.from.plusDays(it.toLong())) }
+        record("sep-integrate", second.from)
+        generator.start(request(), "integrated")
+        val generated = generator.process("integrated", model, model, maxModelRequests = 100, fragmentsPerBatch = 3)
+        assertEquals(LongitudinalProfileStatus.INTEGRATED, generated.status)
+        assertTrue(generated.progress.integration!!.leafCount > 1)
+        val claim = generated.progress.integratedCandidates.single()
+        val detail = generator.integratedCandidate(generated.progress, claim)
+        assertEquals(6, detail.originalEvidence.size)
+        assertTrue(detail.text.contains("整体"))
+        assertTrue(detail.unknowns.any { it.contains("未记录") })
+        assertEquals(0, generator.process("integrated", model, model).modelRequestsThisPass)
+        assertThrows(IllegalArgumentException::class.java) { analysis.reviewClaim("integrated", "shortcut", claim, provider = model) }
+        val feedback = AnalysisFeedback(repository, clock)
+        feedback.respond("integrated", claim, analysis.task("integrated").stored.version, ClaimFeedbackDecision.CONFIRMED)
+        val maintenance = ProfileMaintenance(repository, analysis, clock)
+        maintenance.begin("integrated", claim)
+        val reviewed = maintenance.process("integrated", claim, model, model, model, maxModelRequests = 10, fragmentsPerBatch = 3)
+        assertEquals(ProfileMaintenanceStatus.READY_TO_APPLY, reviewed.status)
+        assertEquals(6, reviewed.progress.scannedFragments)
+        assertEquals(6, reviewed.progress.finalRereadFragments)
+        val applied = maintenance.apply("integrated", claim, reviewed.progress.taskVersion!!, reviewed.progress.planId!!,
+            ProfileMaintenanceAction.NEW, operationId = "explicit-integrated")
+        assertEquals(ProfileAdoption.CANDIDATE, applied.adoption)
+        val published = repository.knowledgeRevision(applied.knowledge!!.knowledgeId)!!
+        val proof = published.profileMaintenanceProof!!.plan.integration!!
+        assertEquals(generated.progress.integration!!.leafCount, proof.leafRefs.size)
+        assertEquals(6, KnowledgeValidation.allEvidence(published).size)
+        assertEquals(proof.feedbackTokens.size + 1, KnowledgeValidation.feedbackDependencies(published).size)
+        assertEquals(published, KnowledgeCodec.decode(KnowledgeCodec.encode(published)))
+        assertThrows(IllegalArgumentException::class.java) {
+            KnowledgeCodec.decode(JSONObject(KnowledgeCodec.encode(published)).put("formatVersion", 6).toString())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            AnalysisRunCodec.decode(JSONObject(analysis.task("integrated").stored.payload).put("formatVersion", 15).toString())
+        }
+        val directory = File(context.cacheDir, "synthetic-integrated-backup-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val snapshot = repository.captureSnapshot(directory)
+            SnapshotValidation.validate(snapshot)
+            val bytes = ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toByteArray()
+            val decoded = SnapshotJsonCodec.read(bytes.inputStream())
+            assertEquals(snapshot.knowledgeRevisions, decoded.knowledgeRevisions)
+            val ancestor = proof.feedbackTokens.first().claim
+            feedback.respond("integrated", ancestor, analysis.task("integrated").stored.version, ClaimFeedbackDecision.REJECTED,
+                "合成独立意见：多个锚点是同一次经历，不支持这个解释。")
+            assertEquals(KnowledgeEvidenceState.FEEDBACK_CHANGED, KnowledgeLibrary(repository, clock).get(published.id)!!.evidenceState)
+            assertEquals(ProfileMaintenanceStatus.DEPENDENCY_BLOCKED, maintenance.inspect("integrated", claim).status)
+            val opinion = feedback.forClaim("integrated", ancestor)!!.feedback
+            feedback.delete(opinion.id, opinion.version)
+            assertNull(repository.analysisRun("integrated"))
+            assertNull(repository.knowledgeRevision(published.id))
+            repository.restoreSnapshot(decoded, directory, repository.currentGeneration(), true, repository.currentAnalysisGeneration())
+            assertNull(repository.analysisRun("integrated"))
+            assertNull(repository.knowledgeRevision(published.id))
+            assertEquals(6, repository.captureSnapshot(File(directory, "after").apply { mkdirs() }).records.size)
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun `large integrated candidate preserves all origins and blocks final review instead of discarding context`() {
+        repeat(33) { record("large-$it", first.from.plusDays((it % 20).toLong())) }
+        record("large-sep", second.from)
+        generator.start(request(), "large-integrated")
+        val generated = generator.process("large-integrated", model, model, maxModelRequests = 100, fragmentsPerBatch = 8)
+        assertEquals(LongitudinalProfileStatus.INTEGRATED, generated.status)
+        val claim = generated.progress.integratedCandidates.single()
+        val maintenance = ProfileMaintenance(repository, analysis, clock)
+        maintenance.begin("large-integrated", claim)
+        val reviewed = maintenance.process("large-integrated", claim, model, model, model, maxModelRequests = 100, fragmentsPerBatch = 8)
+        assertEquals(ProfileMaintenanceStatus.RELATED_EVIDENCE_LIMIT, reviewed.status)
+        assertEquals(34, reviewed.progress.scannedFragments)
+        assertEquals(0, reviewed.progress.finalRereadFragments)
+        assertTrue(analysis.task("large-integrated").state.calls.none { it.profileMaintenanceProof != null })
+        assertTrue(repository.knowledgeHeads().isEmpty())
+    }
+
+    @Test fun `partial reduction root cannot become a maintained whole profile`() {
+        repeat(5) { record("partial-$it", first.from.plusDays(it.toLong())) }; record("partial-sep", second.from)
+        generator.start(request(), "partial")
+        val generated = generator.process("partial", model, model, maxModelRequests = 100, fragmentsPerBatch = 3)
+        val state = analysis.task("partial").state
+        val leaves = state.calls.filter { it.purpose == CallPurpose.SYNTHESIS }.map(ReductionGraph::nodeRef)
+        assertTrue(leaves.size > 2)
+        analysis.reduce("partial", "deliberately-partial", leaves.take(2), model)
+        val root = analysis.reductionNode("partial", "deliberately-partial")
+        val ref = ReductionGraph.feedbackRef(analysis.reductionStatementRef("partial", root.ref, 0))
+        assertThrows(IllegalArgumentException::class.java) { ProfileMaintenance(repository, analysis, clock).begin("partial", ref) }
+        assertEquals(LongitudinalProfileStatus.INTEGRATED, generated.status)
+    }
+
+    @Test fun `deleting integrated target confirmation removes dependent maintenance instead of retaining a redacted root`() {
+        repeat(3) { record("own-delete-$it", first.from.plusDays(it.toLong())) }; record("own-delete-sep", second.from)
+        generator.start(request(), "own-delete")
+        val generated = generator.process("own-delete", model, model, maxModelRequests = 100, fragmentsPerBatch = 3)
+        val claim = generated.progress.integratedCandidates.single()
+        val feedback = AnalysisFeedback(repository, clock)
+        val response = feedback.respond("own-delete", claim, analysis.task("own-delete").stored.version, ClaimFeedbackDecision.CONFIRMED)
+        ProfileMaintenance(repository, analysis, clock).begin("own-delete", claim)
+        val directory = File(context.cacheDir, "synthetic-own-delete-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val before = repository.captureSnapshot(directory)
+            feedback.delete(response.feedback.id, response.feedback.version)
+            assertNull(repository.analysisRun("own-delete"))
+            repository.restoreSnapshot(before, directory, repository.currentGeneration(), true, repository.currentAnalysisGeneration())
+            assertNull(repository.analysisRun("own-delete"))
+            assertNotNull(repository.record("own-delete-sep"))
+            assertTrue(repository.knowledgeHeads().isEmpty())
+        } finally { directory.deleteRecursively() }
+    }
+
+    @Test fun `maintenance of a new candidate can retain a rejected integrated statement in its portable history proof`() {
+        repeat(3) { record("history-integrate-$it", first.from.plusDays(it.toLong())) }; record("history-integrate-sep", second.from)
+        generator.start(request(), "historical-integrated")
+        val old = generator.process("historical-integrated", model, model, maxModelRequests = 100, fragmentsPerBatch = 3)
+            .progress.integratedCandidates.single()
+        AnalysisFeedback(repository, clock).respond("historical-integrated", old, analysis.task("historical-integrated").stored.version,
+            ClaimFeedbackDecision.REJECTED, "合成历史纠正：过去的概括过宽，请按具体情境重看。")
+        generator.start(request(), "new-integrated")
+        val selected = generator.process("new-integrated", model, model, maxModelRequests = 100, fragmentsPerBatch = 3)
+            .progress.integratedCandidates.single()
+        AnalysisFeedback(repository, clock).respond("new-integrated", selected, analysis.task("new-integrated").stored.version,
+            ClaimFeedbackDecision.CONFIRMED)
+        val maintenance = ProfileMaintenance(repository, analysis, clock)
+        assertEquals(1, maintenance.begin("new-integrated", selected).totalReferences)
+        val checked = maintenance.process("new-integrated", selected, model, model, model, maxModelRequests = 20, fragmentsPerBatch = 4)
+        assertEquals(ProfileMaintenanceStatus.READY_TO_APPLY, checked.status)
+        val result = maintenance.apply("new-integrated", selected, checked.progress.taskVersion!!, checked.progress.planId!!,
+            ProfileMaintenanceAction.NEW, operationId = "explicit-new-after-history")
+        val published = repository.knowledgeRevision(result.knowledge!!.knowledgeId)!!
+        assertEquals(ProfileMaintenanceReferenceKind.FEEDBACK, published.profileMaintenanceProof!!.plan.references.single().kind)
+        val directory = File(context.cacheDir, "synthetic-history-integrated-${UUID.randomUUID()}").apply { mkdirs() }
+        try {
+            val snapshot = repository.captureSnapshot(directory)
+            SnapshotValidation.validate(snapshot)
+            val bytes = ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toByteArray()
+            assertEquals(snapshot.knowledgeRevisions, SnapshotJsonCodec.read(bytes.inputStream()).knowledgeRevisions)
+        } finally { directory.deleteRecursively() }
+    }
+
     private fun request() = AnalysisRequest("合成跨周期：哪些策略可以作为待确认的长期理解？", AnalysisQuery(first.from, second.through, "UTC"),
         limits = AnalysisLimits(inputTokenLimit = 30_000), profileTarget = target)
     private fun record(id: String, date: LocalDate, body: String = "合成练习：先列明确小步骤，在这个情境中完成练习。") =
@@ -200,7 +344,14 @@ class LongitudinalProfileGeneratorTest {
         override fun countInputTokens(request: ModelRequest) = 100
         override fun complete(request: ModelRequest): BatchProposal {
             requests++
-            val evidence = JSONObject(request.payloadJson).getJSONArray("evidence")
+            val payload = JSONObject(request.payloadJson)
+            if (payload.getString("purpose") == "REDUCTION") {
+                val inputs = payload.getJSONArray("derivedInputs")
+                val ids = (0 until inputs.length()).map { inputs.getJSONObject(it).getString("id") }
+                return BatchProposal(listOf(ProposedClaim("合成整体假设：多个阶段的小步骤可能帮助练习，但需保留失败情境和重复事件限制。",
+                    ids, ClaimKind.POSSIBLE_INTERPRETATION)), listOf("未记录的情境仍然未知。"))
+            }
+            val evidence = payload.getJSONArray("evidence")
             val ids = (0 until evidence.length()).map { evidence.getJSONObject(it).getString("id") }
             return BatchProposal(listOf(ProposedClaim("合成纵向假设：在八月与九月已记录的练习情境里，小步骤可能帮助推进；不代表永久稳定，其他项目仍未知。",
                 if (onlyFirst) ids.take(1) else ids, ClaimKind.POSSIBLE_INTERPRETATION)))

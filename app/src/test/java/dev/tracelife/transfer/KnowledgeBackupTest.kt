@@ -79,7 +79,7 @@ class KnowledgeBackupTest {
             payload.replace("\"revision\":1", "\"revision\":\"1\""),
             payload.replace("\"revision\":1", "\"revision\":1.0"),
             payload.replace("\"includeArchived\":false", "\"includeArchived\":0"),
-            payload.replace("\"formatVersion\":6", "\"formatVersion\":999"),
+            payload.replace("\"formatVersion\":${KnowledgeCodec.FORMAT_VERSION}", "\"formatVersion\":999"),
             payload.dropLast(1) + ",\"unknown\":true}",
             payload + "{}",
             JSONObject(payload).apply { getJSONObject("review").put("untrustedFact", "synthetic") }.toString(),

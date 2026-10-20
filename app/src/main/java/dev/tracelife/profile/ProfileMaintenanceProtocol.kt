@@ -20,7 +20,8 @@ data class ProfileMaintenanceReferenceContent(
     val feedbackUserText: String? = null,
 )
 data class ProfileMaintenancePlan(val target: ClaimRef, val profileTarget: ProfileAnalysisTarget,
-    val references: List<ProfileMaintenanceReference>, val createdAt: Instant)
+    val references: List<ProfileMaintenanceReference>, val createdAt: Instant,
+    val integration: ProfileIntegrationProof? = null)
 enum class ProfileRelation { SAME, SUPPLEMENT, CONFLICT, UNRELATED, UNCERTAIN }
 enum class ProfileMaintenanceRecommendation { KEEP, NARROW, REPLACE, REVIEW }
 data class ProfileRelationResult(val relation: ProfileRelation, val recommendation: ProfileMaintenanceRecommendation,
@@ -65,6 +66,10 @@ object ProfileMaintenanceProtocol {
     fun planSha256(plan: ProfileMaintenancePlan): String = AnalysisRunCodec.sha256(AnalysisRunCodec.json(planMap(plan)))
     fun validatePlan(plan: ProfileMaintenancePlan) {
         validateClaim(plan.target)
+        plan.integration?.let {
+            require(plan.profileTarget.layer == ProfileLayer.LONG_TERM && ReductionGraph.feedbackRef(it.target) == plan.target)
+            ProfileIntegrationProtocol.validate(it)
+        }
         require(plan.references.size <= 20_000 && plan.references.map { it.kind to it.id }.distinct().size == plan.references.size)
         plan.references.forEach(::validateReference)
     }
@@ -124,6 +129,11 @@ object ProfileMaintenanceProtocol {
         }.distinctBy { it.id }
         require(relevant.all { it in finalEvidence }) { "维护核对遗漏相关原文或反例" }
         require(finalEvidence.all { it in proof.originalEvidence }) { "最终核对原文未经过范围扫描" }
+        proof.plan.integration?.let { integration ->
+            require(integration.originalEvidence.all { it in proof.originalEvidence && it in finalEvidence }) {
+                "整体画像核对必须重读全部生成来源，不能用摘要代替原文"
+            }
+        }
         review?.let {
             AnalysisRunCodec.validateReview(it, finalEvidence, 65_536)
             require(it.verdict != ReviewVerdict.SUPPORTED ||
@@ -134,7 +144,8 @@ object ProfileMaintenanceProtocol {
         }
     }
     fun planMap(plan: ProfileMaintenancePlan): Map<String, Any?> = mapOf("target" to AnalysisRunCodec.claimRefMap(plan.target),
-        "profileTarget" to AnalysisRunCodec.profileTargetMap(plan.profileTarget), "references" to plan.references.map(::referenceMap), "createdAt" to plan.createdAt.toString())
+        "profileTarget" to AnalysisRunCodec.profileTargetMap(plan.profileTarget), "references" to plan.references.map(::referenceMap), "createdAt" to plan.createdAt.toString()) +
+        (plan.integration?.let { mapOf("integration" to ProfileIntegrationProtocol.map(it)) } ?: emptyMap())
     fun referenceMap(value: ProfileMaintenanceReference): Map<String, Any?> = mapOf("kind" to value.kind.name, "id" to value.id, "version" to value.version, "sha256" to value.sha256,
         "feedbackVersions" to value.feedbackVersions.toSortedMap())
     fun relationMap(value: ProfileRelationResult): Map<String, Any?> = mapOf("relation" to value.relation.name,
@@ -151,9 +162,10 @@ object ProfileMaintenanceProtocol {
         "dimension" to value.dimension?.name, "layer" to value.layer?.name, "adoption" to value.adoption?.name,
         "claim" to value.claim?.let(AnalysisRunCodec::claimMap), "userText" to value.userText,
         "feedbackDecision" to value.feedbackDecision?.name, "feedbackUserText" to value.feedbackUserText, "sourceAvailable" to value.sourceAvailable, "originalEvidence" to false)
-    fun parsePlan(raw: Any?): ProfileMaintenancePlan = raw.obj("target", "profileTarget", "references", "createdAt").let {
+    fun parsePlan(raw: Any?): ProfileMaintenancePlan = raw.obj(*arrayOf("target", "profileTarget", "references", "createdAt") +
+        (if ((raw as? Map<*, *>)?.containsKey("integration") == true) arrayOf("integration") else emptyArray())).let {
         ProfileMaintenancePlan(parseClaim(it["target"]), LongitudinalProfileProtocol.parseTarget(it["profileTarget"]),
-            it.list("references").map(::parseReference), Instant.parse(it.string("createdAt")))
+            it.list("references").map(::parseReference), Instant.parse(it.string("createdAt")), it["integration"]?.let(ProfileIntegrationProtocol::parse))
     }
     fun parseReference(raw: Any?): ProfileMaintenanceReference = raw.obj("kind", "id", "version", "sha256", "feedbackVersions").let {
         ProfileMaintenanceReference(ProfileMaintenanceReferenceKind.valueOf(it.string("kind")), it.string("id"), it.int("version"), it.string("sha256"),

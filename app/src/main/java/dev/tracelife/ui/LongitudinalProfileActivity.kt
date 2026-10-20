@@ -6,6 +6,7 @@ import android.widget.Spinner
 import dev.tracelife.analysis.AnalysisProviderException
 import dev.tracelife.analysis.AnalysisTask
 import dev.tracelife.analysis.AnalysisRequest
+import dev.tracelife.analysis.AnalysisLimits
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.analysis.CallStatus
 import dev.tracelife.profile.*
@@ -24,6 +25,7 @@ class LongitudinalProfileActivity : ScreenActivity() {
     private var dimensionInput: Spinner? = null
     private var monthInput: Spinner? = null
     private var questionInput: EditText? = null
+    private var passNotice: String? = null
 
     override fun restoreScreenState(savedInstanceState: Bundle?) {
         restoredScreen = savedInstanceState?.getString("screen") ?: if (intent.getBooleanExtra("history", false)) "history" else "form"
@@ -32,6 +34,7 @@ class LongitudinalProfileActivity : ScreenActivity() {
         dimensionValue = savedInstanceState?.getInt("dimension", 4) ?: 4
         monthValue = savedInstanceState?.getInt("months", 1) ?: 1
         questionValue = savedInstanceState?.getString("question") ?: questionValue
+        passNotice = savedInstanceState?.getString("passNotice")
     }
     override fun onSaveInstanceState(outState: Bundle) {
         captureForm()
@@ -41,6 +44,7 @@ class LongitudinalProfileActivity : ScreenActivity() {
         outState.putInt("dimension", dimensionValue)
         outState.putInt("months", monthValue)
         outState.putString("question", questionValue)
+        outState.putString("passNotice", passNotice)
         super.onSaveInstanceState(outState)
     }
     override fun showHome() {
@@ -86,6 +90,7 @@ class LongitudinalProfileActivity : ScreenActivity() {
                 ProfileComparisonPeriod(start, start.plusMonths(1).minusDays(1))
             }
             val request = AnalysisRequest(questionValue.trim(), AnalysisQuery(from, end.minusDays(1), ZoneId.systemDefault().id),
+                limits = AnalysisLimits(inputTokenLimit = 32_000),
                 profileTarget = ProfileAnalysisTarget(ProfileDimension.entries[dimensionValue], ProfileLayer.LONG_TERM, periods))
             confirm("开始比较这些月份？", "$from 至 ${end.minusDays(1)}，${profileDimensionTitle(ProfileDimension.entries[dimensionValue])}。所选原文将分批发送给 DeepSeek；本轮最多 5 次请求，可能产生费用。之后仍需核对与明确保存。", "开始") {
                 runIo({
@@ -116,6 +121,7 @@ class LongitudinalProfileActivity : ScreenActivity() {
         }
     }
     private fun showTask(id: String, start: Int) {
+        if (runId != id) passNotice = null
         runId = id; offset = start
         beginScreen("task", "描述与整理进度")
         runIo({
@@ -129,12 +135,15 @@ class LongitudinalProfileActivity : ScreenActivity() {
         val details = card()
         Ui.body(details, "${scope.from} 至 ${scope.through}")
         Ui.body(details, task.state.request.question)
+        passNotice?.let { Ui.note(details, it) }
         Ui.note(details, "已经使用 ${task.state.calls.size}／${task.state.request.limits.maxCalls} 次请求。每轮最多 5 次，进度自动保存。")
         page.coverage?.let { Ui.note(details, "已整理 ${it.completedTextCodePoints}／${it.textCodePoints} 字；日期未定 ${it.unknownTimeRecords} 条，跨期 ${it.overlappingRecords} 条，未读附件 ${it.unreadAttachments} 个。") }
         long?.periods?.forEach { Ui.note(details, "${it.period.from} 至 ${it.period.through}：${it.datedRecordsWithText} 条有日期的文字记录") }
         if (long?.status == LongitudinalProfileStatus.INSUFFICIENT_PERIODS) Ui.body(details, "资料不足：至少两个比较月份需要有明确日期的文字记录。本次不会发送请求。")
-        if (page.integration == dev.tracelife.analysis.SynthesisIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED)
-            Ui.note(details, "这些描述由多批资料分别形成，尚未整合成全时期的统一结论。")
+        if (long?.status == LongitudinalProfileStatus.INTEGRATED)
+            Ui.note(details, "已将 ${long.integration?.leafCount} 批资料整体整理。下面的描述保留全部来源，仍需逐项核对、保存和采用。")
+        else if (page.integration == dev.tracelife.analysis.SynthesisIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED)
+            Ui.note(details, "局部描述已保留。继续整理会对照所有批次，形成整个时期的候选；在此之前不能称为整体结论。")
         Ui.note(details, candidateStatusTitle(page.status))
         if (task.stored.archivedAt != null) {
             button("恢复这项整理", "restoreProfileTask") {
@@ -152,7 +161,16 @@ class LongitudinalProfileActivity : ScreenActivity() {
             }
         }
         val candidates = card()
-        Ui.sectionTitle(candidates, "待确认的描述 · ${page.total}")
+        if (long?.status == LongitudinalProfileStatus.INTEGRATED) {
+            Ui.sectionTitle(candidates, "整体候选 · ${long.integratedCandidates.size}")
+            if (long.integratedCandidates.isEmpty()) Ui.note(candidates, "全部批次已整理，但资料尚不足以提出整体描述。原有局部线索和未知项仍保留。")
+            long.integratedCandidates.forEachIndexed { index, claim ->
+                listRow(candidates, "整体描述 ${index + 1} · 查看内容与完整核对", "integratedProfile:${claim.claimSha256.take(12)}") {
+                    startActivity(ProfileMaintenanceActivity.intent(this, task.stored.id, claim))
+                }
+            }
+        }
+        Ui.sectionTitle(candidates, "分批形成的线索 · ${page.total}")
         if (page.candidates.isEmpty()) Ui.note(candidates, "尚未形成描述。资料不足或未发现跨期线索时可以没有结果。")
         page.candidates.forEachIndexed { index, item ->
             listRow(candidates, "描述 ${offset + index + 1} · 查看内容、历史对照与原文", "longitudinalCandidate:${item.claim.claimSha256.take(12)}") {
@@ -170,12 +188,17 @@ class LongitudinalProfileActivity : ScreenActivity() {
         runIo({
             require(app.deepSeekCredentials.isConfigured()) { "请先在设置中配置 DeepSeek 密钥" }
             try {
-                if (app.analysis.task(id).state.request.profileTarget?.layer == ProfileLayer.LONG_TERM)
-                    app.longitudinalProfiles.process(id, app.deepSeekProvider, app.deepSeekProvider, maxModelRequests = 5)
-                else app.profileCandidates.process(id, app.deepSeekProvider, app.deepSeekProvider, maxModelRequests = 5)
-                null
+                val status = if (app.analysis.task(id).state.request.profileTarget?.layer == ProfileLayer.LONG_TERM)
+                    app.longitudinalProfiles.process(id, app.deepSeekProvider, app.deepSeekProvider, maxModelRequests = 5).status.name
+                else app.profileCandidates.process(id, app.deepSeekProvider, app.deepSeekProvider, maxModelRequests = 5).status.name
+                when (status) {
+                    "BUDGET_EXHAUSTED" -> "本轮已停止：完整资料超出本次输入或累计额度。已有线索保留，请缩小范围重新整理。"
+                    "RETRY_NEEDED" -> "本轮请求未成功，已有进度保留；继续会明确重新请求。"
+                    "DEPENDENCY_BLOCKED" -> "已有线索的意见发生变化，请重新整理这些月份。"
+                    else -> null
+                }
             } catch (failure: AnalysisProviderException) { failure.message ?: "请求未成功" }
-        }) { failure -> failure?.let { toast(it) }; showTask(id, 0) }
+        }) { notice -> passNotice = notice; showTask(id, 0) }
     }
     private fun candidateStatusTitle(value: ProfileCandidateStatus): String = when (value) {
         ProfileCandidateStatus.READY, ProfileCandidateStatus.PASS_LIMIT_REACHED -> "还有资料可以继续整理。"

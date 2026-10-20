@@ -196,7 +196,7 @@ class ReductionKnowledgeTest {
         prepare(); review()
         val saved = publish()
         val payload = KnowledgeCodec.encode(saved)
-        assertEquals(6, JSONObject(payload).getInt("formatVersion"))
+        assertEquals(7, JSONObject(payload).getInt("formatVersion"))
         assertEquals(saved, KnowledgeCodec.decode(payload))
         val versionTwo = JSONObject(payload).apply { put("formatVersion", 2); remove("metricEvidence"); remove("profileMaintenanceProof"); remove("actionPlan"); remove("actionEvidence") }
         assertEquals(saved, KnowledgeCodec.decode(versionTwo.toString()))
@@ -213,7 +213,7 @@ class ReductionKnowledgeTest {
             JSONObject(payload).apply { remove("metricEvidence") }.toString(),
             JSONObject(payload).apply { getJSONObject("reductionProof").put("unregistered", true) }.toString(),
             JSONObject(payload).put("reductionProof", JSONObject.NULL).toString(),
-            payload.replace("\"formatVersion\":6", "\"formatVersion\":6,\"formatVersion\":6"),
+            payload.replace("\"formatVersion\":${KnowledgeCodec.FORMAT_VERSION}", "\"formatVersion\":${KnowledgeCodec.FORMAT_VERSION},\"formatVersion\":${KnowledgeCodec.FORMAT_VERSION}"),
         )
         invalid.forEach { assertThrows(Exception::class.java) { KnowledgeCodec.decode(it) } }
     }

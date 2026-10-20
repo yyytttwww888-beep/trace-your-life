@@ -14,11 +14,13 @@ import java.util.UUID
 
 enum class LongitudinalProfileStatus {
     READY, NEEDS_ATTENTION, PASS_FINISHED, INSUFFICIENT_PERIODS, NO_TEXT, PASS_LIMIT_REACHED,
+    INTEGRATING, INTEGRATED, DEPENDENCY_BLOCKED,
     CANCELLED, RETRY_NEEDED, BUDGET_EXHAUSTED, NEEDS_RECOVERY, STALE, EXPIRED, CLOCK_ROLLBACK, TASK_UNAVAILABLE, CONFLICT,
 }
 data class ProfilePeriodCoverage(val period: ProfileComparisonPeriod, val datedRecordsWithText: Int)
 data class LongitudinalProfileProgress(val runId: String, val status: LongitudinalProfileStatus,
-    val periods: List<ProfilePeriodCoverage>, val candidates: ProfileCandidateProgress) {
+    val periods: List<ProfilePeriodCoverage>, val candidates: ProfileCandidateProgress,
+    val integration: ReductionProgress? = null, val integratedCandidates: List<ClaimRef> = emptyList()) {
     val independentEventsEstablished: Boolean get() = false
     val counterevidenceSearchExhaustive: Boolean get() = false
 }
@@ -26,10 +28,14 @@ data class LongitudinalProfileReport(val runId: String, val status: Longitudinal
     val modelRequestsThisPass: Int, val generatedBatchesThisPass: Int, val reviewedThisPass: Int,
     val progress: LongitudinalProfileProgress)
 
+data class IntegratedProfileCandidateDetail(val claim: ClaimRef, val text: String,
+    val originalEvidence: List<EvidenceReceipt>, val unknowns: List<String>)
+
 /** Cross-period original-text batches. Repeated anchors establish context, never extra coverage. */
 class LongitudinalProfileGenerator(private val repository: LifeRepository, private val analysis: ControlledAnalysis,
     private val clock: Clock = Clock.systemUTC()) {
     private val candidates = ProfileCandidateGenerator(repository, analysis, clock)
+    private val reduction = PeriodReductionProcessor(analysis)
 
     fun start(request: AnalysisRequest, id: String = UUID.randomUUID().toString()): AnalysisTask {
         val target = requireNotNull(request.profileTarget)
@@ -40,7 +46,7 @@ class LongitudinalProfileGenerator(private val repository: LifeRepository, priva
 
     /** Complete calendar months are a useful default, not evidence that a trait is stable. */
     fun startMonthly(dimension: ProfileDimension, question: String, zoneId: String,
-        completedMonths: Int = 3, limits: AnalysisLimits = AnalysisLimits(),
+        completedMonths: Int = 3, limits: AnalysisLimits = AnalysisLimits(inputTokenLimit = 32_000),
         id: String = UUID.randomUUID().toString()): AnalysisTask {
         require(completedMonths in 2..12)
         val end = clock.instant().atZone(ZoneId.of(zoneId)).toLocalDate().withDayOfMonth(1)
@@ -60,12 +66,20 @@ class LongitudinalProfileGenerator(private val repository: LifeRepository, priva
         val inventory = inventory(analysis.task(runId), 3)
         if (analysis.task(runId).stored.version != progress.taskVersion || repository.currentAnalysisGeneration() != progress.analysisGeneration)
             throw StaleSnapshotException("纵向画像在读取期间变化")
+        val integrated = reduction.inspect(runId)
         val status = when {
             progress.coverage.textCodePoints == 0L -> LongitudinalProfileStatus.NO_TEXT
             inventory.periods.count { it.datedRecordsWithText > 0 } < 2 -> LongitudinalProfileStatus.INSUFFICIENT_PERIODS
+            integrated.status == ReductionProcessingStatus.DEPENDENCY_BLOCKED -> LongitudinalProfileStatus.DEPENDENCY_BLOCKED
+            integrated.status == ReductionProcessingStatus.TREE_INTEGRATED -> LongitudinalProfileStatus.INTEGRATED
+            progress.coverage.remainingTextFragments == 0L && integrated.leafCount > 1 -> LongitudinalProfileStatus.INTEGRATING
             else -> LongitudinalProfileStatus.valueOf(progress.status.name)
         }
-        return LongitudinalProfileProgress(runId, status, freeze(inventory.periods), progress)
+        val refs = if (integrated.status == ReductionProcessingStatus.TREE_INTEGRATED) {
+            val node = analysis.reductionNode(runId, requireNotNull(integrated.root).batchKey)
+            node.digest.statements.indices.map { ReductionGraph.feedbackRef(analysis.reductionStatementRef(runId, node.ref, it)) }
+        } else emptyList()
+        return LongitudinalProfileProgress(runId, status, freeze(inventory.periods), progress, integrated, freeze(refs))
     }
 
     fun next(previous: LongitudinalProfileProgress): LongitudinalProfileProgress {
@@ -77,6 +91,17 @@ class LongitudinalProfileGenerator(private val repository: LifeRepository, priva
 
     fun candidate(progress: LongitudinalProfileProgress, claim: ClaimRef): ProfileCandidateDetail =
         candidates.candidate(progress.candidates, claim)
+
+    fun integratedCandidate(progress: LongitudinalProfileProgress, claim: ClaimRef): IntegratedProfileCandidateDetail {
+        require(claim in progress.integratedCandidates) { "整体候选未在当前目录登记" }
+        val task = analysis.task(progress.runId)
+        require(task.stored.version == progress.candidates.taskVersion && repository.currentAnalysisGeneration() == progress.candidates.analysisGeneration)
+        val source = ProfileIntegrationProtocol.resolve(task.state, claim)
+        analysis.reductionDependencies(progress.runId, requireNotNull(source.integration).target.root)
+        require(analysis.task(progress.runId).stored.version == task.stored.version)
+        return IntegratedProfileCandidateDetail(claim, source.claim.text, freeze(source.originalEvidence),
+            freeze(requireNotNull(source.call.reductionOutput).unknowns))
+    }
 
     fun process(runId: String, generator: AnalysisProvider, reviewer: SemanticReviewProvider,
         maxModelRequests: Int = 5, fragmentsPerBatch: Int = 4,
@@ -116,7 +141,18 @@ class LongitudinalProfileGenerator(private val repository: LifeRepository, priva
                     page = candidates.next(page)
                 }
                 val inventory = inventory(analysis.task(runId), fragmentsPerBatch)
-                if (pending == null && inventory.selections.isEmpty()) return result(progress.status)
+                if (pending == null && inventory.selections.isEmpty()) {
+                    if (progress.integration?.leafCount?.let { it > 1 } != true) return result(progress.status)
+                    if (progress.status == LongitudinalProfileStatus.INTEGRATED) return result(progress.status)
+                    if (requests >= maxModelRequests) return result(LongitudinalProfileStatus.PASS_LIMIT_REACHED)
+                    val integrated = reduction.process(runId, countedGenerator, maxRequests = maxModelRequests - requests, cancelled = cancelled)
+                    return result(when (integrated.status) {
+                        ReductionProcessingStatus.TREE_INTEGRATED -> LongitudinalProfileStatus.INTEGRATED
+                        ReductionProcessingStatus.NEEDS_INPUT_PROCESSING -> LongitudinalProfileStatus.READY
+                        ReductionProcessingStatus.SINGLE_BATCH -> progress.status
+                        else -> LongitudinalProfileStatus.valueOf(integrated.status.name)
+                    })
+                }
                 if (requests >= maxModelRequests) return result(LongitudinalProfileStatus.PASS_LIMIT_REACHED)
                 if (pending != null) {
                     val key = "longitudinal-review-v1-" + AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(runId,
@@ -143,6 +179,7 @@ class LongitudinalProfileGenerator(private val repository: LifeRepository, priva
         } catch (_: AnalysisBudgetException) { return result(LongitudinalProfileStatus.BUDGET_EXHAUSTED) }
         catch (_: AnalysisValidationException) { return result(LongitudinalProfileStatus.RETRY_NEEDED) }
         catch (_: AnalysisTaskUnavailableException) { return result(LongitudinalProfileStatus.TASK_UNAVAILABLE) }
+        catch (_: AnalysisDependencyBlockedException) { return result(LongitudinalProfileStatus.DEPENDENCY_BLOCKED) }
         catch (_: StaleSnapshotException) { return result(LongitudinalProfileStatus.CONFLICT) }
         catch (_: AnalysisConflictException) { return result(LongitudinalProfileStatus.CONFLICT) }
         catch (_: RevisionConflictException) { return result(LongitudinalProfileStatus.CONFLICT) }

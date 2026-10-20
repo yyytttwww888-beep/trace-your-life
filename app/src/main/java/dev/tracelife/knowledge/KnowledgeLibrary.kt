@@ -171,6 +171,8 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                 val runState = states[value.runId]?.second
                 (runState?.feedbackContext?.let {
                     dev.tracelife.analysis.FeedbackContextCatalog(repository).current(value.runId, it)
+                } ?: true) && (runState?.request?.knowledgeContext?.let {
+                    dev.tracelife.analysis.KnowledgeContextCatalog(repository, clock).current(it)
                 } ?: true) && (runState?.request?.conversationContext?.let {
                     dev.tracelife.analysis.ConversationContextCatalog(repository, clock).current(it)
                 } ?: true)

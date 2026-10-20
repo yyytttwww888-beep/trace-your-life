@@ -71,8 +71,11 @@ internal class ProfileMaintenanceCatalog(private val repository: LifeRepository)
 
     private fun feedback(value: StoredClaimFeedback): ProfileMaintenanceReferenceContent {
         val state = repository.analysisRun(value.runId)?.let { AnalysisRunCodec.decode(it.payload) }
-        val proposal: ProposedClaim? = state?.calls?.lastOrNull { it.batchKey == value.batchKey }
+        val ordinary: ProposedClaim? = state?.calls?.lastOrNull { it.batchKey == value.batchKey }
             ?.proposal?.claims?.getOrNull(value.claimIndex)?.takeIf { AnalysisRunCodec.claimSha256(it) == value.claimSha256 }
+        val proposal = ordinary ?: if (state?.request?.profileTarget?.layer == ProfileLayer.LONG_TERM) try {
+            ProfileIntegrationProtocol.resolve(state, ClaimRef(value.batchKey, value.claimIndex, value.claimSha256)).claim
+        } catch (_: IllegalArgumentException) { null } else null
         val fingerprint = AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(
             "feedback-reference-v1", value.id, value.version, value.runId, value.batchKey, value.claimIndex,
             value.claimSha256, value.source.storeId, value.source.generation, value.decision.name, value.userText,

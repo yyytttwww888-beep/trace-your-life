@@ -68,7 +68,7 @@ class ReductionPublicationTransferTest {
     @Test fun `publication proof survives both current backup codecs without becoming current on restore`() {
         val fixture = fixture()
         val note = fixture.note
-        assertEquals(6, JSONObject(KnowledgeCodec.encode(note)).getInt("formatVersion"))
+        assertEquals(7, JSONObject(KnowledgeCodec.encode(note)).getInt("formatVersion"))
         assertEquals(note, KnowledgeCodec.decode(KnowledgeCodec.encode(note)))
         assertEquals(3, KnowledgeValidation.allEvidence(note).size)
         assertEquals(2, note.evidence.size)

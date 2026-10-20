@@ -127,7 +127,7 @@ class ConversationWorkflowTest {
 
     @Test fun `multiple batches integrate under the measured production wire budget including followup context`() {
         seed()
-        repeat(3) { repository.createRecord(RecordDraft("合成测试：追加学习经历$it。", Occurrence(LocalDate.parse("2026-10-15"))), "synthetic-extra-$it") }
+        repeat(15) { repository.createRecord(RecordDraft("合成测试：追加学习经历$it。", Occurrence(LocalDate.parse("2026-10-15"))), "synthetic-extra-$it") }
         val framing = DeepSeekProvider(DeepSeekCredentials(context))
         val longProvider = SyntheticProvider(longAnswers = true)
         val measured = object : AnalysisProvider by longProvider {

@@ -9,13 +9,15 @@ internal object ProfileMaintenanceDeletion {
     fun affectedRuns(runs: List<StoredAnalysisRun>, profiles: List<StoredProfileRevision>,
         knowledge: List<StoredKnowledgeRevision>, feedback: List<StoredClaimFeedback>,
         deletedProfiles: Set<String> = emptySet(), deletedFeedback: Set<String> = emptySet(),
-        deletedKnowledge: Set<String> = emptySet(), deletedRuns: Set<String> = emptySet()): Set<String> {
+        deletedKnowledge: Set<String> = emptySet(), deletedRuns: Set<String> = emptySet(),
+        deletedExperiences: Set<String> = emptySet()): Set<String> {
         // Decode once per task and retain only dependency metadata, not the full call graph.
         val dependencies = runs.associate { run ->
             val state = AnalysisRunCodec.decode(run.payload)
             run.id to Triple(state.request.conversationContext, state.profileMaintenancePlans,
                 dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(state))
         }
+        val knowledgeContexts = runs.associate { it.id to AnalysisRunCodec.decode(it.payload).request.knowledgeContext }
         val profileMap = profiles.groupBy { it.id to it.revision }
         val knowledgeMap = knowledge.groupBy { it.id to it.revision }
         val feedbackMap = feedback.groupBy { it.id }
@@ -27,7 +29,18 @@ internal object ProfileMaintenanceDeletion {
             knowledge.filter { it.runId in forbiddenRuns }.forEach { forbiddenKnowledge += it.id }
             runs.filter { it.id !in forbiddenRuns }.forEach { run ->
                 val (conversation, plans, history) = dependencies.getValue(run.id)
-                val affected = conversation?.let { context -> context.parentRunId in forbiddenRuns ||
+                val affected = knowledgeContexts[run.id]?.entries?.any { ref ->
+                    ref.runId in forbiddenRuns || ref.knowledgeId in forbiddenKnowledge ||
+                        knowledgeMap[ref.knowledgeId to ref.knowledgeRevision].orEmpty().any { value ->
+                            KnowledgeValidation.feedbackDependencies(value).any { AnalysisRunCodec.feedbackId(value.runId, it.claim) in deletedFeedback }
+                        } ||
+                        ref.kind == dev.tracelife.analysis.KnowledgeContextKind.PROFILE && ref.id in deletedProfiles ||
+                        ref.kind == dev.tracelife.analysis.KnowledgeContextKind.EXPERIENCE && ref.id in deletedExperiences
+                } == true || plans.any { plan -> plan.integration?.let { integration ->
+                    AnalysisRunCodec.feedbackId(run.id, plan.target) in deletedFeedback || integration.feedbackTokens.any {
+                        AnalysisRunCodec.feedbackId(run.id, it.claim) in deletedFeedback
+                    }
+                } == true } || conversation?.let { context -> context.parentRunId in forbiddenRuns ||
                     context.targets.flatMap { it.feedbackTokens }.any { AnalysisRunCodec.feedbackId(context.parentRunId, it.claim) in deletedFeedback } } == true ||
                     history.any { it.id in deletedFeedback || it.runId in forbiddenRuns } ||
                     plans.flatMap { it.references }.any { ref ->

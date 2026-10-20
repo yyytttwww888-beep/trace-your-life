@@ -145,7 +145,7 @@ object FeedbackContextProtocol {
         val refs = state.feedbackContext?.references.orEmpty()
         val latest = refs.mapNotNull { latest(state, target, it.id) }
         return HistoricalFeedbackCoverage(refs.size, state.calls.filter { it.status == CallStatus.SUCCEEDED &&
-            it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.REDUCTION) }.flatMap { it.historicalFeedbackReadIds }.distinct().size,
+            it.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS, CallPurpose.REDUCTION) }.flatMap { it.historicalFeedbackReadIds }.distinct().size,
             latest.count { it.choice != HistoricalFeedbackChoice.CONFLICT }, latest.count { it.choice == HistoricalFeedbackChoice.CONFLICT })
     }
 
@@ -167,7 +167,7 @@ object FeedbackContextProtocol {
         require(plan != null || state.historicalFeedbackResolutions.isEmpty() && state.calls.all {
             it.historicalFeedbackReadIds.isEmpty() && it.feedbackContextSha256 == null })
         if (plan == null) return
-        require(state.request.inheritHistoricalFeedback && !state.request.actionPeriod && state.request.profileTarget == null)
+        require(state.request.inheritHistoricalFeedback && state.request.profileTarget == null)
         require(plan.topics == state.request.focusTopics && plan.references.size <= MAX_REFERENCES)
         require(plan.references == plan.references.sortedBy { it.id } && plan.references.map { it.id }.distinct().size == plan.references.size)
         plan.references.forEach { ref ->
