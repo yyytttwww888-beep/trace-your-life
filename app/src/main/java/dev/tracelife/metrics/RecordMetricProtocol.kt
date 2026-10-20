@@ -54,7 +54,7 @@ object RecordMetricProtocol {
             }
             offset = page.nextOffset ?: break
         } while (true)
-        if (repository.analysisSourceStamp() != source) throw StaleSnapshotException("指标计算期间来源已变化")
+        if (!repository.analysisSourceCurrent(source, fixedScope)) throw StaleSnapshotException("指标计算期间来源已变化")
         val value = RecordMetricReceipt("", source, fixedScope, accumulator.values(),
             Collections.unmodifiableList(manifest.sortedBy { it.recordId }))
         return value.copy(id = identity(value)).also { validate(it) }

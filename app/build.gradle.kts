@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tracelife.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.1.0-preview.3"
+        versionCode = 4
+        versionName = "0.1.0-preview.4"
     }
 
     compileOptions {

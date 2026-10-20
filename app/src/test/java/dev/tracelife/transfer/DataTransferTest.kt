@@ -152,7 +152,7 @@ class DataTransferTest {
         assertCleanStaging()
     }
 
-    @Test fun `known target deletion suppresses historical analysis during older backup recovery`() {
+    @Test fun `known target deletion preserves unread task history and suppresses original during recovery`() {
         val record = source.createRecord(RecordDraft("合成资料：后来删除"), "synthetic-deleted-source")
         saveAnalysis(source, "synthetic-task-before-deletion")
         val file = File(directory, "before-deletion.tlb")
@@ -165,7 +165,9 @@ class DataTransferTest {
         assertEquals(1, preview.analysisRuns)
         transfer.restoreBackup(file, password, preview, replaceExisting = true)
         assertNull(target.record(record.id))
-        assertTrue(target.analysisRuns(0, 100).isEmpty())
+        assertEquals(1, target.analysisRuns(0, 100).size)
+        assertEquals(dev.tracelife.analysis.AnalysisStatus.STALE,
+            dev.tracelife.analysis.ControlledAnalysis(target).task("synthetic-task-before-deletion").status)
         assertCleanStaging()
     }
 

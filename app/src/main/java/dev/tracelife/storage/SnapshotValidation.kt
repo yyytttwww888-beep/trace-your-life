@@ -22,7 +22,7 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..8) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..9) { "不支持的资料版本" }
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }

@@ -116,12 +116,12 @@ class IncrementalOrganizerTest {
         assertEquals(2, organizer.jobs().single().reservedRequests)
     }
 
-    @Test fun `stale source replanning does not reset cumulative job allowance`() {
+    @Test fun `removed analysis replanning does not reset cumulative job allowance`() {
         enable(BackgroundPolicy(enabled = true, maxRequestsPerPass = 1, maxRequestsPerJob = 2))
         record("first")
         process()
-        val originalRun = organizer.jobs().single().runId
-        record("unrelated")
+        val originalRun = requireNotNull(organizer.jobs().single().runId)
+        analysis.delete(originalRun, analysis.task(originalRun).stored.version)
         process()
         val first = organizer.jobs().first { it.recordId == "first" }
         assertNotEquals(originalRun, first.runId)
@@ -206,9 +206,9 @@ class IncrementalOrganizerTest {
         assertEquals(BackgroundPassStatus.PAUSED, process().status)
         assertEquals(1, provider.requests.size)
         organizer.resume()
-        // The new record invalidates the global source stamp, so the old run must remain historical.
+        // This job is bound to an exact record; an independent input does not restart paid work.
         process()
-        assertNotEquals(run, organizer.jobs().first { it.recordId == "pause" }.runId)
+        assertEquals(run, organizer.jobs().first { it.recordId == "pause" }.runId)
         assertTrue(organizer.jobs().any { it.recordId == "during-pause" })
     }
 

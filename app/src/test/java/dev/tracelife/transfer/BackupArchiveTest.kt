@@ -213,8 +213,8 @@ class BackupArchiveTest {
         listOf(
             metadata.replace("\"generation\":41", "\"generation\":41,\"generation\":42"),
             metadata.replace("\"generation\":41", "\"generation\":\"41\""),
-            metadata.replace("\"formatVersion\":7", "\"formatVersion\":999"),
-            metadata.replace("\"sourceSchemaVersion\":8", "\"sourceSchemaVersion\":999"),
+            metadata.replace("\"formatVersion\":8", "\"formatVersion\":999"),
+            metadata.replace("\"sourceSchemaVersion\":9", "\"sourceSchemaVersion\":999"),
             metadata.dropLast(1) + ",\"unknown\":true}",
             metadata + "{}",
         ).forEach { invalid -> assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(invalid.byteInputStream()) } }

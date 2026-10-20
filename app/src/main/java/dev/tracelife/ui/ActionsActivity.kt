@@ -1,5 +1,7 @@
 package dev.tracelife.ui
 
+import android.content.Intent
+import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
 import android.widget.EditText
@@ -14,6 +16,7 @@ import dev.tracelife.actions.ActionPage
 import dev.tracelife.actions.ActionReview
 import dev.tracelife.actions.ActionStatus
 import dev.tracelife.actions.ActionView
+import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.transfer.StaleSnapshotException
 import java.time.LocalDate
 import java.time.ZoneId
@@ -28,8 +31,40 @@ class ActionsActivity : ScreenActivity() {
     private var reviewOperationId: String? = null
     private var stopOperationId: String? = null
     private var historyOffset = 0
+    private var createOrigin: ActionOrigin? = null
+    private var restoreCreate = false
+    private var restoreList = false
+    private var createValues = Bundle()
+    private val createFields = linkedMapOf<String, EditText>()
 
-    override fun showHome() = showList()
+    override fun restoreScreenState(savedInstanceState: Bundle?) {
+        restoreList = savedInstanceState?.getString("screen") == "list"
+        actionId = savedInstanceState?.getString("actionId") ?: intent.getStringExtra(EXTRA_ACTION_ID)
+        createId = savedInstanceState?.getString("createId")
+        createValues = savedInstanceState?.getBundle("createValues") ?: Bundle()
+        restoreCreate = savedInstanceState?.getBoolean("creating") ?: intent.hasExtra(EXTRA_ORIGIN_ID)
+        val originId = if (savedInstanceState != null) savedInstanceState.getString("originId") else intent.getStringExtra(EXTRA_ORIGIN_ID)
+        val originRevision = savedInstanceState?.getInt("originRevision") ?: intent.getIntExtra(EXTRA_ORIGIN_REVISION, -1)
+        createOrigin = originId?.let { ActionOrigin(it, originRevision) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("screen", screen)
+        outState.putString("actionId", actionId)
+        outState.putString("createId", createId)
+        outState.putBoolean("creating", screen == "create")
+        outState.putString("originId", createOrigin?.knowledgeId)
+        outState.putInt("originRevision", createOrigin?.revision ?: -1)
+        if (screen == "create") createFields.forEach { (key, field) -> createValues.putString(key, field.text.toString()) }
+        outState.putBundle("createValues", createValues)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun showHome() {
+        if (restoreCreate) showCreate(createOrigin)
+        else if (restoreList) showList()
+        else actionId?.let(::showDetail) ?: showList()
+    }
 
     override fun navigateBack() {
         if (busy) return
@@ -49,7 +84,11 @@ class ActionsActivity : ScreenActivity() {
     private fun showList() {
         beginScreen("list", "行动", showBack = false)
         note("从一件小事开始，下次回来看看结果。")
-        primaryButton("新建行动", "newAction") { showCreate() }
+        primaryButton("新建行动", "newAction") {
+            createId = null
+            createValues = Bundle()
+            showCreate()
+        }
         Ui.disclosure(root, "筛选行动", "actionFilters") { filters ->
             spinnerIn(filters, listOf("全部", "进行中", "待回看"), filterIndex, "filter").also { filterSpinner ->
                 filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -106,9 +145,26 @@ class ActionsActivity : ScreenActivity() {
         if (page.nextOffset != null) addButton(results, "下一页", "nextPage") { goNext(page) }
     }
 
-    private fun showCreate() {
-        createId = UUID.randomUUID().toString()
+    private fun showCreate(origin: ActionOrigin? = null) {
+        createOrigin = origin
+        if (createId == null) createId = UUID.randomUUID().toString()
         beginScreen("create", "新建行动")
+        if (origin != null) {
+            runIo({
+                val view = requireNotNull(app.knowledge.get(origin.knowledgeId, origin.revision)) { "原知识已删除，不能继续关联创建行动" }
+                require(view.isCurrentRevision && view.evidenceState == KnowledgeEvidenceState.CURRENT) { "这条知识需要更新，请先重新核对，再据此发起行动" }
+                view.value.claim.text
+            }) { text ->
+                val reference = card()
+                Ui.sectionTitle(reference, "这次尝试从这里开始")
+                Ui.body(reference, text)
+                Ui.note(reference, "这段发现作为来源保留。下面由你决定具体做法，保存后才表示采纳。")
+                renderCreateForm()
+            }
+        } else renderCreateForm()
+    }
+
+    private fun renderCreateForm() {
         val form = card()
         Ui.sectionTitle(form, "计划")
         Ui.note(form, "写下想尝试的做法，以及准备如何观察结果。")
@@ -121,12 +177,18 @@ class ActionsActivity : ScreenActivity() {
         Ui.disclosure(form, "时区设置", "actionTimeZone") { settings ->
             zone = labeledFieldIn(settings, "时区", value = ZoneId.systemDefault().id)
         }
+        createFields.clear()
+        createFields.putAll(mapOf("title" to title, "trigger" to trigger, "behavior" to behavior,
+            "signal" to signal, "reviewOn" to reviewOn, "zone" to zone))
+        createFields.forEach { (key, field) -> createValues.getString(key)?.let(field::setText) }
         primaryIn(form, "保存行动", "saveAction") {
-            val draft = try { draftFrom(title, trigger, behavior, signal, reviewOn, zone, null) }
+            val draft = try { draftFrom(title, trigger, behavior, signal, reviewOn, zone, createOrigin) }
             catch (failure: IllegalArgumentException) { showError(failure); return@primaryIn }
             runIo({ app.actions.create(draft, requireNotNull(createId)) }) { view ->
                 toast("行动已保存")
                 createId = null
+                createOrigin = null
+                createValues = Bundle()
                 showDetail(view.value.id)
             }
         }
@@ -175,7 +237,14 @@ class ActionsActivity : ScreenActivity() {
                 })
                 if (view.originState == ActionOriginState.STALE || view.originState == ActionOriginState.UNKNOWN)
                     Ui.note(metadata, "来源变化不影响你写下的计划与回看。")
-                draft.origin?.let { Ui.note(metadata, "知识 ${it.knowledgeId} · 第 ${it.revision} 版") }
+                draft.origin?.let { origin ->
+                    Ui.note(metadata, "采用时的知识 · 第 ${origin.revision} 版")
+                    addButton(metadata, "查看这次尝试的起点", "actionOriginKnowledge") {
+                        startActivity(Intent(this, KnowledgeActivity::class.java)
+                            .putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID, origin.knowledgeId)
+                            .putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_REVISION, origin.revision))
+                    }
+                }
                 Ui.note(metadata, "第 ${value.revision} 版 · 时区 ${draft.zoneId}")
                 Ui.note(metadata, "创建于 ${value.createdAt}\n更新于 ${value.updatedAt}")
             }
@@ -416,6 +485,9 @@ class ActionsActivity : ScreenActivity() {
     }
 
     companion object {
+        const val EXTRA_ACTION_ID = "actionId"
+        const val EXTRA_ORIGIN_ID = "originKnowledgeId"
+        const val EXTRA_ORIGIN_REVISION = "originKnowledgeRevision"
         private const val PAGE_SIZE = 25
     }
 }

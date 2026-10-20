@@ -15,6 +15,14 @@ import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.analysis.ReflectionRun
+import dev.tracelife.analysis.ReflectionTarget
+import dev.tracelife.analysis.SemanticReviewProvider
+import dev.tracelife.analysis.PreparedModelRequest
+import dev.tracelife.analysis.ReviewCompletion
+import dev.tracelife.analysis.ClaimReview
+import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.storage.KnowledgeCategory
+import dev.tracelife.MainActivity
 import dev.tracelife.model.Occurrence
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.storage.AnalysisQuery
@@ -193,6 +201,42 @@ class ReflectionActivityTest {
         click("reflectionHistoryPrevious")
         assertEquals(newest, visibleRunTags())
         assertEquals(0, provider.calls)
+    }
+
+    @Test fun `source changes retain saved finding navigation and the home saved count`() {
+        val run = seedAnalyzedRun()
+        val knowledge = app.io.submit<dev.tracelife.storage.StoredKnowledgeRevision> {
+            val finding = run.findings.first()
+            app.reflectionWorkflow.respond(run.id, finding.target, run.taskVersion, ClaimFeedbackDecision.CONFIRMED)
+            val claim = (finding.target as ReflectionTarget.Claim).ref
+            app.analysis.reviewClaim(run.id, "synthetic-review", claim, provider = object : SemanticReviewProvider {
+                override val id = "synthetic-reviewer"
+                override val contextWindowTokens = 100_000
+                override fun prepareReview(request: ModelRequest) = PreparedModelRequest(request, request.payloadJson, 100)
+                override fun reviewPrepared(request: PreparedModelRequest): ReviewCompletion {
+                    val evidenceId = JSONObject(request.payloadJson).getJSONArray("evidence").getJSONObject(0).getString("id")
+                    return ReviewCompletion(ClaimReview(ReviewVerdict.SUPPORTED, listOf(evidenceId)))
+                }
+            })
+            val saved = app.knowledge.publish(run.id, claim, "synthetic-review", KnowledgeCategory.INSIGHT,
+                app.analysis.task(run.id).stored.version)
+            val original = app.repository.listRecords().items.single()
+            app.repository.updateRecord(original.id, original.revision, original.draft.copy(body = "合成更正：这次成功还有其他原因"))
+            saved
+        }.get(20, TimeUnit.SECONDS)
+        open(Intent(app, ReflectionActivity::class.java).putExtra(ReflectionActivity.EXTRA_RUN_ID, run.id))
+        assertTrue(texts().contains("已保存 · 待更新"))
+        val findingTag = descendants(activity.window.decorView).mapNotNull { it.tag as? String }.first { it.startsWith("reflectionFinding:") }
+        click(findingTag)
+        click("openSavedFinding")
+        assertEquals(knowledge.id, shadowOf(activity).nextStartedActivity.getStringExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID))
+        assertNull(activity.window.decorView.findViewWithTag<View>("keepReflectionFinding"))
+        val home = Robolectric.buildActivity(MainActivity::class.java).setup()
+        drain()
+        val wording = descendants(home.get().window.decorView).filterIsInstance<TextView>().joinToString("\n") { it.text.toString() }
+        assertTrue(wording.contains("1 项已保存"))
+        assertTrue(wording.contains("其中 1 项待更新"))
+        home.pause().stop().destroy()
     }
 
     private fun seedAnalyzedRun(): ReflectionRun = app.io.submit<ReflectionRun> {

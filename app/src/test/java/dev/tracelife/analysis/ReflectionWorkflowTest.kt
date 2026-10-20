@@ -143,11 +143,28 @@ class ReflectionWorkflowTest {
         assertEquals(0, workflow.reviewAndSave(run.id, finding.target, provider, provider).modelRequestsThisPass)
         val rejected = workflow.respond(run.id, finding.target, saved.run.taskVersion,
             ClaimFeedbackDecision.REJECTED, confirmed.findings.single().feedback!!.feedback.version)
-        assertNull(rejected.findings.single().knowledgeId)
+        assertEquals(saved.run.findings.single().knowledgeId, rejected.findings.single().knowledgeId)
+        assertEquals(dev.tracelife.knowledge.KnowledgeEvidenceState.FEEDBACK_CHANGED, rejected.findings.single().knowledgeEvidenceState)
         assertThrows(IllegalArgumentException::class.java) {
             workflow.reviewAndSave(run.id, finding.target, provider, provider)
         }
         assertEquals(2, provider.requests.size)
+    }
+
+    @Test fun `saved identity survives related source changes and source topics remain explicit suggestions`() {
+        repository.createRecord(RecordDraft("合成学习经历", Occurrence(day), setOf("学习", "练习")), "source")
+        val run = workflow.process(workflow.start(scope).id, provider).run
+        val target = run.findings.single().target
+        assertEquals(setOf("学习", "练习"), workflow.suggestedTopics(run.id, target))
+        workflow.respond(run.id, target, run.taskVersion, ClaimFeedbackDecision.CONFIRMED)
+        val saved = workflow.reviewAndSave(run.id, target, provider, provider).run.findings.single()
+        repository.updateRecord("source", 1, RecordDraft("合成更正：当时还有其他原因", Occurrence(day)))
+        val history = workflow.inspect(run.id)
+        assertEquals(ReflectionStatus.STALE, history.status)
+        assertEquals(saved.knowledgeId, history.findings.single().knowledgeId)
+        assertEquals(dev.tracelife.knowledge.KnowledgeEvidenceState.STALE, history.findings.single().knowledgeEvidenceState)
+        assertFalse(history.canReviewFindings)
+        assertEquals(0, workflow.process(run.id, provider).modelRequestsThisPass)
     }
 
     @Test fun `confirmed reduction scans and reviews over bounded resumable passes then publishes the exact text`() {

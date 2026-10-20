@@ -64,7 +64,7 @@ internal object PublishedKnowledgeExport {
             val reason = when {
                 options.kind == ReadingPackageKind.EVIDENCE -> "evidence_package"
                 value.id in deleted -> "deleted"
-                value.source != stamp -> "stale_source"
+                (snapshot.currentKnowledgeSourceRevisions?.let { (value.id to value.revision) !in it } ?: (value.source != stamp)) -> "stale_source"
                 value.publishedAt > snapshot.capturedAt -> "not_yet_published"
                 value.expiresAt != null && value.expiresAt <= snapshot.capturedAt -> "expired"
                 deletion != null -> "feedback_deleted"

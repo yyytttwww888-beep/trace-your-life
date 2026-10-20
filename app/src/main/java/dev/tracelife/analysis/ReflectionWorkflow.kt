@@ -29,8 +29,9 @@ data class ReflectionFinding(
     val feedback: ClaimFeedbackView?,
     val reviewVerdict: ReviewVerdict?,
     val reviewProgress: PeriodReductionReviewProgress?,
-    /** Only an existing, currently valid publication is presented as saved. */
+    /** Durable saved identity; source or feedback changes do not undo the user's save. */
     val knowledgeId: String?,
+    val knowledgeEvidenceState: KnowledgeEvidenceState? = null,
 )
 
 data class ReflectionRun(
@@ -110,7 +111,7 @@ class ReflectionWorkflow(
             ReflectionStatus.NEEDS_RECOVERY, ReflectionStatus.CONFLICT) &&
             (leaves.size == 1 || integrated.status != ReductionProcessingStatus.DEPENDENCY_BLOCKED)
         val moreCallsNeeded = !complete || rows.any {
-            it.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED && it.knowledgeId == null &&
+            it.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED && it.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT &&
                 it.reviewVerdict == null && it.reviewProgress?.status !in setOf(ReductionReviewStatus.CONTEXT_REQUIRED,
                     ReductionReviewStatus.NO_RELEVANT_EVIDENCE, ReductionReviewStatus.RELATED_EVIDENCE_LIMIT)
         }
@@ -258,6 +259,21 @@ class ReflectionWorkflow(
         return ReflectionEvidencePage(rows, sources.size, end.takeIf { offset < it && it < sources.size })
     }
 
+    /** Existing tags from this finding's actual source records, offered for explicit confirmation. */
+    fun suggestedTopics(runId: String, target: ReflectionTarget): Set<String> {
+        val task = currentTask(runId)
+        val ids = sources(task, target).map { it.recordId }.toSet()
+        val topics = sortedSetOf<String>()
+        var offset = 0
+        do {
+            val page = repository.analysisSourcePage(task.stored.source, task.state.request.scope, offset, 100)
+            page.items.filter { it.id in ids }.forEach { topics += it.topics }
+            offset += page.items.size
+        } while (page.nextOffset != null)
+        ensureUnchanged(task)
+        return topics.take(30).toSet()
+    }
+
     /** start is relative to the registered receipt; it cannot expand beyond that receipt. */
     fun original(runId: String, target: ReflectionTarget, evidenceId: String,
         start: Int = 0, maxCodePoints: Int = 1_024,
@@ -287,7 +303,7 @@ class ReflectionWorkflow(
         }
         val saved = knowledge.get(KnowledgeValidation.idFor(runId, claimRef(target)))
         return ReflectionFinding(target, text, decision(runId, target), verdict, progress,
-            saved?.takeIf { it.evidenceState == KnowledgeEvidenceState.CURRENT }?.value?.id)
+            saved?.value?.id, saved?.evidenceState)
     }
 
     private fun decision(runId: String, target: ReflectionTarget) = when (target) {

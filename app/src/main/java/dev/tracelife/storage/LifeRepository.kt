@@ -195,9 +195,7 @@ class LifeRepository(
             val now = clock.instant()
             db.insertOrThrow("deleted_records", null, values("id" to id, "last_revision" to current.revision, "deleted_at" to timestamp(now)))
             event(db, id, current.revision + 1, "RECORD_DELETED", now)
-            // Until dependencies are indexed, over-purge rather than retain copied deleted text.
-            db.delete("analysis_runs", null, null)
-            purgeKnowledge(db, allKnowledgeHeads(db).map { it.id })
+            purgeRecordDependents(db, setOf(id))
             attachmentIds.forEach { queueUnreferencedAttachment(db, it) }
         }
         collectGarbage(db)
@@ -259,8 +257,7 @@ class LifeRepository(
         val now = clock.instant()
         db.insertOrThrow("deleted_templates", null, values("id" to id, "last_revision" to current.version, "deleted_at" to timestamp(now)))
         event(db, id, current.version, "TEMPLATE_DELETED", now)
-        db.delete("analysis_runs", null, null)
-        purgeKnowledge(db, allKnowledgeHeads(db).map { it.id })
+        // Used versions cannot be deleted. An unused template has no record evidence dependents.
     } }
 
     /** Caller owns [input]; successful import is durable before any record can refer to it. */
@@ -393,7 +390,7 @@ class LifeRepository(
         validateAnalysisQuery(query)
         require(offset >= 0 && limit in 1..100) { "分析分页范围无效" }
         transaction(db) {
-            requireAnalysisSource(db, stamp)
+            requireAnalysisSource(db, stamp, query)
             val (where, args) = analysisScope(query)
             val join = " FROM records h JOIN record_revisions r ON r.record_id = h.id WHERE $where"
             val total = count(db, "SELECT COUNT(*)$join", args)
@@ -414,7 +411,7 @@ class LifeRepository(
         validateAnalysisQuery(query)
         validateId(id)
         transaction(db) {
-            requireAnalysisSource(db, stamp)
+            requireAnalysisSource(db, stamp, query)
             val revision = scopedRevision(db, query, id)
             val args = arrayOf(id, revision.toString())
             buildList {
@@ -440,7 +437,7 @@ class LifeRepository(
         validateAnalysisQuery(query)
         validateId(id)
         transaction(db) {
-            requireAnalysisSource(db, stamp)
+            requireAnalysisSource(db, stamp, query)
             val revision = scopedRevision(db, query, id)
             db.rawQuery("SELECT template_id, template_version FROM record_revisions WHERE record_id = ? AND revision = ?",
                 arrayOf(id, revision.toString())).use {
@@ -455,7 +452,7 @@ class LifeRepository(
         validateAnalysisQuery(query)
         validateId(id)
         transaction(db) {
-            requireAnalysisSource(db, stamp)
+            requireAnalysisSource(db, stamp, query)
             val revision = scopedRevision(db, query, id)
             db.rawQuery("""SELECT q.question_id, q.prompt, q.hint, q.intent FROM record_revisions r
                 JOIN template_questions q ON q.template_id = r.template_id AND q.version = r.template_version
@@ -478,7 +475,7 @@ class LifeRepository(
         validateId(id)
         require(start >= 0 && maxCodePoints in 1..4096) { "分析原文分片范围无效" }
         transaction(db) {
-            requireAnalysisSource(db, stamp)
+            requireAnalysisSource(db, stamp, query)
             val revision = scopedRevision(db, query, id)
             val args = mutableListOf((start.toLong() + 1).toString(), maxCodePoints.toString(), id, revision.toString())
             val sql = when {
@@ -527,7 +524,7 @@ class LifeRepository(
         require(expectedVersion == null || expectedVersion in 1 until Int.MAX_VALUE) { "分析任务预期版本无效" }
         require(run.version == (expectedVersion?.plus(1) ?: 1)) { "分析任务新版本无效" }
         transaction(db) {
-            requireAnalysisSource(db, run.source)
+            requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
             require(!exists(db, "deleted_analysis_runs", "id = ?", run.id)) { "已删除的分析任务 ID 不可复用" }
             val current = readAnalysisRun(db, run.id)
             if (current?.version != expectedVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
@@ -547,6 +544,7 @@ class LifeRepository(
                 }
             }
             val prior = current?.let { AnalysisRunCodec.decode(it.payload) }
+            require(prior == null || prior.request == state.request) { "分析问题、范围和预算不可在原任务中改写，请建立新任务" }
             require(prior == null || prior.actionPlan == state.actionPlan) { "行动证据目录不可改变" }
             if (current == null || state.calls.any { it !in prior?.calls.orEmpty() && it.status in setOf(dev.tracelife.analysis.CallStatus.IN_FLIGHT, dev.tracelife.analysis.CallStatus.SUCCEEDED) })
                 state.actionPlan?.let { if (!actionEvidencePlanCurrent(state.request.scope, it)) throw dev.tracelife.analysis.AnalysisDependencyBlockedException("行动证据目录已变化") }
@@ -632,8 +630,7 @@ class LifeRepository(
             }
             val run = readAnalysisRun(db, value.runId)
             if (expectedRunVersion != null && run?.version != expectedRunVersion) throw RevisionConflictException("分析任务已有新版本或不存在")
-            val sourceState = storeState(db)
-            val active = run != null && run.source == SourceStamp(sourceState.first, sourceState.second) &&
+            val active = run != null && SourceScopeLedger.current(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope) &&
                 (run.expiresAt == null || clock.instant() < run.expiresAt) &&
                 feedbackDependenciesCurrent(db, run, ClaimRef(value.batchKey, value.claimIndex, value.claimSha256))
             if (active) {
@@ -731,7 +728,7 @@ class LifeRepository(
         require(expectedRevision == null || expectedRevision in 1 until Int.MAX_VALUE) { "预期知识修订无效" }
         require(expectedRunVersion > 0) { "预期分析版本无效" }
         transaction(db) {
-            requireAnalysisSource(db, value.source)
+            requireAnalysisSource(db, value.source, value.scope)
             require(!exists(db, "deleted_knowledge", "id = ?", value.id)) { "已删除的知识 ID 不可复用" }
             val now = clock.instant()
             require(value.publishedAt <= now && (value.expiresAt == null || now < value.expiresAt)) { "知识发布已过期或时间无效" }
@@ -909,13 +906,13 @@ class LifeRepository(
         require(overrideReason == null || overrideReason.isNotBlank() && overrideReason.length <= 2_000)
         val run = readAnalysisRun(db, runId) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
         if (run.version != expectedRunVersion) throw RevisionConflictException("画像维护任务版本已变化")
-        requireAnalysisSource(db, run.source)
+        requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
         val now = clock.instant()
         require(now >= run.updatedAt && now >= run.createdAt && (run.expiresAt == null || now < run.expiresAt)) { "画像维护任务已到期或时钟回拨" }
         fun finish(value: ProfileMaintenanceApplication): ProfileMaintenanceApplication {
             val end = clock.instant()
             require(end >= now && (run.expiresAt == null || end < run.expiresAt)) { "画像维护应用期间有效时间已变化" }
-            requireAnalysisSource(db, run.source)
+            requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
             if (readAnalysisRun(db, runId)?.version != expectedRunVersion) throw RevisionConflictException("画像维护应用期间任务已变化")
             return value
         }
@@ -989,7 +986,7 @@ class LifeRepository(
         transaction(db) {
             val run = readAnalysisRun(db, runId) ?: throw dev.tracelife.analysis.AnalysisTaskUnavailableException()
             if (run.version != expectedRunVersion) throw RevisionConflictException("画像候选任务已有新版本")
-            requireAnalysisSource(db, run.source)
+            requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
             val now = clock.instant()
             require(now >= run.createdAt && now >= run.updatedAt && (run.expiresAt == null || now < run.expiresAt)) {
                 "画像候选任务已到期或时钟回拨"
@@ -997,7 +994,7 @@ class LifeRepository(
             fun finish(result: ProfileCandidateMaterialization): ProfileCandidateMaterialization {
                 val finishedAt = clock.instant()
                 require(finishedAt >= now && (run.expiresAt == null || finishedAt < run.expiresAt)) { "画像候选发布期间有效时间已变化" }
-                requireAnalysisSource(db, run.source)
+                requireAnalysisSource(db, run.source, AnalysisRunCodec.decode(run.payload).request.scope)
                 if (readAnalysisRun(db, runId)?.version != expectedRunVersion) throw RevisionConflictException("画像候选任务发布期间发生变化")
                 return result
             }
@@ -1080,6 +1077,9 @@ class LifeRepository(
                     actionRevisions = ActionStore.allRevisions(db), actionHeads = ActionStore.allHeads(db), deletedActions = deletions(db, "deleted_actions"),
                     profileRevisions = ProfileStore.allRevisions(db), profileHeads = ProfileStore.allHeads(db), deletedProfiles = deletions(db, "deleted_profiles"),
                     dashboardPreferences = DashboardPreferencesStore.read(db))
+                snapshot.currentKnowledgeSourceRevisions = snapshot.knowledgeRevisions.filter {
+                    SourceScopeLedger.current(db, it.source, it.scope)
+                }.map { it.id to it.revision }.toSet()
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -1106,6 +1106,8 @@ class LifeRepository(
     ) = access { db ->
         requireExternalPath(stagedFile)
         requireExternalPath(destination)
+        val privateRoot = File(appContext.noBackupFilesDir, "completed-exports").canonicalFile.toPath()
+        require(!destination.canonicalFile.toPath().startsWith(privateRoot)) { "应用导出目录须通过专用目标发布" }
         require(stagedFile.isFile && !Files.isSymbolicLink(stagedFile.toPath())) { "发布暂存文件不存在" }
         require(stagedFile.canonicalFile.parentFile == destination.canonicalFile.parentFile) { "发布暂存文件必须与目标位于同一目录" }
         require(!destination.exists() && !Files.isSymbolicLink(destination.toPath())) { "导出目标已经存在" }
@@ -1121,6 +1123,26 @@ class LifeRepository(
                 }
             }
             Files.createLink(destination.toPath(), stagedFile.toPath())
+        }
+    }
+
+    /** A capability-allocated app-private destination supports Android filesystems without
+     * hard links. Keep the same source/analysis/time fence as external snapshot publication. */
+    fun publishPrivateExport(
+        source: SourceStamp, analysisGeneration: Long, validUntil: Instant?, stagedFile: File,
+        destination: dev.tracelife.transfer.PrivateExportDestination, validFrom: Instant? = null,
+    ) = access { db ->
+        requireExternalPath(stagedFile)
+        transaction(db) {
+            val state = storeState(db)
+            if (source.storeId != state.first || source.generation != state.second || analysisGeneration != analysisGeneration(db)) {
+                throw StaleSnapshotException("资料或分析已变化，须重新生成导出")
+            }
+            val now = clock.instant()
+            if (validFrom != null && now < validFrom || validUntil != null && !now.isBefore(validUntil)) {
+                throw StaleSnapshotException("导出材料的评估时间或有效期已变化，须重新生成导出")
+            }
+            destination.publish(stagedFile)
         }
     }
 
@@ -1182,13 +1204,13 @@ class LifeRepository(
         }
         val requiredAttachmentIds = records.flatMap { it.draft.attachmentIds }.toSet()
         val attachments = snapshot.attachments.filter { it.id in requiredAttachmentIds }
-        // A historical analysis may copy text from any source. Additional local deletions suppress
-        // all imported analyses until a dependency-specific deletion index is available.
-        val importedRecordDeletions = snapshot.deletedRecords.associateBy { it.id }
-        val importedTemplateDeletions = snapshot.deletedTemplates.associateBy { it.id }
-        val hasAdditionalDeletions = mergedRecords.any { importedRecordDeletions[it.id] != it } ||
-            mergedTemplates.any { importedTemplateDeletions[it.id] != it }
         val deletedAnalysisIds = mergedAnalyses.map { it.id }.toMutableSet()
+        snapshot.analysisRuns.filter { SourceDependencyDeletion.dependsOnRecords(it, recordTombstones) }
+            .filterNot { it.id in deletedAnalysisIds }.forEach { run ->
+                require(mergedAnalyses.size < 100_000) { "分析任务删除标记达到上限" }
+                mergedAnalyses += Deletion(run.id, run.version, clock.instant())
+                deletedAnalysisIds += run.id
+            }
         // Local user action chains win. Machine text based on a replaced/deleted action body cannot return.
         snapshot.analysisRuns.filter { run ->
             val state = AnalysisRunCodec.decode(run.payload)
@@ -1210,7 +1232,7 @@ class LifeRepository(
         }
         val feedbackByRun = feedback.groupBy { it.runId }
         var capacityPurgedAnalysisRuns = 0
-        val analysisCandidates = if (hasAdditionalDeletions) emptyList() else snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
+        val analysisCandidates = snapshot.analysisRuns.filterNot { it.id in deletedAnalysisIds }
         val originalAnalyses = analysisCandidates.associateBy { it.id }
         fun discardForCapacity(run: StoredAnalysisRun) {
             require(mergedAnalyses.size < 100_000) { "分析任务删除标记达到上限" }
@@ -1261,7 +1283,8 @@ class LifeRepository(
         val recordsByRevision = records.associateBy { it.id to it.revision }
         candidateKnowledge.toSortedMap().forEach { (id, revisions) ->
             if (id !in knownKnowledgeDeletions) {
-                val forbidden = hasAdditionalDeletions || revisions.any { value ->
+                val forbidden = revisions.any { value ->
+                    SourceDependencyDeletion.dependsOnRecords(value, recordTombstones) ||
                     value.runId in deletedAnalysisIds || KnowledgeValidation.feedbackDependencies(value).any { dependency ->
                         AnalysisRunCodec.feedbackId(value.runId, dependency.claim) in deletedFeedbackIds
                     }
@@ -1408,6 +1431,7 @@ class LifeRepository(
                 val generationFloor = maxOf(targetStore.second, snapshot.generation, importedGeneration)
                 require(generationFloor < Long.MAX_VALUE) { "来源代数达到上限，无法安全恢复" }
                 db.execSQL("UPDATE store_state SET generation = ?, analysis_generation = analysis_generation + 1 WHERE singleton = 1", arrayOf(generationFloor + 1))
+                SourceScopeLedger.resetAfterRestore(db)
                 RestoreResult(records.map { it.id }.distinct().size, records.size, templates.map { it.id }.distinct().size,
                     attachments.size, snapshot.records.map { it.id }.distinct().count { it in recordTombstones }, storeState(db).second,
                     capacityPurgedAnalysisRuns)
@@ -1529,10 +1553,14 @@ class LifeRepository(
         return where.joinToString(" AND ") to args
     }
 
-    private fun requireAnalysisSource(db: SQLiteDatabase, source: SourceStamp) {
-        val state = storeState(db)
-        if (source.storeId != state.first || source.generation != state.second) {
-            throw StaleSnapshotException("分析来源已变化，须重新建立任务")
+    internal fun analysisSourceCurrent(source: SourceStamp, query: AnalysisQuery): Boolean = access { db ->
+        validateAnalysisQuery(query)
+        transaction(db) { SourceScopeLedger.current(db, source, query) }
+    }
+
+    private fun requireAnalysisSource(db: SQLiteDatabase, source: SourceStamp, query: AnalysisQuery) {
+        if (!SourceScopeLedger.current(db, source, query)) {
+            throw StaleSnapshotException("分析范围内的来源已变化，须重新建立任务")
         }
     }
 
@@ -1664,6 +1692,22 @@ class LifeRepository(
             val response = readClaimFeedback(db, id)
             !exists(db, "deleted_claim_feedback", "id = ?", id) && (response?.version ?: 0) == dependency.version &&
                 (response == null || response.source == run.source && response.decision == ClaimFeedbackDecision.CONFIRMED)
+        }
+    }
+
+    private fun purgeRecordDependents(db: SQLiteDatabase, recordIds: Set<String>) {
+        val runs = allAnalysisRuns(db)
+        val knowledge = allKnowledgeRevisions(db)
+        val directRuns = runs.filter { SourceDependencyDeletion.dependsOnRecords(it, recordIds) }.map { it.id }.toSet()
+        val directKnowledge = knowledge.filter { SourceDependencyDeletion.dependsOnRecords(it, recordIds) }.map { it.id }.toSet()
+        val affectedRuns = directRuns + ProfileMaintenanceDeletion.affectedRuns(runs, ProfileStore.allRevisions(db),
+            knowledge, allClaimFeedback(db), deletedKnowledge = directKnowledge, deletedRuns = directRuns)
+        val affectedKnowledge = directKnowledge + knowledge.filter { it.runId in affectedRuns }.map { it.id }
+        require(count(db, "SELECT COUNT(*) FROM deleted_analysis_runs", emptyList()) + affectedRuns.size <= 100_000) { "分析任务删除标记达到上限" }
+        purgeKnowledge(db, affectedKnowledge.toList())
+        runs.filter { it.id in affectedRuns }.forEach { run ->
+            db.delete("analysis_runs", "id = ?", arrayOf(run.id))
+            insertDeletion(db, "deleted_analysis_runs", Deletion(run.id, run.version, clock.instant()))
         }
     }
 

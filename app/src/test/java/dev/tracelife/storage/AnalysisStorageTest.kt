@@ -1,7 +1,6 @@
 package dev.tracelife.storage
 
 import android.content.Context
-import android.database.sqlite.SQLiteException
 import dev.tracelife.analysis.AnalysisRequest
 import dev.tracelife.analysis.AnalysisCall
 import dev.tracelife.analysis.AnalysisLimits
@@ -176,28 +175,22 @@ class AnalysisStorageTest {
         assertEquals(1, repository.analysisRuns(0, 100).size)
     }
 
-    @Test fun `record or template deletion purges all saved analyses in the same transaction`() {
+    @Test fun `unread tasks survive record deletion as stale and unused template deletion leaves tasks current`() {
         dated("inside", "2026-10-14")
         val first = run()
         repository.saveAnalysisRun(first, null)
-        LifeDatabase(context, name).use { helper ->
-            helper.writableDatabase.execSQL("CREATE TRIGGER synthetic_reject_purge BEFORE DELETE ON analysis_runs BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
-        }
-        assertThrows(SQLiteException::class.java) { repository.deleteRecord("inside", 1) }
-        assertNotNull(repository.record("inside"))
-        assertEquals(first, repository.analysisRun(first.id))
-        LifeDatabase(context, name).use { it.writableDatabase.execSQL("DROP TRIGGER synthetic_reject_purge") }
         repository.deleteRecord("inside", 1)
-        assertNull(repository.analysisRun(first.id))
+        assertEquals(first, repository.analysisRun(first.id))
+        assertThrows(StaleSnapshotException::class.java) { repository.saveAnalysisRun(first.copy(version = 2), 1) }
         val template = repository.saveTemplate(template())
         val second = run("second")
         repository.saveAnalysisRun(second, null)
         repository.deleteTemplate(template.id)
-        assertNull(repository.analysisRun(second.id))
-        assertThrows(StaleSnapshotException::class.java) { repository.saveAnalysisRun(second.copy(version = 2), 1) }
+        assertEquals(second, repository.analysisRun(second.id))
+        assertEquals(2, repository.saveAnalysisRun(second.copy(version = 2), 1).version)
     }
 
-    @Test fun `restore preserves historical run identity and extra local deletions suppress imported analyses`() {
+    @Test fun `restore preserves unread historical tasks while extra local deletions suppress originals`() {
         dated("inside", "2026-10-14")
         val run = run()
         repository.saveAnalysisRun(run, null)
@@ -211,9 +204,10 @@ class AnalysisStorageTest {
                 assertNotEquals(run.source, target.analysisSourceStamp())
                 assertThrows(StaleSnapshotException::class.java) { target.saveAnalysisRun(run.copy(version = 2), 1) }
                 target.deleteRecord("inside", 1)
-                target.restoreSnapshot(snapshot, files, target.currentGeneration())
+                target.restoreSnapshot(snapshot, files, target.currentGeneration(), true)
                 assertNull(target.record("inside"))
-                assertTrue(target.analysisRuns(0, 100).isEmpty())
+                assertEquals(run, target.analysisRun(run.id))
+                assertThrows(StaleSnapshotException::class.java) { target.saveAnalysisRun(run.copy(version = 2), 1) }
             }
         } finally { context.deleteDatabase(targetName) }
     }
@@ -294,6 +288,7 @@ class AnalysisStorageTest {
         repository.close()
         LifeDatabase(context, name).use { helper ->
             val db = helper.writableDatabase
+            removeVersionNineForMigration(db)
             db.execSQL("DROP TABLE dashboard_preferences")
             db.execSQL("DROP TABLE profile_heads")
             db.execSQL("DROP TABLE profile_revisions")

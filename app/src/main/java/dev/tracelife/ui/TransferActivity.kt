@@ -1,9 +1,14 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
+import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.DocumentsContract
 import android.text.InputType
+import dev.tracelife.transfer.CompletedExports
+import dev.tracelife.transfer.DocumentExportDelivery
 import dev.tracelife.transfer.ExportResult
 import dev.tracelife.transfer.ExportScope
 import dev.tracelife.transfer.InvalidBackupException
@@ -13,8 +18,6 @@ import dev.tracelife.transfer.RestorePreview
 import dev.tracelife.transfer.RestoreResult
 import dev.tracelife.transfer.StaleSnapshotException
 import java.io.File
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
 class TransferActivity : ScreenActivity() {
     private var backupResult: Pair<ExportResult, String>? = null
@@ -23,8 +26,55 @@ class TransferActivity : ScreenActivity() {
     private var restoreSourceName: String? = null
     private var restorePreview: RestorePreview? = null
     private var restorePassword = ""
+    private var pendingSaveName: String? = null
+    private var restoredScreen: String? = null
+    private var completedOffset = 0
+    private var requestedSaveName: String? = null
+    private var lastSavedName: String? = null
+    private val completedExports by lazy { CompletedExports(this) }
+
+    override fun restoreScreenState(savedInstanceState: Bundle?) {
+        requestedSaveName = if (savedInstanceState == null) intent.getStringExtra(EXTRA_READY_EXPORT) else null
+        pendingSaveName = savedInstanceState?.getString("pendingSaveName")
+        lastSavedName = savedInstanceState?.getString("lastSavedName")
+        restoredScreen = savedInstanceState?.getString("transferScreen")
+        backupResult = restoreExport(savedInstanceState, "backup")
+        readingResult = restoreExport(savedInstanceState, "reading")
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("transferScreen", screen)
+        outState.putString("pendingSaveName", pendingSaveName)
+        outState.putString("lastSavedName", lastSavedName)
+        saveExport(outState, "backup", backupResult)
+        saveExport(outState, "reading", readingResult)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun saveExport(state: Bundle, key: String, value: Pair<ExportResult, String>?) {
+        value ?: return
+        state.putBundle(key, Bundle().apply {
+            putString("name", File(value.second).name)
+            putString("snapshot", value.first.snapshotId)
+            putInt("records", value.first.records)
+            putInt("attachments", value.first.attachments)
+            putInt("files", value.first.files)
+            putLong("bytes", value.first.bytes)
+        })
+    }
+
+    private fun restoreExport(state: Bundle?, key: String): Pair<ExportResult, String>? {
+        val value = state?.getBundle(key) ?: return null
+        val file = value.getString("name")?.let(completedExports::get) ?: return null
+        return ExportResult(value.getString("snapshot") ?: return null, value.getInt("records"),
+            value.getInt("attachments"), value.getInt("files"), value.getLong("bytes")) to file.absolutePath
+    }
 
     override fun showHome() {
+        val resume = restoredScreen
+        restoredScreen = null
+        if (resume == "backup" && backupResult != null) return showBackup()
+        if (resume == "reading" && readingResult != null) return showReading()
         beginScreen("home", "备份与导出")
         Ui.note(root, "资料留在自己手里。备份和导出都在这台手机上完成。")
         card().also { card ->
@@ -42,6 +92,7 @@ class TransferActivity : ScreenActivity() {
             Ui.note(card, "把知识与原始资料带走，方便查阅。导出的文档不能用于恢复。")
             addButton(card, "选择导出内容", "navReading") { readingResult = null; showReading() }
         }
+        if (pendingSaveName == null) renderCompletedExports()
     }
 
     override fun navigateBack() {
@@ -69,7 +120,7 @@ class TransferActivity : ScreenActivity() {
             Ui.note(card, "备份会加密保存全部记录、附件，以及整理和修改历史。DeepSeek 密钥不会进入备份。")
             Ui.note(card, "请记好口令。应用不会保存口令，丢失后无法恢复。")
             Ui.disclosure(card, "文件保存说明", "backupStorageDetails") { details ->
-                Ui.note(details, "文件暂存于应用专属目录，卸载应用会一并删除。长期保留请复制到其他位置；每次备份都会创建新文件。")
+                Ui.note(details, "完整文件先在应用内生成，再通过系统文件选择器保存到你选的位置。完成另存前，卸载应用仍会删除这份文件。")
             }
         }
         card().also { card ->
@@ -86,24 +137,24 @@ class TransferActivity : ScreenActivity() {
                 val chars = value.toCharArray()
                 runIo({
                     try {
-                        val directory = requireNotNull(getExternalFilesDir(null)) { "外部存储不可用，无法保存备份" }
-                        val file = File(directory, "trace-life-backup-${timestamp()}.tlb")
-                        app.dataTransfer.exportBackup(file, chars) to file.absolutePath
+                        val (result, file) = completedExports.create("backup") { app.dataTransfer.exportBackup(it, chars) }
+                        result to file.absolutePath
                     } finally {
                         chars.fill('\u0000')
                     }
                 }) { (result, path) ->
                     backupResult = result to path
                     showBackup()
+                    openExportPicker(File(path).name)
                 }
             }
         }
         backupResult?.let { (result, path) ->
             card().also { card ->
-                Ui.sectionTitle(card, "备份已创建")
+                Ui.sectionTitle(card, if (File(path).name == lastSavedName) "备份已另存" else "备份已生成，等待另存")
                 Ui.body(card, "${result.records} 条记录 · ${result.attachments} 个附件 · ${result.bytes / 1024} KB")
-                Ui.note(card, "保存位置：$path")
-                Ui.note(card, "请复制到应用之外的位置，避免卸载时丢失。")
+                Ui.note(card, "完整文件已在应用内保留。选择一个应用之外的位置，换机时也能找回。")
+                addButton(card, "另存为", "saveBackup") { openExportPicker(File(path).name) }
             }
         }
     }
@@ -257,22 +308,22 @@ class TransferActivity : ScreenActivity() {
                     return@onExport
                 }
                 runIo({
-                    val directory = requireNotNull(getExternalFilesDir(null)) { "外部存储不可用，无法保存导出" }
-                    val prefix = if (kindValue == ReadingPackageKind.KNOWLEDGE) "trace-life-knowledge" else "trace-life-evidence"
-                    val file = File(directory, "$prefix-${timestamp()}.zip")
-                    app.dataTransfer.exportReadingPackage(file, options) to file.absolutePath
+                    val kindName = if (kindValue == ReadingPackageKind.KNOWLEDGE) "knowledge" else "evidence"
+                    val (result, file) = completedExports.create(kindName) { app.dataTransfer.exportReadingPackage(it, options) }
+                    result to file.absolutePath
                 }) { (result, path) ->
                     readingResult = result to path
                     showReading()
+                    openExportPicker(File(path).name)
                 }
             }
         }
         readingResult?.let { (result, path) ->
             card().also { card ->
-                Ui.sectionTitle(card, "导出结果")
+                Ui.sectionTitle(card, if (File(path).name == lastSavedName) "文档已另存" else "文档已生成，等待另存")
                 Ui.body(card, "${result.records} 条记录 · ${result.attachments} 个附件 · ${result.bytes / 1024} KB")
-                Ui.note(card, "保存位置：$path")
-                Ui.note(card, "请复制到应用之外的位置保留。文档不会自动更新，不能用于恢复备份。")
+                Ui.note(card, "完整文档已在应用内保留。另存后可交给其他工具查阅，不能用于恢复备份。")
+                addButton(card, "另存为", "saveReading") { openExportPicker(File(path).name) }
             }
         }
     }
@@ -290,8 +341,34 @@ class TransferActivity : ScreenActivity() {
     }
 
     @Deprecated("Platform document picker compatibility")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    public override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == EXPORT_REQUEST) {
+            val name = pendingSaveName
+            pendingSaveName = null
+            if (resultCode != RESULT_OK) {
+                toast("已取消另存，完整文件仍保留在应用内")
+                if (screen == "home") showHome()
+                return
+            }
+            val uri = data?.data ?: return
+            val file = name?.let(completedExports::get)
+            if (file == null) {
+                runIo({ runCatching { DocumentsContract.deleteDocument(contentResolver, uri) }.getOrDefault(false) }) { removed ->
+                    showError(IllegalStateException(if (removed) "找不到完整导出文件，请返回重新生成"
+                        else "找不到完整导出文件，请重新生成。目标位置可能留有空文件，请删除后重试。"))
+                }
+                return
+            }
+            runIo({ DocumentExportDelivery(contentResolver).save(file, uri, completedExports.expectedHash(file.name)) }) { result ->
+                lastSavedName = file.name
+                when (screen) { "backup" -> showBackup(); "reading" -> showReading(); else -> showHome() }
+                AlertDialog.Builder(this).setTitle("已另存并校验")
+                    .setMessage("${file.name}\n${result.bytes / 1024} KB\n已保存到你选择的位置，与应用内完整文件一致。")
+                    .setPositiveButton("知道了", null).show()
+            }
+            return
+        }
         if (resultCode != RESULT_OK || requestCode != BACKUP_REQUEST) return
         val uri = data?.data ?: return
         val name = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -322,9 +399,51 @@ class TransferActivity : ScreenActivity() {
         source?.let { file -> app.io.execute { file.delete() } }
     }
 
-    private fun timestamp(): String = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now())
+    private fun renderCompletedExports() {
+        val container = card()
+        Ui.sectionTitle(container, "已生成的文件")
+        Ui.note(container, "这里保留生成时的副本，可继续另存。删除副本不影响原始资料；卸载应用会删除这些本机副本。")
+        runIo({ completedExports.list(completedOffset, 21) }) { files ->
+            if (files.isEmpty()) emptyState(container, "生成备份或文档后，可在这里再次保存。")
+            files.take(20).forEach { file ->
+                Ui.body(container, file.name)
+                addButton(container, "另存为 · ${file.length() / 1024} KB", "saveExport:${file.name}") { openExportPicker(file.name) }
+                dangerIn(container, "删除本机副本", "removeExport:${file.name}") {
+                    confirm("删除这份本机副本？", "原始资料与已另存的文件不受影响。如果尚未另存，这份导出文件将无法找回。", "删除") {
+                        runIo({ completedExports.remove(file.name) }) { showHome() }
+                    }
+                }
+            }
+            if (completedOffset > 0) addButton(container, "上一页", "exportsPrevious") { completedOffset -= 20; showHome() }
+            if (files.size > 20) addButton(container, "下一页", "exportsNext") { completedOffset += 20; showHome() }
+            requestedSaveName?.let { name -> requestedSaveName = null; openExportPicker(name) }
+        }
+    }
+
+    private fun openExportPicker(name: String) {
+        if (pendingSaveName != null) return
+        val file = completedExports.get(name) ?: return showError(IllegalStateException("文件已不存在，请重新生成"))
+        try {
+            pendingSaveName = name
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = if (file.extension == "zip") "application/zip" else "application/octet-stream"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                putExtra(Intent.EXTRA_TITLE, file.name)
+            }, EXPORT_REQUEST)
+        } catch (_: android.content.ActivityNotFoundException) {
+            pendingSaveName = null
+            showError(IllegalStateException("未找到系统文件选择器。完整文件已保留，请检查手机的文件应用后重试。"))
+        }
+    }
 
     companion object {
+        private const val EXTRA_READY_EXPORT = "readyExportName"
+        fun saveCompleted(context: Context, name: String) {
+            context.startActivity(Intent(context, TransferActivity::class.java).putExtra(EXTRA_READY_EXPORT, name))
+        }
         private const val BACKUP_REQUEST = 43
+        private const val EXPORT_REQUEST = 44
     }
 }

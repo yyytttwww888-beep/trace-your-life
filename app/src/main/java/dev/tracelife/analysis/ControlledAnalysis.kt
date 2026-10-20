@@ -943,13 +943,13 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
     }
     private fun ensureCurrent(run: StoredAnalysisRun) {
-        if (run.source != repository.analysisSourceStamp()) throw StaleSnapshotException("来源已变化，请建立新任务；旧任务仅供历史核对")
+        if (!repository.analysisSourceCurrent(run.source, AnalysisRunCodec.decode(run.payload).request.scope)) throw StaleSnapshotException("来源已变化，请建立新任务；旧任务仅供历史核对")
         if (run.expiresAt != null && !clock.instant().isBefore(run.expiresAt)) throw StaleSnapshotException("任务已过期，请按当前时间范围建立新任务")
     }
     private fun task(run: StoredAnalysisRun): AnalysisTask {
         val state = AnalysisRunCodec.decode(run.payload)
         val status = when {
-            run.source != repository.analysisSourceStamp() -> AnalysisStatus.STALE
+            !repository.analysisSourceCurrent(run.source, state.request.scope) -> AnalysisStatus.STALE
             state.actionPlan?.let { clock.instant() < run.updatedAt || !repository.actionEvidencePlanCurrent(state.request.scope, it) } == true -> AnalysisStatus.STALE
             run.expiresAt != null && !clock.instant().isBefore(run.expiresAt) -> AnalysisStatus.EXPIRED
             state.calls.any { it.status == CallStatus.IN_FLIGHT } -> AnalysisStatus.IN_FLIGHT

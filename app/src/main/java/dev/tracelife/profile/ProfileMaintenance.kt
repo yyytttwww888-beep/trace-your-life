@@ -300,7 +300,7 @@ class ProfileMaintenance(
         val task = analysis.task(progress.runId)
         val now = clock.instant()
         if (progress.taskVersion == null || task.stored.version != progress.taskVersion ||
-            repository.analysisSourceStamp() != progress.source || repository.currentAnalysisGeneration() != progress.analysisGeneration ||
+            progress.source == null || !repository.analysisSourceCurrent(progress.source, task.state.request.scope) || repository.currentAnalysisGeneration() != progress.analysisGeneration ||
             progress.evaluatedAt == null || now < progress.evaluatedAt || progress.validUntil?.let { now >= it } == true || blocked(task, now) != null)
             throw StaleSnapshotException("画像维护资料、反馈或期限已变化，请重新读取")
         val context = analysis.profileMaintenanceContext(progress.runId, progress.claim)

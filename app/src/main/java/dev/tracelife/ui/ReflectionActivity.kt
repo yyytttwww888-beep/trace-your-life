@@ -14,6 +14,7 @@ import dev.tracelife.analysis.ReflectionFinding
 import dev.tracelife.analysis.ReflectionRun
 import dev.tracelife.analysis.ReflectionStatus
 import dev.tracelife.analysis.ReflectionTarget
+import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.ClaimFeedbackDecision
@@ -246,7 +247,7 @@ class ReflectionActivity : ScreenActivity() {
                 section(group.second)
                 items.forEach { finding ->
                     val container = card()
-                    chip(container, findingStatus(finding), if (finding.knowledgeId != null) Ui.Tone.OK else Ui.Tone.NEUTRAL)
+                    chip(container, findingStatus(finding), findingTone(finding))
                     Ui.body(container, finding.text)
                     addButton(container, "查看依据与处理", "reflectionFinding:${targetKey(finding.target)}") {
                         findingKey = targetKey(finding.target)
@@ -299,7 +300,7 @@ class ReflectionActivity : ScreenActivity() {
         findingKey = targetKey(finding.target)
         beginScreen("finding", "这条发现")
         note("${run.scope.from} 至 ${run.scope.through}")
-        chip(root, findingStatus(finding), if (finding.knowledgeId != null) Ui.Tone.OK else Ui.Tone.NEUTRAL)
+        chip(root, findingStatus(finding), findingTone(finding))
         text(finding.text)
         progressLabel = Ui.note(root, finding.reviewVerdict?.let(::verdictLabel) ?: "尚未完成原文核对。你的确认与原文核对会分别保留。").apply { tag = "reflectionProgress" }
         finding.reviewProgress?.let { progress ->
@@ -307,9 +308,14 @@ class ReflectionActivity : ScreenActivity() {
             reviewHint(progress.status)?.let { note(it) }
         }
         addButton(root, "查看记录依据", "reflectionEvidence") { showEvidence(run, finding) }
+        finding.knowledgeId?.let { savedId ->
+            primaryButton("查看已保存内容与后续尝试", "openSavedFinding") {
+                startActivity(Intent(this, KnowledgeActivity::class.java).putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID, savedId))
+            }
+        }
         if (run.status !in blocked && run.canReviewFindings) {
             val decision = finding.feedback?.feedback?.decision
-            if (finding.knowledgeId == null && decision !in rejected && finding.reviewVerdict !in unsupported) {
+            if (finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT && decision !in rejected && finding.reviewVerdict !in unsupported) {
                 primaryButton(if (decision == ClaimFeedbackDecision.CONFIRMED) "继续核对并保存" else "保留到知识库", "keepReflectionFinding") {
                     keepFinding(run, finding)
                 }
@@ -329,12 +335,17 @@ class ReflectionActivity : ScreenActivity() {
     }
 
     private fun keepFinding(run: ReflectionRun, finding: ReflectionFinding) {
-        withConfigured { showKeepDialog(run, finding) }
+        withConfigured {
+            runIo({ app.reflectionWorkflow.suggestedTopics(run.id, finding.target) }) { topics ->
+                showKeepDialog(run, finding, topics)
+            }
+        }
     }
 
-    private fun showKeepDialog(run: ReflectionRun, finding: ReflectionFinding) {
+    private fun showKeepDialog(run: ReflectionRun, finding: ReflectionFinding, suggestedTopics: Set<String>) {
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), 0, dp(20), 0) }
-        val topics = labeledFieldIn(layout, "主题（可选）", "例如：学习、工作")
+        val topics = labeledFieldIn(layout, "主题（可选）", "例如：学习、工作", value = suggestedTopics.joinToString("、"))
+        if (suggestedTopics.isNotEmpty()) Ui.note(layout, "已带入来源记录的主题，可在保存前调整。")
         AlertDialog.Builder(this).setTitle("确认并保留这条发现？")
             .setMessage("确认表示内容符合你的记录。接着会将相关原文发送给 DeepSeek 再次核对，可能产生费用，本轮最多请求 $REQUESTS_PER_PASS 次；只有记录支持时才保存到知识库。未完成时可继续。")
             .setView(layout).setNegativeButton("取消", null)
@@ -416,6 +427,10 @@ class ReflectionActivity : ScreenActivity() {
     }
 
     private fun findingStatus(finding: ReflectionFinding): String = when {
+        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.REJECTED -> "已保存 · 已否定"
+        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CORRECTED -> "已保存 · 已纠正"
+        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.WITHDRAWN -> "已保存 · 已撤回"
+        finding.knowledgeId != null && finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT -> "已保存 · 待更新"
         finding.knowledgeId != null -> "已保存到知识库"
         finding.feedback?.feedback?.decision == ClaimFeedbackDecision.REJECTED -> "已否定"
         finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CORRECTED -> "已纠正，原判断不再收录"
@@ -425,6 +440,12 @@ class ReflectionActivity : ScreenActivity() {
         finding.reviewVerdict == ReviewVerdict.INSUFFICIENT_CONTEXT -> "资料不足，未保存"
         finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED -> "你已确认，待完成核对"
         else -> "待核对"
+    }
+
+    private fun findingTone(finding: ReflectionFinding): Ui.Tone = when {
+        finding.knowledgeId == null -> Ui.Tone.NEUTRAL
+        finding.knowledgeEvidenceState == KnowledgeEvidenceState.CURRENT -> Ui.Tone.OK
+        else -> Ui.Tone.WARN
     }
 
     private fun formatTime(run: ReflectionRun) = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")

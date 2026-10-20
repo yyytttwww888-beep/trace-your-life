@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 8) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 9) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -22,17 +22,23 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionSix(db)
         upgradeToVersionSeven(db)
         upgradeToVersionEight(db)
+        upgradeToVersionNine(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..7 && newVersion == 8) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..8 && newVersion == 9) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
         if (oldVersion < 5) upgradeToVersionFive(db)
         if (oldVersion < 6) upgradeToVersionSix(db)
         if (oldVersion < 7) upgradeToVersionSeven(db)
-        upgradeToVersionEight(db)
+        if (oldVersion < 8) upgradeToVersionEight(db)
+        upgradeToVersionNine(db)
+    }
+
+    private fun upgradeToVersionNine(db: SQLiteDatabase) {
+        SourceScopeLedger.install(db)
     }
 
     private fun upgradeToVersionEight(db: SQLiteDatabase) {

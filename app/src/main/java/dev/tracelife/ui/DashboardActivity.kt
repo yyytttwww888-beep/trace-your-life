@@ -1,6 +1,5 @@
 package dev.tracelife.ui
 
-import android.app.AlertDialog
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.Spinner
@@ -25,10 +24,8 @@ import dev.tracelife.profile.ProfileDimension
 import dev.tracelife.storage.SourceDescriptor
 import dev.tracelife.storage.SourceFieldKind
 import dev.tracelife.storage.SourceTimeClass
+import dev.tracelife.transfer.CompletedExports
 import dev.tracelife.transfer.StaleSnapshotException
-import java.io.File
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
 class DashboardActivity : ScreenActivity() {
     private var snapshot: DashboardSnapshot? = null
@@ -393,17 +390,8 @@ class DashboardActivity : ScreenActivity() {
 
     private fun exportDashboard() {
         val board = snapshot ?: return
-        val directory = getExternalFilesDir(null)
-        if (directory == null) {
-            showError(IllegalStateException("外部存储目录不可用"))
-            return
-        }
-        val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now())
-        val target = File(directory, "dashboard-$stamp.zip")
-        runIo({ app.dataTransfer.exportDashboard(target, board) }) { result ->
-            AlertDialog.Builder(this).setTitle("看板已导出")
-                .setMessage("已保存 ${result.files} 个文件，包含 ${result.records} 条记录的统计。\n\n${target.absolutePath}\n\n这是一份固定看板副本，不含完整原文，不能用于恢复。")
-                .setPositiveButton("知道了", null).show()
+        runIo({ CompletedExports(this).create("dashboard") { app.dataTransfer.exportDashboard(it, board) } }) { (_, file) ->
+            TransferActivity.saveCompleted(this, file.name)
         }
     }
 

@@ -82,15 +82,15 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
         return repository.publishKnowledge(value, expectedRevision, expectedRunVersion)
     }
 
-    fun get(id: String, revision: Int? = null): KnowledgeView? = consistentRead { source, _, now ->
+    fun get(id: String, revision: Int? = null): KnowledgeView? = consistentRead { _, _, now ->
         val value = repository.knowledgeRevision(id, revision) ?: return@consistentRead null
-        view(value, repository.knowledgeRevision(id)?.revision == value.revision, source, now)
+        view(value, repository.knowledgeRevision(id)?.revision == value.revision, now)
     }
 
-    fun history(id: String, offset: Int = 0, limit: Int = 25): List<KnowledgeView> = consistentRead { source, _, now ->
+    fun history(id: String, offset: Int = 0, limit: Int = 25): List<KnowledgeView> = consistentRead { _, _, now ->
         val head = repository.knowledgeRevision(id)?.revision
         val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
-        repository.knowledgeHistory(id, offset, limit).map { view(it, it.revision == head, source, now, states) }
+        repository.knowledgeHistory(id, offset, limit).map { view(it, it.revision == head, now, states) }
     }
 
     fun index(filter: KnowledgeFilter = KnowledgeFilter(), limit: Int = 25): KnowledgeIndexPage = indexPage(filter, 0, limit)
@@ -100,7 +100,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
 
     /** Trusted derived-view builder: one snapshot, one head scan and a shared task decode cache.
      * The visitor must retain only the bounded result it needs; this is not a model-reading API. */
-    internal fun scanCurrent(filter: KnowledgeFilter = KnowledgeFilter(), visit: (KnowledgeView) -> Unit) = consistentRead { source, _, now ->
+    internal fun scanCurrent(filter: KnowledgeFilter = KnowledgeFilter(), visit: (KnowledgeView) -> Unit) = consistentRead { _, _, now ->
         val states = mutableMapOf<String, Pair<SourceStamp, AnalysisRunState>?>()
         var offset = 0
         do {
@@ -109,7 +109,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                 val value = repository.knowledgeRevision(head.id, head.revision)
                     ?: throw StaleSnapshotException("知识目录在读取期间变化")
                 if (!matches(value, filter)) return@forEach
-                val result = view(value, true, source, now, states)
+                val result = view(value, true, now, states)
                 if (filter.includeInvalid || result.evidenceState == KnowledgeEvidenceState.CURRENT) visit(result)
             }
             offset += heads.size
@@ -134,7 +134,7 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
                     val value = repository.knowledgeRevision(head.id, head.revision)
                         ?: throw StaleSnapshotException("知识目录在读取期间变化")
                     if (!matches(value, filter)) continue
-                    val state = view(value, true, source, evaluatedAt, states).evidenceState
+                    val state = view(value, true, evaluatedAt, states).evidenceState
                     if (!filter.includeInvalid && state != KnowledgeEvidenceState.CURRENT) { omitted++; continue }
                     if (total >= offset && selected.size < limit) selected += KnowledgeIndexItem(value.id, value.revision,
                         value.category, value.topics, value.scope.from, value.scope.through, state)
@@ -156,12 +156,12 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
             (filter.category == null || value.category == filter.category) &&
             (filter.topics == null || value.topics.any { it in filter.topics })
 
-    private fun view(value: StoredKnowledgeRevision, currentRevision: Boolean, source: SourceStamp, now: Instant,
+    private fun view(value: StoredKnowledgeRevision, currentRevision: Boolean, now: Instant,
         states: MutableMap<String, Pair<SourceStamp, AnalysisRunState>?> = mutableMapOf()): KnowledgeView {
         val id = AnalysisRunCodec.feedbackId(value.runId, value.claimRef)
         val feedback = repository.claimFeedback(id)
         val state = when {
-            value.source != source -> KnowledgeEvidenceState.STALE
+            !repository.analysisSourceCurrent(value.source, value.scope) -> KnowledgeEvidenceState.STALE
             value.actionPlan?.let { !repository.actionEvidencePlanCurrent(value.scope, it) } == true -> KnowledgeEvidenceState.STALE
             value.expiresAt != null && !now.isBefore(value.expiresAt) -> KnowledgeEvidenceState.EXPIRED
             !feedbackCurrent(value) || value.profileMaintenanceProof?.let { !repository.profileMaintenanceDependenciesCurrent(it) } == true ->

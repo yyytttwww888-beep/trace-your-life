@@ -74,6 +74,13 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) {
+            intent.getStringExtra(EXTRA_RECORD_ID)?.let {
+                recordId = it
+                historicalRevision = intent.getIntExtra(EXTRA_RECORD_REVISION, -1).takeIf { version -> version > 0 }
+                screen = "detail"
+            }
+        }
         savedInstanceState?.let { state ->
             screen = state.getString("screen") ?: "records"
             recordId = state.getString("recordId")
@@ -288,6 +295,8 @@ class MainActivity : Activity() {
             Ui.note(card, "上次范围 ${run.scope.from} — ${run.scope.through}\n$label")
             val saved = run.findings.count { it.knowledgeId != null }
             Ui.note(card, "${run.findings.size} 项发现 · $saved 项已保存")
+            val pending = run.findings.count { it.knowledgeId != null && it.knowledgeEvidenceState != dev.tracelife.knowledge.KnowledgeEvidenceState.CURRENT }
+            if (pending > 0) Ui.note(card, "其中 $pending 项待更新，已保存的内容仍可在知识库回看。")
             if (run.status == ReflectionStatus.READY) {
                 run.findings.firstOrNull { it.feedback?.feedback?.decision != dev.tracelife.storage.ClaimFeedbackDecision.REJECTED }
                     ?.let { Ui.body(card, it.text.take(180)) }
@@ -770,6 +779,8 @@ class MainActivity : Activity() {
         })
     }
     companion object {
+        const val EXTRA_RECORD_ID = "recordId"
+        const val EXTRA_RECORD_REVISION = "recordRevision"
         private const val PAGE_SIZE = 20
         private const val TEMPLATE_REQUEST = 41
         private const val IMAGE_REQUEST = 42
