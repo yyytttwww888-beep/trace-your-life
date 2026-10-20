@@ -271,7 +271,7 @@ class KnowledgeStorageTest {
         assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(value, repository.claimFeedback(value.id))
         assertTrue(repository.knowledgeHeads().isEmpty())
-        assertEquals(10, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(11, repository.captureSnapshot(directory()).sourceSchemaVersion)
     }
 
     @Test fun `feedback deletion removes an overfull legacy task and all its knowledge without losing independent text`() {

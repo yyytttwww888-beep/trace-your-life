@@ -32,7 +32,7 @@ object AnalysisRunCodec {
 
     // Legacy tasks keep v12's exact shape until the new purpose is actually used.
     fun encode(state: AnalysisRunState): String = encodeVersion(state,
-        if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
+        if (state.request.conversationContext != null) 14 else if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
 
     private fun encodeVersion(state: AnalysisRunState, version: Int): String {
         validate(state)
@@ -45,11 +45,13 @@ object AnalysisRunCodec {
         require(version >= 9 || state.profileMaintenancePlans.isEmpty() && state.calls.none { it.profileMaintenancePlanSha256 != null })
         require(version >= 10 || !state.request.actionPeriod && state.actionPlan == null && state.calls.all { it.actionEvidence.isEmpty() } && state.request.profileTarget?.layer != ProfileLayer.LONG_TERM)
         require(version >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
+        require(version >= 14 || state.request.conversationContext == null)
         require(version >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(version >= 12 || state.feedbackContext == null && !state.request.inheritHistoricalFeedback)
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
-            var value = if (version < 12) raw - "inheritHistoricalFeedback" else raw
+            var value = if (version < 14) raw - "conversationContext" else raw
+            if (version < 12) value = value - "inheritHistoricalFeedback"
             if (version < 10) value = value - "actionPeriod"
             if (version < 8) value = value - "profileTarget"
             else if (version < 10) value = value + ("profileTarget" to state.request.profileTarget?.let { mapOf("dimension" to it.dimension.name, "layer" to it.layer.name) })
@@ -154,11 +156,11 @@ object AnalysisRunCodec {
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 12) arrayOf("feedbackContext", "historicalFeedbackResolutions") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..13)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..14)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
-            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray()) + (if (format >= 12) arrayOf("inheritHistoricalFeedback") else emptyArray())))
+            (if (format >= 8) arrayOf("profileTarget") else emptyArray()) + (if (format >= 10) arrayOf("actionPeriod") else emptyArray()) + (if (format >= 12) arrayOf("inheritHistoricalFeedback") else emptyArray()) + (if (format >= 14) arrayOf("conversationContext") else emptyArray())))
         val profileTarget = request["profileTarget"]?.let { raw ->
             LongitudinalProfileProtocol.parseTarget(raw, allowLongTerm = format >= 10)
         }
@@ -174,7 +176,8 @@ object AnalysisRunCodec {
                 limits.long("totalInputBytes"), limits.int("maxOutputBytes")),
                 request.strings("focusTopics").uniqueSet(), request.optionalInstant("expiresAt"), profileTarget,
                 if (format >= 10) request["actionPeriod"] as? Boolean ?: error("行动复盘标记无效") else false,
-                if (format >= 12) request["inheritHistoricalFeedback"] as? Boolean ?: error("历史意见标记无效") else false),
+                if (format >= 12) request["inheritHistoricalFeedback"] as? Boolean ?: error("历史意见标记无效") else false,
+                request["conversationContext"]?.let(ConversationContextProtocol::parse)),
             root.list("calls").map { raw ->
                 val fields = arrayOf("batchKey", "attempt", "providerId", "requestSha256", "inputBytes", "inputTokens", "evidence", "startedAt", "status", "finishedAt", "failureCode", "proposal")
                 val metered = fields + arrayOf("tokenCountKind", "usage")
@@ -572,7 +575,8 @@ object AnalysisRunCodec {
             "maxCalls" to it.maxCalls, "totalInputBytes" to it.totalInputBytes, "maxOutputBytes" to it.maxOutputBytes) },
         "focusTopics" to request.focusTopics.sorted(), "expiresAt" to request.expiresAt?.toString(),
         "profileTarget" to request.profileTarget?.let(::profileTargetMap), "actionPeriod" to request.actionPeriod,
-        "inheritHistoricalFeedback" to request.inheritHistoricalFeedback)
+        "inheritHistoricalFeedback" to request.inheritHistoricalFeedback,
+        "conversationContext" to request.conversationContext?.let(ConversationContextProtocol::map))
 
     internal fun profileTargetMap(target: ProfileAnalysisTarget): Map<String, Any?> =
         LongitudinalProfileProtocol.targetMap(target)

@@ -40,10 +40,13 @@ data class AnalysisRequest(
     val profileTarget: ProfileAnalysisTarget? = null,
     val actionPeriod: Boolean = false,
     val inheritHistoricalFeedback: Boolean = false,
+    val conversationContext: ConversationContext? = null,
 ) {
     init {
         require(!actionPeriod || profileTarget == null) { "行动复盘与画像生成必须使用独立任务" }
         require(!inheritHistoricalFeedback || !actionPeriod && profileTarget == null)
+        require(conversationContext == null || !actionPeriod && profileTarget == null)
+        conversationContext?.let(ConversationContextProtocol::validate)
         require(question.isNotBlank() && question.length <= 2_000)
         require(focusTopics.size <= 30 && focusTopics.all { it.isNotBlank() && it.length <= 80 })
     }

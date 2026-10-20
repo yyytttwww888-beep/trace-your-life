@@ -22,7 +22,9 @@ internal object SnapshotValidation {
 
     fun validate(snapshot: RepositorySnapshot) {
         try {
-            require(snapshot.sourceSchemaVersion in 2..10) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion in 2..11) { "不支持的资料版本" }
+            require(snapshot.sourceSchemaVersion >= 11 || snapshot.conversations.isEmpty() && snapshot.conversationTurns.isEmpty() && snapshot.deletedConversations.isEmpty()) { "旧版资料不能包含对话" }
+            dev.tracelife.conversation.ConversationValidation.validateCollection(snapshot.conversations, snapshot.conversationTurns, snapshot.deletedConversations)
             require(snapshot.sourceSchemaVersion != 2 || snapshot.analysisRuns.isEmpty() && snapshot.analysisGeneration == 0L && snapshot.deletedAnalysisRuns.isEmpty()) { "旧版资料不能包含分析任务" }
             require(snapshot.sourceSchemaVersion >= 4 || snapshot.claimFeedback.isEmpty() && snapshot.deletedClaimFeedback.isEmpty()) { "旧版资料不能包含反馈" }
             require(snapshot.sourceSchemaVersion >= 5 || snapshot.knowledgeRevisions.isEmpty() && snapshot.knowledgeHeads.isEmpty() && snapshot.deletedKnowledge.isEmpty()) { "旧版资料不能包含正式知识" }
@@ -147,6 +149,30 @@ internal object SnapshotValidation {
                 }
             }
             val runs = snapshot.analysisRuns.associateBy { it.id }
+            snapshot.analysisRuns.forEach { run ->
+                val visited = mutableSetOf(run.id)
+                var context = AnalysisRunCodec.decode(run.payload).request.conversationContext
+                var depth = 0
+                while (context != null) {
+                    val parentContext = context
+                    require(++depth <= dev.tracelife.analysis.ConversationContextProtocol.MAX_ANCESTORS && visited.add(parentContext.parentRunId)) { "追问背景存在循环或超过依赖层数" }
+                    val parent = requireNotNull(runs[parentContext.parentRunId]) { "追问背景缺少先前回答任务" }
+                    val parentState = AnalysisRunCodec.decode(parent.payload)
+                    require(dev.tracelife.analysis.ConversationContextProtocol.matchesIdentity(parentContext, parent, parentState)) { "追问背景与固定回答不一致" }
+                    parentContext.targets.flatMap { it.feedbackTokens }.filter { it.version > 0 }.forEach { token ->
+                        require(AnalysisRunCodec.feedbackId(parent.id, token.claim) in retainedFeedbackIds) { "追问背景缺少登记的用户反馈" }
+                    }
+                    context = parentState.request.conversationContext
+                }
+            }
+            snapshot.conversationTurns.forEach { turn ->
+                runs[turn.runId]?.let { run ->
+                    val request = AnalysisRunCodec.decode(run.payload).request
+                    require(request.scope == turn.scope && (request.question == turn.question || request.question.startsWith(turn.question + "\n"))) {
+                        "问题与对应分析任务的范围或文字不一致"
+                    }
+                }
+            }
             snapshot.knowledgeRevisions.mapNotNull { it.profileMaintenanceProof }.forEach { proof ->
                 proof.plan.references.forEach { ref ->
                     require(ref.feedbackVersions.keys.none { it in erasedFeedback }) { "维护知识仍含已删除反馈的派生副本" }

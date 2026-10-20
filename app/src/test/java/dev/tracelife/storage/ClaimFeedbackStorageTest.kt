@@ -246,7 +246,7 @@ class ClaimFeedbackStorageTest {
         assertEquals("合成资料：用户记录了疲劳。", repository.record("synthetic-source")!!.draft.body)
         assertTrue(repository.claimFeedbacks().isEmpty())
         repository.saveClaimFeedback(feedback(run), null, run.version)
-        assertEquals(10, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(11, repository.captureSnapshot(directory()).sourceSchemaVersion)
     }
 
     private fun run(expiresAt: Instant? = null): StoredAnalysisRun {

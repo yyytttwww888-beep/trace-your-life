@@ -71,10 +71,17 @@ class ReflectionWorkflow(
     private val review = PeriodReductionReviewProcessor(analysis)
 
     fun start(scope: AnalysisQuery, limits: AnalysisLimits = AnalysisLimits()): ReflectionRun {
+        return startQuestion(QUESTION, scope, limits)
+    }
+
+    /** Conversation and shortcuts share the same complete-range synthesis and publication gates. */
+    fun startQuestion(question: String, scope: AnalysisQuery, limits: AnalysisLimits = AnalysisLimits(),
+        context: ConversationContext? = null, id: String = PREFIX + UUID.randomUUID()): ReflectionRun {
+        require(id.startsWith(PREFIX))
         val source = repository.analysisSourceStamp()
         val focus = FeedbackContextCatalog(repository).routeTopics(source, scope)
-        return inspect(analysis.start(AnalysisRequest(QUESTION, scope, limits, focusTopics = focus,
-            inheritHistoricalFeedback = true), PREFIX + UUID.randomUUID()).stored.id)
+        return inspect(analysis.start(AnalysisRequest(question, scope, limits, focusTopics = focus,
+            inheritHistoricalFeedback = true, conversationContext = context), id).stored.id)
     }
 
     /** Filtering happens before limiting: unrelated extraction/profile tasks cannot hide history. */

@@ -51,8 +51,8 @@ class ActionTransferTest {
         val snapshot = snapshot(listOf(first, second), listOf(Deletion("synthetic-deleted-action", 2, time)))
         val bytes = encode(snapshot)
         val encoded = JSONObject(bytes.toString(Charsets.UTF_8))
-        assertEquals(9, encoded.getInt("formatVersion"))
-        assertEquals(10, encoded.getInt("sourceSchemaVersion"))
+        assertEquals(10, encoded.getInt("formatVersion"))
+        assertEquals(11, encoded.getInt("sourceSchemaVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(bytes.inputStream()))
         val attachments = File(directory, "attachments").apply { check(mkdir()) }
         val destination = File(directory, "actions.tlb")
@@ -64,7 +64,7 @@ class ActionTransferTest {
         val current = snapshot(emptyList())
         (1..4).forEach { version ->
             val json = JSONObject(encode(current).toString(Charsets.UTF_8)).apply {
-                put("formatVersion", version); put("sourceSchemaVersion", version + 1); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads")
+                put("formatVersion", version); put("sourceSchemaVersion", version + 1); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads"); remove("conversations"); remove("conversationTurns"); remove("deletedConversations")
                 remove("actionRevisions"); remove("actionHeads"); remove("deletedActions")
                 remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")
                 if (version < 4) { remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge") }

@@ -228,7 +228,7 @@ class AnalysisArchiveTest {
         val encoded = ByteArrayOutputStream().also { SnapshotJsonCodec.write(snapshot, it) }.toString(Charsets.UTF_8)
         val legacy = JSONObject(encoded).apply {
             put("formatVersion", 8); put("sourceSchemaVersion", 9)
-            remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads")
+            remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads"); remove("conversations"); remove("conversationTurns"); remove("deletedConversations")
             getJSONArray("analysisRuns").getJSONObject(0).remove("archivedAt")
         }
         assertEquals(snapshot.copy(sourceSchemaVersion = 9), SnapshotJsonCodec.read(legacy.toString().byteInputStream()))
@@ -249,7 +249,7 @@ class AnalysisArchiveTest {
         assertEquals(before, analysis.task("run").stored)
         assertNull(repository.analysisRun("run")!!.archivedAt)
         assertEquals(KnowledgeEvidenceState.CURRENT, library.get(saved.id)!!.evidenceState)
-        assertEquals(10, repository.captureSnapshot(directory()).sourceSchemaVersion)
+        assertEquals(11, repository.captureSnapshot(directory()).sourceSchemaVersion)
         assertTrue(repository.experienceThreads().isEmpty())
     }
 

@@ -100,7 +100,7 @@ class DashboardPreferencesTest {
         val source = snapshot()
         val bytes = ByteArrayOutputStream().also { SnapshotJsonCodec.write(source, it) }.toByteArray()
         val json = JSONObject(bytes.toString(Charsets.UTF_8))
-        assertEquals(9, json.getInt("formatVersion")); assertEquals(10, json.getInt("sourceSchemaVersion"))
+        assertEquals(10, json.getInt("formatVersion")); assertEquals(11, json.getInt("sourceSchemaVersion"))
         assertEquals(source, SnapshotJsonCodec.read(bytes.inputStream()))
         val archive = File(workspace, "synthetic.tlb")
         val password = "synthetic-settings-test-passphrase".toCharArray()
@@ -124,11 +124,11 @@ class DashboardPreferencesTest {
     @Test fun `legacy backups have no preferences and mixed or malformed formats are rejected`() {
         val current = snapshot()
         val encoded = ByteArrayOutputStream().also { SnapshotJsonCodec.write(current, it) }.toString(Charsets.UTF_8)
-        val old = JSONObject(encoded).put("formatVersion", 6).put("sourceSchemaVersion", 7).apply { remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads") }
+        val old = JSONObject(encoded).put("formatVersion", 6).put("sourceSchemaVersion", 7).apply { remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads"); remove("conversations"); remove("conversationTurns"); remove("deletedConversations") }
         assertEquals(current.copy(sourceSchemaVersion = 7), SnapshotJsonCodec.read(old.toString().byteInputStream()))
         old.put("dashboardPreferences", JSONObject.NULL)
         assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(old.toString().byteInputStream()) }
-        val missing = JSONObject(encoded).apply { remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads") }
+        val missing = JSONObject(encoded).apply { remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads"); remove("conversations"); remove("conversationTurns"); remove("deletedConversations") }
         assertThrows(InvalidBackupException::class.java) { SnapshotJsonCodec.read(missing.toString().byteInputStream()) }
         val value = service.save(0, custom)
         val settings = StoredDashboardPreferences(value.revision, value.value, requireNotNull(value.updatedAt))
@@ -157,7 +157,7 @@ class DashboardPreferencesTest {
         assertEquals(source, repository.analysisSourceStamp()); assertEquals(generation, repository.currentAnalysisGeneration())
         assertEquals(record, repository.record(record.id)); assertEquals(0L, repository.localRestoreEpoch())
         assertNull(repository.dashboardPreferences()); service.save(0, custom)
-        assertEquals(10, snapshot().sourceSchemaVersion)
+        assertEquals(11, snapshot().sourceSchemaVersion)
     }
     private fun directory() = File(workspace, UUID.randomUUID().toString()).apply { check(mkdir()) }
     private fun snapshot() = repository.captureSnapshot(directory())

@@ -60,8 +60,8 @@ class ProfileTransferTest {
         val source = snapshot(listOf(first, adopted, feedback), listOf(Deletion("synthetic-deleted", 3, clock.now)))
         val encoded = encode(source)
         val json = JSONObject(encoded.toString(Charsets.UTF_8))
-        assertEquals(9, json.getInt("formatVersion"))
-        assertEquals(10, json.getInt("sourceSchemaVersion"))
+        assertEquals(10, json.getInt("formatVersion"))
+        assertEquals(11, json.getInt("sourceSchemaVersion"))
         assertEquals(source, SnapshotJsonCodec.read(encoded.inputStream()))
         SnapshotValidation.validate(source)
         val backup = File(directory, "profile.tlb")
@@ -73,7 +73,7 @@ class ProfileTransferTest {
         val source = snapshot(emptyList())
         for (version in 1..5) {
             val old = JSONObject(encode(source).toString(Charsets.UTF_8)).apply {
-                put("formatVersion", version); put("sourceSchemaVersion", version + 1); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads")
+                put("formatVersion", version); put("sourceSchemaVersion", version + 1); remove("dashboardPreferences"); remove("historicalComparisons"); remove("historicalComparisonDeletions"); remove("experienceThreads"); remove("experienceChanges"); remove("deletedExperienceThreads"); remove("conversations"); remove("conversationTurns"); remove("deletedConversations")
                 remove("profileRevisions"); remove("profileHeads"); remove("deletedProfiles")
                 if (version < 5) { remove("actionRevisions"); remove("actionHeads"); remove("deletedActions") }
                 if (version < 4) { remove("knowledgeRevisions"); remove("knowledgeHeads"); remove("deletedKnowledge") }

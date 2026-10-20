@@ -207,7 +207,7 @@ class TransferActivity : ScreenActivity() {
             Ui.note(card, "备份于 ${preview.capturedAt}")
             Ui.body(card, "${preview.records} 条记录 · ${preview.attachments} 个附件\n${preview.knowledge} 条知识 · ${preview.experienceThreads} 条经验线索\n${preview.actions} 个行动 · ${preview.profiles} 条画像")
             Ui.disclosure(card, "查看全部内容", "backupContents") { details ->
-                Ui.note(details, "记录历史 ${preview.revisions} 个版本 · 模板 ${preview.templates} 个\n附件大小 ${preview.attachmentBytes / 1024} KB\n分析 ${preview.analysisRuns} 次（已归档 ${preview.archivedAnalysisRuns} 次）· 反馈 ${preview.claimFeedback} 条\n独立对照说明 ${preview.historicalComparisons} 条\n已删除记录 ${preview.deletedRecords} 条 · 已删除模板 ${preview.deletedTemplates} 个\n备份编号：${preview.snapshotId}")
+                Ui.note(details, "记录历史 ${preview.revisions} 个版本 · 模板 ${preview.templates} 个\n附件大小 ${preview.attachmentBytes / 1024} KB\n分析 ${preview.analysisRuns} 次（已归档 ${preview.archivedAnalysisRuns} 次）· 反馈 ${preview.claimFeedback} 条\n对话 ${preview.conversations} 个 · 问题 ${preview.conversationTurns} 个\n独立对照说明 ${preview.historicalComparisons} 条\n已删除记录 ${preview.deletedRecords} 条 · 已删除模板 ${preview.deletedTemplates} 个\n备份编号：${preview.snapshotId}")
             }
             if (preview.targetHasData) {
                 chip(card, "本机已有资料，须明确替换", Ui.Tone.WARN)

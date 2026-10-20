@@ -14,6 +14,10 @@ import dev.tracelife.model.TemplateQuestion
 import dev.tracelife.model.TemplateRef
 import dev.tracelife.model.TemplateVersion
 import dev.tracelife.storage.SourceStamp
+import dev.tracelife.conversation.ConversationCodec
+import dev.tracelife.conversation.ConversationThread
+import dev.tracelife.conversation.ConversationTurn
+import dev.tracelife.conversation.ConversationValidation
 import dev.tracelife.knowledge.ExperienceCodec
 import dev.tracelife.knowledge.ExperienceValidation
 import dev.tracelife.knowledge.StoredExperienceThread
@@ -49,7 +53,7 @@ import java.time.LocalDate
 
 /** Versioned logical transfer format. Streams belong to the caller; no credentials are serialized. */
 object SnapshotJsonCodec {
-    const val FORMAT_VERSION = 9
+    const val FORMAT_VERSION = 10
     private const val MAX_DEPTH = 16
     internal const val MAX_NODES = 2_000_000L
     private const val MAX_STRING_CHARACTERS = 1_048_576
@@ -74,6 +78,11 @@ object SnapshotJsonCodec {
             } }
             array("historicalComparisons", snapshot.historicalComparisons) { value(HistoricalComparisonCodec.encode(it)) }
             array("historicalComparisonDeletions", snapshot.historicalComparisonDeletions) { deletion -> objectValue {
+                field("id", deletion.id); field("lastRevision", deletion.lastRevision); field("deletedAt", deletion.deletedAt.toString())
+            } }
+            array("conversations", snapshot.conversations) { value(ConversationCodec.encodeThread(it)) }
+            array("conversationTurns", snapshot.conversationTurns) { value(ConversationCodec.encodeTurn(it)) }
+            array("deletedConversations", snapshot.deletedConversations) { deletion -> objectValue {
                 field("id", deletion.id); field("lastRevision", deletion.lastRevision); field("deletedAt", deletion.deletedAt.toString())
             } }
             array("experienceThreads", snapshot.experienceThreads) { value(ExperienceCodec.encodeThread(it)) }
@@ -163,6 +172,8 @@ object SnapshotJsonCodec {
         val profileFields = setOf("profileRevisions", "profileHeads", "deletedProfiles")
         checkBackup(if (format < 6) profileFields.none(root::containsKey) else profileFields.all(root::containsKey), "画像字段与资料版本不一致")
         checkBackup(root.containsKey("dashboardPreferences") == (format >= 7), "看板偏好字段与资料版本不一致")
+        val conversationFields = setOf("conversations", "conversationTurns", "deletedConversations")
+        checkBackup(if (format < 10) conversationFields.none(root::containsKey) else conversationFields.all(root::containsKey), "对话字段与资料版本不一致")
         val experienceFields = setOf("experienceThreads", "experienceChanges", "deletedExperienceThreads")
         checkBackup(if (format < 9) experienceFields.none(root::containsKey) else experienceFields.all(root::containsKey), "经验线索字段与资料版本不一致")
         val comparisonFields = setOf("historicalComparisons", "historicalComparisonDeletions")
@@ -191,6 +202,9 @@ object SnapshotJsonCodec {
             profileHeads = if (format < 6) emptyList() else root.array("profileHeads").map { it as ProfileHead },
             deletedProfiles = if (format < 6) emptyList() else root.array("deletedProfiles").map { it as Deletion },
             dashboardPreferences = root["dashboardPreferences"] as StoredDashboardPreferences?,
+            conversations = if (format < 10) emptyList() else root.array("conversations").map { it as ConversationThread },
+            conversationTurns = if (format < 10) emptyList() else root.array("conversationTurns").map { it as ConversationTurn },
+            deletedConversations = if (format < 10) emptyList() else root.array("deletedConversations").map { it as Deletion },
             experienceThreads = if (format < 9) emptyList() else root.array("experienceThreads").map { it as StoredExperienceThread },
             experienceChanges = if (format < 9) emptyList() else root.array("experienceChanges").map { it as StoredExperienceChange },
             deletedExperienceThreads = if (format < 9) emptyList() else root.array("deletedExperienceThreads").map { it as Deletion },
@@ -199,6 +213,7 @@ object SnapshotJsonCodec {
         ).also { snapshot ->
             checkBackup(format >= 9 || snapshot.analysisRuns.none { it.archivedAt != null }, "旧版备份不能包含归档任务")
             AnalysisStorageLimits.validate(snapshot.analysisRuns, includeReservations = false)
+            ConversationValidation.validateCollection(snapshot.conversations, snapshot.conversationTurns, snapshot.deletedConversations)
             ExperienceValidation.validateCollection(snapshot.experienceThreads, snapshot.experienceChanges, snapshot.deletedExperienceThreads)
             HistoricalComparisonCodec.validateCollection(snapshot.historicalComparisons)
         }
@@ -242,11 +257,12 @@ object SnapshotJsonCodec {
     private object ProfilePayloadShape : Shape
     private object PreferencesPayloadShape : Shape
     private data class ExperiencePayloadShape(val thread: Boolean) : Shape
+    private data class ConversationPayloadShape(val thread: Boolean) : Shape
     private object HistoricalComparisonPayloadShape : Shape
     private object FeedbackTextShape : Shape
     private data class FeedbackShape(val value: Shape) : Shape
     private class NodeBudget(var remaining: Long = MAX_NODES, var analysisBytes: Long = 0, var feedbackBytes: Long = 0,
-        var knowledgeBytes: Long = 0, var actionBytes: Long = 0, var profileBytes: Long = 0, var experienceBytes: Long = 0, var comparisonBytes: Long = 0)
+        var knowledgeBytes: Long = 0, var actionBytes: Long = 0, var profileBytes: Long = 0, var experienceBytes: Long = 0, var comparisonBytes: Long = 0, var conversationBytes: Long = 0)
     private fun obj(vararg fields: Pair<String, Shape>) = ObjectShape(linkedMapOf(*fields))
 
     // Convert each record/template before reading the next item: never retain an entire JSON AST.
@@ -279,6 +295,9 @@ object SnapshotJsonCodec {
                 StoredAnalysisRun(fields.string("id"), fields.int("version"), SourceStamp(source.string("storeId"), source.long("generation")),
                     fields.instant("createdAt"), fields.instant("updatedAt"), fields["expiresAt"]?.let { Instant.parse(it as String) }, fields.string("payload"), fields["archivedAt"]?.let { Instant.parse(it as String) })
             } }, AnalysisStorageLimits.ACTIVE_TASKS + AnalysisStorageLimits.ARCHIVED_TASKS),
+            "conversations" to ArrayShape(ConversationPayloadShape(true), ConversationValidation.MAX_THREADS),
+            "conversationTurns" to ArrayShape(ConversationPayloadShape(false), ConversationValidation.MAX_TURNS),
+            "deletedConversations" to ArrayShape(mappedDeletion(), ConversationValidation.MAX_DELETIONS),
             "historicalComparisons" to ArrayShape(HistoricalComparisonPayloadShape, HistoricalComparisonCodec.MAX_NOTES),
             "historicalComparisonDeletions" to ArrayShape(mappedDeletion(), HistoricalComparisonCodec.MAX_DELETIONS),
             "experienceThreads" to ArrayShape(ExperiencePayloadShape(true), ExperienceValidation.MAX_THREADS),
@@ -309,7 +328,8 @@ object SnapshotJsonCodec {
             .copy(optional = setOf("analysisGeneration", "analysisRuns", "deletedAnalysisRuns", "claimFeedback", "deletedClaimFeedback",
                 "knowledgeRevisions", "knowledgeHeads", "deletedKnowledge", "actionRevisions", "actionHeads", "deletedActions",
                 "profileRevisions", "profileHeads", "deletedProfiles", "dashboardPreferences",
-                "experienceThreads", "experienceChanges", "deletedExperienceThreads", "historicalComparisons", "historicalComparisonDeletions"))
+                "experienceThreads", "experienceChanges", "deletedExperienceThreads", "historicalComparisons", "historicalComparisonDeletions",
+                "conversations", "conversationTurns", "deletedConversations"))
     }
 
     private fun readValue(reader: JsonReader, depth: Int, shape: Shape, budget: NodeBudget): Any? {
@@ -359,6 +379,16 @@ object SnapshotJsonCodec {
                     budget.analysisBytes += bytes
                     checkBackup(budget.analysisBytes <= AnalysisStorageLimits.ACTIVE_BYTES + AnalysisStorageLimits.ARCHIVED_BYTES, "活动分析与归档总量超过读取上限")
                 }
+            }
+            is ConversationPayloadShape -> {
+                checkBackup(reader.peek() == JsonToken.STRING, "对话须为版本化 JSON 文字")
+                val payload = reader.nextString()
+                checkBackup(payload.length <= ConversationValidation.MAX_ITEM_BYTES, "对话单项过长")
+                val bytes = payload.toByteArray(Charsets.UTF_8).size
+                checkBackup(bytes <= ConversationValidation.MAX_ITEM_BYTES, "对话单项超过大小上限")
+                budget.conversationBytes += bytes
+                checkBackup(budget.conversationBytes <= ConversationValidation.MAX_BYTES, "对话超过保存容量")
+                if (shape.thread) ConversationCodec.decodeThread(payload) else ConversationCodec.decodeTurn(payload)
             }
             HistoricalComparisonPayloadShape -> {
                 checkBackup(reader.peek() == JsonToken.STRING, "独立对照说明须为版本化 JSON 文字")
@@ -431,8 +461,9 @@ object SnapshotJsonCodec {
     }
 
     private fun validateWriteBudget(snapshot: RepositorySnapshot) {
-        checkBackup(snapshot.sourceSchemaVersion == 10, "新建备份必须使用当前来源数据库版本")
+        checkBackup(snapshot.sourceSchemaVersion == 11, "新建备份必须使用当前来源数据库版本")
         snapshot.dashboardPreferences?.let(DashboardPreferencesCodec::encode)
+        ConversationValidation.validateCollection(snapshot.conversations, snapshot.conversationTurns, snapshot.deletedConversations)
         ExperienceValidation.validateCollection(snapshot.experienceThreads, snapshot.experienceChanges, snapshot.deletedExperienceThreads)
         HistoricalComparisonCodec.validateCollection(snapshot.historicalComparisons)
         checkBackup(snapshot.historicalComparisonDeletions.size <= HistoricalComparisonCodec.MAX_DELETIONS, "独立对照说明删除标记过多")
@@ -449,7 +480,7 @@ object SnapshotJsonCodec {
         catch (failure: Exception) { throw InvalidBackupException("分析任务或归档结构、容量无效", failure) }
         checkBackup(snapshot.records.size <= 100_000 && snapshot.templates.size <= 10_000 && snapshot.attachments.size <= 10_000 && snapshot.deletedRecords.size <= 100_000 && snapshot.deletedTemplates.size <= 10_000 && snapshot.changes.size <= 200_000, "资料列表过大")
         checkBackup(snapshot.records.all { it.draft.topics.size <= 30 && it.draft.answers.size <= 100 && it.draft.attachmentIds.size <= 20 } && snapshot.templates.all { it.draft.questions.size <= 100 }, "资料字段过多")
-        val nodes = 33L + snapshot.historicalComparisons.size + snapshot.historicalComparisonDeletions.size * 4L + snapshot.experienceThreads.size + snapshot.experienceChanges.size + snapshot.deletedExperienceThreads.size * 4L + snapshot.analysisRuns.size * 11L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size + snapshot.profileRevisions.size +
+        val nodes = 36L + snapshot.conversations.size + snapshot.conversationTurns.size + snapshot.deletedConversations.size * 4L + snapshot.historicalComparisons.size + snapshot.historicalComparisonDeletions.size * 4L + snapshot.experienceThreads.size + snapshot.experienceChanges.size + snapshot.deletedExperienceThreads.size * 4L + snapshot.analysisRuns.size * 11L + snapshot.claimFeedback.size * 15L + snapshot.knowledgeRevisions.size + snapshot.actionRevisions.size + snapshot.profileRevisions.size +
             3L * (snapshot.knowledgeHeads.size + snapshot.actionHeads.size + snapshot.profileHeads.size) + snapshot.records.sumOf { 16L + (if (it.draft.template == null) 0 else 2) + it.draft.topics.size + it.draft.answers.size + it.draft.attachmentIds.size } +
             snapshot.templates.sumOf { 11L + 5L * it.draft.questions.size } + 6L * snapshot.attachments.size + 4L * (snapshot.deletedRecords.size + snapshot.deletedTemplates.size + snapshot.deletedAnalysisRuns.size + snapshot.deletedClaimFeedback.size + snapshot.deletedKnowledge.size + snapshot.deletedActions.size + snapshot.deletedProfiles.size) + 6L * snapshot.changes.size
         checkBackup(nodes <= MAX_NODES, "资料 JSON 超出结构预算")

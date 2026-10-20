@@ -1,6 +1,7 @@
 package dev.tracelife.ui
 
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
@@ -61,6 +62,7 @@ class ReflectionActivity : ScreenActivity() {
             includeArchivedRecords = intent.getBooleanExtra(EXTRA_INCLUDE_ARCHIVED, false)
             selectedRecordIds = intent.getStringArrayListExtra(EXTRA_RECORD_IDS)?.toSet()
             runId = intent.getStringExtra(EXTRA_RUN_ID)
+            findingKey = intent.getStringExtra(EXTRA_FINDING_KEY)
             if (runId != null) restoredScreen = "run"
             intent.getStringExtra(EXTRA_FROM)?.let { from = it; selectedRange = 3 }
             intent.getStringExtra(EXTRA_THROUGH)?.let { through = it; selectedRange = 3 }
@@ -113,6 +115,13 @@ class ReflectionActivity : ScreenActivity() {
     private fun showEntry() {
         beginScreen("home", "分析", showBack = false)
         progressLabel = null
+        val questions = card()
+        Ui.sectionTitle(questions, "从一个问题开始")
+        Ui.note(questions, "想了解学习方法的变化、反复出现的问题，或接着已有发现往下问。")
+        primaryIn(questions, "问一问", "openConversation") {
+            rememberDates()
+            startActivity(Intent(this, ConversationActivity::class.java))
+        }
         note("回看这段时间的记录，找出值得留下的经验、值得关注的问题和可以尝试的改进。")
         val scopeCard = card()
         Ui.fieldLabel(scopeCard, "分析哪段时间")
@@ -609,6 +618,11 @@ class ReflectionActivity : ScreenActivity() {
 
     companion object {
         const val EXTRA_RUN_ID = "dev.tracelife.reflection.RUN_ID"
+        private const val EXTRA_FINDING_KEY = "dev.tracelife.reflection.FINDING_KEY"
+        /** Bind an existing target; opening still resolves its identity against the persisted run. */
+        fun intent(context: Context, runId: String, target: ReflectionTarget): Intent =
+            Intent(context, ReflectionActivity::class.java).putExtra(EXTRA_RUN_ID, runId)
+                .putExtra(EXTRA_FINDING_KEY, targetKey(target))
         const val EXTRA_ZONE_ID = "reflectionZoneId"
         const val EXTRA_INCLUDE_ARCHIVED = "reflectionIncludeArchived"
         const val EXTRA_RECORD_IDS = "reflectionRecordIds"

@@ -76,6 +76,21 @@ class DeepSeekProviderTest {
         assertEquals(listOf("合成缺口：没有后续表现记录"), result.proposal.unknowns)
     }
 
+    @Test fun `followup context instructions are measured for generation and review without adding messages`() {
+        val provider = provider { _, _ -> error("Synthetic framing test must never dispatch") }
+        val envelope = AnalysisRunCodec.json(mapOf("purpose" to "SYNTHESIS", "conversationContext" to mapOf(
+            "originalEvidence" to false, "selectedAnswers" to listOf(mapOf("contextKey" to "previous-answer:1", "text" to "合成先前回答")))))
+        val input = request.copy(payloadJson = envelope)
+        listOf(provider.prepare(input), provider.prepareReview(input)).forEach { prepared ->
+            val messages = JSONObject(prepared.payloadJson).getJSONArray("messages")
+            assertEquals(2, messages.length())
+            assertTrue(messages.getJSONObject(0).getString("content").contains("先前回答"))
+            assertTrue(messages.getJSONObject(0).getString("content").contains("不得放入任何证据引用数组"))
+            assertEquals(envelope, messages.getJSONObject(1).getString("content"))
+            assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        }
+    }
+
     @Test fun `changed measured requests fail before transport and missing key does not make a request`() {
         var calls = 0
         val provider = provider { _, _ -> calls++; DeepSeekHttpResponse(200, response()) }

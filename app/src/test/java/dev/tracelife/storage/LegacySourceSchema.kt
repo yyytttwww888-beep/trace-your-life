@@ -21,10 +21,17 @@ internal fun removeVersionNineForMigration(db: SQLiteDatabase) {
 
 /** Recreate v9 without deleting any original analysis proof. */
 internal fun removeVersionTenForMigration(db: SQLiteDatabase) {
+    removeVersionElevenForMigration(db)
     listOf("experience_changes", "experience_topics", "experience_threads", "deleted_experience_threads",
         "historical_comparisons", "deleted_historical_comparison_runs").forEach {
         db.execSQL("DROP TABLE $it")
     }
     db.execSQL("DROP INDEX analysis_lifecycle_lookup")
     db.execSQL("ALTER TABLE analysis_runs DROP COLUMN archived_at")
+}
+
+internal fun removeVersionElevenForMigration(db: SQLiteDatabase) {
+    db.execSQL("DROP TABLE conversation_turns")
+    db.execSQL("DROP TABLE conversation_threads")
+    db.execSQL("DROP TABLE deleted_conversations")
 }

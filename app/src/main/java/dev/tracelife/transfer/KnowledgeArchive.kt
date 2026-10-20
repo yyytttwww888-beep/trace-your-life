@@ -81,6 +81,7 @@ object KnowledgeArchive {
         val actions = ActionExport.select(snapshot, options)
         val profiles = ProfileExport.select(snapshot, options, knowledge)
         val experiences = ExperienceExport.select(snapshot, options, knowledge)
+        val conversationTurns = ConversationExport.select(snapshot, options)
         val validUntil = (knowledge.entries.mapNotNull { it.value.expiresAt } + listOfNotNull(profiles.validUntil)).minOrNull()
         val unknownEligible = current.count { record ->
             record.draft.occurrence.startDate == null &&
@@ -122,6 +123,7 @@ object KnowledgeArchive {
                 writeActions(archive, actions)
                 writeProfiles(archive, profiles, knowledgePaths)
                 writeExperiences(archive, experiences, knowledgePaths)
+                writeConversations(archive, conversationTurns)
                 boundTemplates.forEach { template ->
                     val path = templatePaths.getValue(template.id to template.version)
                     archive.text(path, templateText(template))
@@ -142,6 +144,7 @@ object KnowledgeArchive {
                 if (actionEvidence.isNotEmpty()) rootLinks += Nav("知识引用的行动原始凭据", "action-evidence/index.md")
                 if (profiles.entries.isNotEmpty()) rootLinks += Nav("已采用画像（引用共享知识）", "profile/index.md")
                 if (experiences.entries.isNotEmpty()) rootLinks += Nav("经验线索与变化过程", "experiences/index.md")
+                if (conversationTurns.isNotEmpty()) rootLinks += Nav("提问与追问（不是事实记录）", "conversations/index.md")
                 archive.pages("indexes/index.md", "分层索引", rootLinks, "先确定任务、时间和主题；分页枚举范围，再按需读取原文。此包没有执行模型读取预算。")
                 archive.recordPages("indexes/evidence/index.md", "当前范围证据目录", included, paths)
                 archive.pages("templates/index.md", "所绑定的模板版本", boundTemplates.map { Nav("${it.draft.name} · 版本 ${it.version}", templatePaths.getValue(it.id to it.version)) })
@@ -165,6 +168,7 @@ object KnowledgeArchive {
                     append("\n完整分析任务、完整调用证据台账和待核验提案未纳入本阅读包；未发布的跨批周期草稿也未纳入。这些内容仅保留在完整加密备份中。周期草稿是派生分析，不是原始证据。已发布知识保留对应的核对凭据；周期知识区分分批原文筛查与最终核对，不代表全部分析历史或事实认证。\n")
                     append("\n已纳入 ${knowledge.entries.size} 条在 capturedAt 时有效的已发布知识，省略 ${knowledge.omitted} 条当前指针及 ${knowledge.omittedHistoricalRevisions} 份历史知识修订。已发布知识是保存的分析，不是新增原始证据，也不代表用户已掌握或实践；新的判断必须沿引用重新核对原文。\n")
                     if (options.kind == ReadingPackageKind.EVIDENCE) append("\n本任务证据包仅纳入原始记录，所有已发布知识均省略，避免将既有判断作为新证据。\n")
+                    append("\n提问目录纳入 ${conversationTurns.size} 个问题，省略 ${snapshot.conversationTurns.size - conversationTurns.size} 个问题；按问题固定分析范围完整包含于导出日期、关注主题交集选择。仅保留用户问题、范围和任务身份，不复制回答；问题不是事件事实或已成立结论。完整对话及删除标记由加密备份保留。\n")
                     append("\n完整用户反馈及独立文字未纳入阅读包，共省略 ${snapshot.claimFeedback.size} 条；知识正文仅显示对应决定与版本，不复制用户文字。请通过完整加密备份保留。\n")
                     append("\n当前计划目录纳入 ${actions.entries.size} 项，省略 ${actions.omitted} 项；按当前计划 reviewOn（计划回看日期）筛选，不代表行为发生时间。行动没有主题字段，指定主题时当前计划及含行动依据的知识均省略。该目录不含执行结果、回看文字和旧计划；行动不是已执行、已成长或来源判断仍有效的证明。\n")
                     append("\n知识依据另纳入 ${actionEvidence.size} 份固定行动凭据，按已发布知识的完整核对／扫描来源链选择，不按当前计划的 reviewOn 选择。完整分析周期须被导出日期范围包含；OPENING_PLAN 是明确标注的周期前计划背景，只含当时计划，不含旧回看；USER_REVIEW 按实际回看日期选择，补记保存时间可以晚于周期。计划不是执行证据，回看是用户自述，UNKNOWN 或没有回看不表示失败。未引用的行动历史和完整恢复资料仍未纳入。\n")
@@ -196,6 +200,8 @@ object KnowledgeArchive {
                         .put("reductionDraftsIncluded", false)
                         .put("claimFeedbackIncluded", false).put("omittedClaimFeedback", snapshot.claimFeedback.size)
                         .put("claimFeedbackGap", "claim_feedback_not_included")
+                        .put("conversationTurnsIncluded", conversationTurns.size).put("omittedConversationTurns", snapshot.conversationTurns.size - conversationTurns.size)
+                        .put("conversationAnswersIncluded", false).put("completeConversationHistoryIncluded", false)
                         .put("historicalComparisonsIncluded", false).put("omittedHistoricalComparisons", snapshot.historicalComparisons.size)
                         .put("knowledgeRevisionsIncluded", knowledge.entries.size).put("omittedHistoricalKnowledgeRevisions", knowledge.omittedHistoricalRevisions)
                         .put("actionRevisionsIncluded", (actions.entries.map { it.id to it.revision } +
@@ -238,7 +244,10 @@ object KnowledgeArchive {
                         .put("omittedChanges", experiences.sourceChanges - experiences.includedChanges)
                         .put("selection", "fixed_revision_in_included_knowledge").put("originalEvidence", false)
                         .put("omittedEventUserTextIncluded", false).put("claimBodiesDuplicated", false))
+                    .put("conversations", JSONObject().put("sourceTurns", snapshot.conversationTurns.size).put("includedTurns", conversationTurns.size)
+                        .put("selection", "full_question_scope_and_focus_topics").put("originalEvidence", false).put("answerBodiesDuplicated", false))
                     .put("navigation", JSONObject().put("entry", "README.md").put("indexes", "indexes/index.md").put("ids", "indexes/ids/index.json")
+                        .put("conversations", if (conversationTurns.isNotEmpty()) "conversations/index.md" else JSONObject.NULL)
                         .put("experiences", if (experiences.entries.isNotEmpty()) "experiences/index.md" else JSONObject.NULL)
                         .put("experienceIds", if (experiences.entries.isNotEmpty()) "indexes/experience-ids/index.json" else JSONObject.NULL)
                         .put("knowledge", if (knowledge.entries.isNotEmpty()) "notes/index.md" else JSONObject.NULL)
@@ -256,6 +265,7 @@ object KnowledgeArchive {
                 if (actions.entries.isNotEmpty()) listOf("actions/index.md", "indexes/action-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 if (actionEvidence.isNotEmpty()) listOf("action-evidence/index.md", "indexes/action-evidence-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 if (profiles.entries.isNotEmpty()) listOf("profile/index.md", "indexes/profile-ids/index.json").forEach { archive.reference("manifest.json", it) }
+                if (conversationTurns.isNotEmpty()) archive.reference("manifest.json", "conversations/index.md")
                 if (experiences.entries.isNotEmpty()) listOf("experiences/index.md", "indexes/experience-ids/index.json").forEach { archive.reference("manifest.json", it) }
                 archive.text("manifest.json", manifest.toString(2), index = true)
                 archive.validateReferences()
@@ -425,6 +435,49 @@ object KnowledgeArchive {
         if (hasProfiles) dataLinks += Nav("当前采用画像 JSONL（共享知识定位）", "data/profiles/index.md")
         if (hasActionEvidence) dataLinks += Nav("行动原始凭据（固定修订）", "data/action-evidence/index.md")
         archive.pages("data/index.md", "结构化资料入口", dataLinks, "历史修订和恢复所需台账未包含；不可完整恢复。")
+    }
+
+    private fun writeConversations(archive: ArchiveWriter, turns: List<dev.tracelife.conversation.ConversationTurn>) {
+        if (turns.isEmpty()) return
+        val paths = turns.associate { it.id to "conversations/questions/${hash(it.id)}.md" }
+        val groups = turns.groupBy { it.threadId }
+        turns.forEach { turn ->
+            val path = paths.getValue(turn.id)
+            val dataPath = "data/conversations/${hash(turn.id)}.json"
+            archive.text(dataPath, dev.tracelife.conversation.ConversationCodec.encodeTurn(turn))
+            archive.text(path, buildString {
+                append("# 用户问题 ${turn.position}\n\n")
+                append("节点：提问；不是事件事实或已成立结论，不含机器回答。\n\n")
+                append("问题身份：${escape(turn.id)}；对话身份：${escape(turn.threadId)}；记录于 ${turn.createdAt}。\n\n")
+                append("固定分析范围：${turn.scope.from} 至 ${turn.scope.through}（${escape(turn.scope.zoneId)}）。\n\n")
+                append("关注主题：${turn.focusTopics.sorted().joinToString("、").ifBlank { "未限定" }.let(::escape)}。\n\n")
+                append(fenced(turn.question))
+                append("\n分析任务身份：${escape(turn.runId)}。回答仅保存在应用分析台账／完整备份中，本包不宣称回答仍然有效。\n")
+                turn.parentTurnId?.let { parent ->
+                    append("\n追问来源：")
+                    if (parent in paths) append(archive.link(path, paths.getValue(parent), "前一问题"))
+                    else append("范围外问题（仅身份：${escape(parent)}）")
+                    turn.parentFindingIndex?.let { append("；选定结果 ${it + 1}") }
+                    append("。\n")
+                }
+                append("\n").append(archive.link(path, dataPath, "问题结构化资料")).append("\n")
+            })
+        }
+        val threadLinks = groups.map { (id, values) ->
+            val path = "conversations/threads/${hash(id)}/index.md"
+            archive.pages(path, "对话问题", values.map { Nav("问题 ${it.position} · ${it.scope.from} 至 ${it.scope.through}", paths.getValue(it.id)) },
+                "只列出符合导出范围的问题，缺少的序号不表示问题已删除。回答不在此目录中。")
+            Nav("${values.first().scope.from} 起 · ${values.size} 个已纳入问题 · ${id.take(16)}", path)
+        }
+        val topicLinks = turns.flatMap { turn -> turn.focusTopics.map { it to turn } }.groupBy({ it.first }, { it.second }).toSortedMap().map { (topic, values) ->
+            val path = "conversations/topics/${hash(topic)}/index.md"
+            archive.pages(path, topic, values.map { Nav("${it.scope.from} 至 ${it.scope.through} · 问题 ${it.position}", paths.getValue(it.id)) })
+            Nav(topic, path)
+        }
+        archive.pages("conversations/topics/index.md", "按关注主题查问题", topicLinks)
+        archive.pages("conversations/threads/index.md", "按对话查问题", threadLinks)
+        archive.pages("conversations/index.md", "提问与追问", listOf(Nav("按对话定位", "conversations/threads/index.md"), Nav("按主题定位", "conversations/topics/index.md")),
+            "用户问题是查询意图，不是生活事件或模型判断。只按需读取当前问题，不能一次把全部对话装入上下文。")
     }
 
     private fun writeExperiences(archive: ArchiveWriter, selection: ExperienceExport.Selection, knowledgePaths: Map<String, String>) {
