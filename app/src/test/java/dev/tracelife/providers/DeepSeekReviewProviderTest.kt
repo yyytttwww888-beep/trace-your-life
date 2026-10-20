@@ -59,15 +59,15 @@ class DeepSeekReviewProviderTest {
         }
         val prepared = provider.prepareReview(request)
         val json = JSONObject(prepared.payloadJson)
-        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1:review-checks-v2", provider.id)
+        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1:review-clauses-v4", provider.id)
         assertEquals(TokenCountKind.CONSERVATIVE_UTF8_BOUND, prepared.tokenCountKind)
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         val messages = json.getJSONArray("messages")
         assertEquals(2, messages.length())
         val prompt = messages.getJSONObject(0).getString("content")
         assertEquals("system", messages.getJSONObject(0).getString("role"))
-        assertTrue(prompt.contains("均不是独立证据"))
-        assertTrue(prompt.contains("不代表客观事实正确"))
+        assertTrue(prompt.contains("target/feedback非证据"))
+        assertTrue(prompt.contains("anchors"))
         assertTrue(prompt.contains("本次evidence"))
         ReviewVerdict.entries.forEach { assertTrue(prompt.contains(it.name)) }
         ReviewIssue.entries.forEach { assertTrue(prompt.contains(it.name)) }
@@ -122,6 +122,40 @@ class DeepSeekReviewProviderTest {
         assertEquals(0, sent)
     }
 
+    @Test fun `measured provider wire separately checks mixed factual premises and cannot accept its supported tail`() {
+        val target = "这次任务更熟悉、时间也充足，所以这个做法是否适用于复杂或不熟悉的任务，目前没有依据。"
+        val source = "今天先跑一个小模块，再根据报错补接口说明，完成一次熟悉的练习。有40分钟空闲，不能确认是启动方式导致完成。"
+        val envelope = mapOf("purpose" to "REVIEW", "target" to mapOf("text" to target, "kind" to "POSSIBLE_INTERPRETATION"),
+            "evidence" to listOf(mapOf("id" to supportingId, "text" to source)),
+            "feedback" to mapOf("userText" to "只有一次经历，当时任务更熟悉且时间充足。"))
+        val mixed = ModelRequest(AnalysisRunCodec.json(envelope), "synthetic-comma-review", 8_000)
+        val checks = (1..3).map { index -> mapOf(
+            "partId" to "p$index", "statementType" to if (index == 1) "REPORTED_FACT" else "LIMITATION",
+            "status" to if (index == 1) "UNSUPPORTED" else "SUPPORTED",
+            "reason" to if (index == 1) "当前原文无更熟悉的基线或时间充足判断，历史意见不能移植。" else "适用性仍未确定，保留相邻片段的条件。",
+            "anchors" to listOf(mapOf("evidenceId" to supportingId, "field" to "/text", "quote" to source)),
+        ) }
+        val content = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "checks" to checks,
+            "issues" to emptyList<String>(), "unknowns" to emptyList<String>()))
+        var sent = ""
+        val provider = provider { body, _ -> sent = body; DeepSeekHttpResponse(200, response(content)) }
+        val prepared = provider.prepareReview(mixed)
+        val wire = JSONObject(prepared.payloadJson)
+        val measuredEnvelope = JSONObject(wire.getJSONArray("messages").getJSONObject(1).getString("content"))
+        val parts = measuredEnvelope.getJSONObject("target").getJSONArray("parts")
+        assertEquals(listOf("这次任务更熟悉、时间也充足，", "所以这个做法是否适用于复杂或不熟悉的任务，", "目前没有依据。"),
+            (0 until parts.length()).map { parts.getJSONObject(it).getString("text") })
+        assertEquals(JSONObject(mixed.payloadJson).getJSONArray("evidence").toString(), measuredEnvelope.getJSONArray("evidence").toString())
+        assertEquals(JSONObject(mixed.payloadJson).getJSONObject("feedback").toString(), measuredEnvelope.getJSONObject("feedback").toString())
+        assertEquals(mixed, prepared.original)
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        assertEquals(8_000, wire.getInt("max_tokens"))
+        val result = provider.reviewPrepared(prepared)
+        assertEquals(prepared.payloadJson, sent)
+        assertEquals(ReviewVerdict.UNSUPPORTED, result.review.verdict)
+        assertTrue(result.review.unknowns.any { it.contains("更熟悉、时间也充足") })
+    }
+
     @Test fun `all four review verdicts retain supporting evidence counterevidence and limits`() {
         val cases = mapOf(
             ReviewVerdict.SUPPORTED to reviewMap("SUPPORTED", listOf(supportingId), emptyList<Any>(), emptyList<Any>()),
@@ -133,7 +167,7 @@ class DeepSeekReviewProviderTest {
             val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(AnalysisRunCodec.json(content))) }
             val result = provider.reviewPrepared(provider.prepareReview(request)).review
             assertEquals(verdict, result.verdict)
-            assertTrue(result.unknowns.contains("合成缺口：只有两晚的自述，其他日期未知"))
+            if (verdict == ReviewVerdict.SUPPORTED) assertTrue(result.unknowns.isEmpty())
             if (verdict != ReviewVerdict.SUPPORTED) assertTrue(result.issues.isNotEmpty())
         }
     }
@@ -251,10 +285,10 @@ class DeepSeekReviewProviderTest {
         supporting: List<*> = listOf(supportingId),
         contradicting: List<*> = listOf(contradictingId),
         issues: List<*> = listOf("COUNTEREVIDENCE_OMISSION"),
-        unknowns: List<*> = listOf("合成缺口：只有两晚的自述，其他日期未知"),
+        unknowns: List<*> = emptyList<Any>(),
     ): Map<String, Any?> {
-        fun check(partId: String, status: String, ids: List<*>) = mapOf("partId" to partId, "status" to status,
-            "reason" to "合成局部核对依据", "evidenceIds" to ids)
+        fun check(partId: String, status: String, ids: List<*>) = mapOf("partId" to partId, "statementType" to "REPORTED_FACT", "status" to status,
+            "reason" to "合成局部核对依据", "anchors" to ids.map(::anchor))
         val checks = if (contradicting.isNotEmpty()) listOf(
             check("p1", if (supporting.isEmpty()) "UNSUPPORTED" else "SUPPORTED", supporting),
             check("p2", "CONTRADICTED", contradicting))
@@ -264,13 +298,18 @@ class DeepSeekReviewProviderTest {
             else -> "UNSUPPORTED"
         }, if (verdict == "CONTRADICTED") contradicting else supporting) }
         return mapOf("verdict" to verdict, "checks" to checks, "issues" to issues,
-            "unknowns" to unknowns.map { mapOf("text" to it, "blocksConclusion" to false) })
+            "unknowns" to unknowns.map { mapOf("partId" to "p1", "text" to it, "blocksConclusion" to true) })
     }
+
+    private fun anchor(id: Any?) = mapOf("evidenceId" to id, "field" to "/text", "quote" to
+        if (id == contradictingId) "合成记录：周二只有三小时，明显没睡够。" else "合成记录：周一我觉得睡够了。")
 
     @Suppress("UNCHECKED_CAST")
     private fun withFirstCheck(value: Map<String, Any?>, key: String, changed: Any?): Map<String, Any?> {
         val checks = value.getValue("checks") as List<Map<String, Any?>>
-        return value + ("checks" to listOf(checks.first() + (key to changed)) + checks.drop(1))
+        val field = if (key == "evidenceIds") "anchors" else key
+        val replacement = if (key == "evidenceIds" && changed is List<*>) changed.map(::anchor) else changed
+        return value + ("checks" to listOf(checks.first() + (field to replacement)) + checks.drop(1))
     }
 
     private fun response(

@@ -59,7 +59,7 @@ val fields = analysis.fields(task.stored.id, page.page.items.first().id)
 
 ## 预算与适配器契约
 
-默认每页 25 条，每片段 1,024 码点；每批 1–32 个片段。完整请求包括系统指令、额外指令、历史、范围与计数、模板问题、证据元数据和正文。默认单次输入 64 KiB / 12,000 tokens，输出预留 2,000 tokens；单任务最多 100 次尝试、累计输入 1 MiB，提案输出 32 KiB。具体可配置范围由 `AnalysisLimits` 拒绝越界值，不能省略预算后无限读取。
+默认每页 25 条，每片段 1,024 码点；每批 1–32 个片段。完整请求包括系统指令、额外指令、历史、范围与计数、模板问题、证据元数据和正文。新任务默认单次输入 64 KiB / 12,000 tokens，输出预留 8,000 tokens，以容纳逐片段核对与引文；已有任务继续使用保存的原预算，不自动扩大。单任务最多 100 次尝试、累计输入 1 MiB，提案输出 32 KiB。具体可配置范围由 `AnalysisLimits` 拒绝越界值，不能省略预算后无限读取。
 
 `AnalysisProvider.prepare` 生成实际发送的完整请求体及计量，执行器对该请求体计算字节预算和摘要；`completePrepared` 只能发送该请求，不能追加隐藏历史、工具或其他资料，并遵守 `maximumOutputTokens`。适配器 `id` 固定供应商、模型、封装及计量版本。计量明确区分 `EXACT` 和 `CONSERVATIVE_UTF8_BOUND`，后者不是实际 token 用量。DeepSeek 使用有公开 tokenizer 依据的保守上界，响应实际用量另行校验和保存，详见[预算与校验](DEEPSEEK.md)。默认接口保留用于合成测试的直接计量行为。
 

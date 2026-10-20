@@ -15,11 +15,10 @@ data class ProfileCandidateSource(val call: AnalysisCall, val claim: ProposedCla
     val originalEvidence: List<EvidenceReceipt>, val integration: ProfileIntegrationProof? = null)
 
 object ProfileIntegrationProtocol {
-    const val INSTRUCTIONS = "这是纵向画像的整体整理，不是普通周报。比较所有阶段与所有派生批次，保留支持、反例、变化、适用情境、替代解释和未知。" +
-        "重复锚点、同一事件的重述和多个摘要不是多个独立事件；不能按批次数量判断稳定人格。" +
-        "可合并同义描述，也可以因为反例而收窄或不输出候选；空批次中的疑问也须与其他阶段对照后判断是否仍未解决。" +
-        "比较方法是否延续或改变时，后续阶段已描述的做法不能仍写成完全未知；仅部分做法得到后续描述时保留其余缺口，单次后续记录不能证明始终如此。" +
-        "每条结果仍是待核对的长期假设，不得宣布已确认、已采用或永久成立。后续必须检查完整来源与历史意见。"
+    const val INSTRUCTIONS = "这是纵向画像的整体整理。比较所有阶段与所有派生批次，保留支持、反例、变化、适用情境及替代解释；不能只复制第一批。" +
+        "后续阶段已描述的做法不能仍写成完全未知；仅部分得到回答时，未定部分放入相关候选的限定，不据单次后续记录宣称持续如此。" +
+        "旧空批次的疑问也须跨批核对；新输出unknowns必须为空数组[]。反例可使候选收窄或不输出；没有可成立的候选可空claims，保留的候选必须保留相关已知反例。" +
+        "每条仍是待核对的长期假设，不宣布已确认、已采用或永久成立；后续检查完整来源与历史意见。" + SemanticQualityGuidance.REDUCTION + ProfileAnalysisProtocol.CANDIDATE_SHAPE
 
     fun resolve(state: AnalysisRunState, ref: ClaimRef): ProfileCandidateSource {
         val target = requireNotNull(state.request.profileTarget) { "不是画像任务" }

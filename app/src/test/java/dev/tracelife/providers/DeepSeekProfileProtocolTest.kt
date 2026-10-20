@@ -7,6 +7,7 @@ import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.profile.ProfileDimension
 import dev.tracelife.profile.ProfileLayer
+import dev.tracelife.profile.ProfileAnalysisProtocol
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -62,9 +63,9 @@ class DeepSeekProfileProtocolTest {
 
     @Test fun `profile review applies target specific checks while keeping the review schema`() {
         val review = AnalysisRunCodec.json(mapOf("verdict" to "SUPPORTED", "checks" to listOf(mapOf(
-            "partId" to "p1", "status" to "SUPPORTED", "reason" to "合成原文支持本次休息后感觉，未推广为长期特质。",
-            "evidenceIds" to listOf(evidenceId))), "issues" to emptyList<String>(),
-            "unknowns" to listOf(mapOf("text" to "合成局限：不是独立测量。", "blocksConclusion" to false))))
+            "partId" to "p1", "statementType" to "CONDITIONAL_HYPOTHESIS", "status" to "SUPPORTED", "reason" to "合成原文支持本次休息后感觉，未推广为长期特质。",
+            "anchors" to listOf(mapOf("evidenceId" to evidenceId, "field" to "/text", "quote" to "休息后感觉精力好一些。")))), "issues" to emptyList<String>(),
+            "unknowns" to emptyList<String>()))
         val provider = provider { _, _ -> response(review) }
         val prepared = provider.prepareReview(request("REVIEW"))
         val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
@@ -72,6 +73,28 @@ class DeepSeekProfileProtocolTest {
         assertTrue(system.contains("未被候选引用的反例"))
         assertTrue(system.contains("不能判 SUPPORTED"))
         assertEquals(ReviewVerdict.SUPPORTED, provider.reviewPrepared(prepared).review.verdict)
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+    }
+
+    @Test fun `review removes only duplicated profile instructions while preserving source and lossless target parts`() {
+        val rule = ProfileAnalysisProtocol.REVIEW_INSTRUCTIONS
+        val original = JSONObject(request("REVIEW").payloadJson).apply {
+            put("system", "合成任务限定。" + rule)
+            getJSONArray("evidence").getJSONObject(0).put("text", "合成资料也包含规则：" + rule)
+        }
+        val request = request("REVIEW").copy(payloadJson = original.toString())
+        val provider = provider { _, _ -> error("No HTTP expected") }
+        val prepared = provider.prepareReview(request)
+        val messages = JSONObject(prepared.payloadJson).getJSONArray("messages")
+        val actual = JSONObject(messages.getJSONObject(1).getString("content"))
+        assertTrue(messages.getJSONObject(0).getString("content").contains(rule))
+        assertEquals("合成任务限定。", actual.getString("system"))
+        assertEquals(original.getJSONArray("evidence").toString(), actual.getJSONArray("evidence").toString())
+        assertFalse(actual.getJSONObject("target").has("text"))
+        val parts = actual.getJSONObject("target").getJSONArray("parts")
+        assertEquals(reviewTargetText, (0 until parts.length()).joinToString("") { parts.getJSONObject(it).getString("text") })
+        assertEquals(original.toString(), prepared.original.payloadJson)
+        assertEquals(prepared, provider.prepareReview(prepared.original))
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
     }
 
@@ -129,7 +152,7 @@ class DeepSeekProfileProtocolTest {
 
     private fun proposal(kind: String = "POSSIBLE_INTERPRETATION") = AnalysisRunCodec.json(mapOf(
         "claims" to listOf(mapOf("text" to "合成候选：本次记录中休息后可能感觉精力恢复。", "kind" to kind, "evidenceIds" to listOf(evidenceId))),
-        "unknowns" to listOf("合成局限：没有独立测量。"),
+        "unknowns" to emptyList<String>(),
     ))
 
     private fun response(content: String) = DeepSeekHttpResponse(200, AnalysisRunCodec.json(mapOf(

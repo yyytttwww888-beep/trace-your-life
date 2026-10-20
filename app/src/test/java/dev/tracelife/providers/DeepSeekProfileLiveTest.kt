@@ -59,7 +59,7 @@ class DeepSeekProfileLiveTest {
                 val target = ProfileAnalysisTarget(ProfileDimension.BEHAVIOR_AND_DECISIONS, ProfileLayer.CONTEXTUAL_PATTERN)
                 generator.start(AnalysisRequest("根据三条合成记录，只提出一条代码练习情境下的待核对画像解释，" +
                     "对照重复做法与未完成的反例，保留难度和可用时间的替代解释。不要声称有效或形成长期特征。" +
-                    "只输出一条 claims，unknowns 至少保留一项现有资料不能回答的问题。",
+                    "只输出一条 claims，在正文保留现有资料不能回答的问题或适用限制；unknowns为空。",
                     AnalysisQuery(day, day.plusDays(2), "Asia/Shanghai"), AnalysisLimits(inputTokenLimit = 30_000),
                     profileTarget = target), "synthetic-profile-run")
                 val real = DeepSeekProvider(credentials)
@@ -90,7 +90,7 @@ class DeepSeekProfileLiveTest {
                 assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, proposal.claims.single().kind)
                 assertTrue("Expected the generated candidate to retain a concrete context",
                     listOf("练习", "任务", "代码", "学习", "情境").any { proposal.claims.single().text.contains(it) })
-                assertTrue("Expected explicit uncertainty for these limited synthetic notes", proposal.unknowns.isNotEmpty())
+                assertTrue("Uncertainty must remain in reviewable text rather than unreviewed supplements", proposal.unknowns.isEmpty())
                 assertEquals(setOf("synthetic-0", "synthetic-1", "synthetic-2"), generation.evidence.map { it.recordId }.toSet())
                 assertTrue(repository.profileHeads().isEmpty())
                 assertTrue(repository.knowledgeHeads().isEmpty())

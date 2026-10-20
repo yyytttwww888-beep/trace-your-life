@@ -100,7 +100,7 @@ class DeepSeekReductionLiveTest {
                 assertEquals(5, view.originalEvidence.size)
                 assertTrue(view.digest.statements.size in 1..2)
                 assertTrue("Expected comparison of both direct branches", view.digest.statements.any { it.inputIds.size == 2 })
-                assertTrue(view.digest.unknowns.isNotEmpty())
+                assertTrue("New provider retains limitations in cited statements", view.digest.unknowns.isEmpty())
                 reductions.forEach { call ->
                     assertEquals(CallStatus.SUCCEEDED, call.status)
                     assertTrue(call.evidence.isEmpty())

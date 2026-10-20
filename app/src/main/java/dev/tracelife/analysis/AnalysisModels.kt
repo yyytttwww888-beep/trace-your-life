@@ -18,7 +18,7 @@ data class AnalysisLimits(
     val fragmentCodePoints: Int = 1_024,
     val maxInputBytes: Int = 65_536,
     val inputTokenLimit: Int = 12_000,
-    val outputTokenReserve: Int = 2_000,
+    val outputTokenReserve: Int = 8_000,
     val maxCalls: Int = 100,
     val totalInputBytes: Long = 1_048_576,
     val maxOutputBytes: Int = 32_768,

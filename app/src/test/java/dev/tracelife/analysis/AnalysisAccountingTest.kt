@@ -110,6 +110,22 @@ class AnalysisAccountingTest {
         assertThrows(IllegalArgumentException::class.java) { AnalysisRunCodec.decode(v2WithoutAccounting.toString()) }
     }
 
+    @Test fun `larger new output reserve does not expand a saved task budget or its dispatched request`() {
+        analysis.start(AnalysisRequest("合成旧额度", scope, AnalysisLimits(outputTokenReserve = 2_000)), "old")
+        analysis.start(AnalysisRequest("合成新额度", scope), "new")
+        repository.close()
+        repository = LifeRepository(context, clock, databaseName)
+        analysis = ControlledAnalysis(repository, clock)
+        val provider = PreparedProvider()
+        listOf("old" to 2_000, "new" to 8_000).forEach { (id, expected) ->
+            val state = analysis.task(id).state
+            assertEquals(expected, state.request.limits.outputTokenReserve)
+            assertEquals(state, AnalysisRunCodec.decode(AnalysisRunCodec.encode(state)))
+            analysis.runBatch(id, "record", selection, provider)
+            assertEquals(expected, provider.sent.last().original.maximumOutputTokens)
+        }
+    }
+
     @Test fun `valid legacy payload near capacity validates without forcing a larger format upgrade`() {
         // Tune actual claim content, not irrelevant JSON whitespace. Each historic call remains
         // below its proposal budget, while the whole payload leaves too little room for v2 fields.
