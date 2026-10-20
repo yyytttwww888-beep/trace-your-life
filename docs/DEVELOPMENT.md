@@ -125,6 +125,6 @@ M4 已有看板数据、独立导出、画像采用／维护、受控候选生�
 | 强制重启后再次另存已有知识包 | 完整文件仍在「已生成的文件」，再次系统保存及校验成功，系统创建新副本。 |
 | 最终 APK 覆盖安装并创建加密备份 | 备份成功保存至 Downloads 并读回校验；重新通过系统选取该文件、输入合成口令，成功解密预览 5 条记录、2 条知识、1 个行动。未执行覆盖恢复。 |
 
-证据在仓库外 `~/Library/Caches/trace-life-tools/knowledge-optimization-20261020/`，包括应用身份文件探针、操作记录、稳定 UI XML／截图、`journey-verification.json` 与 ZIP 核验；全量测试归档在 `~/Library/Caches/trace-life-tools/durable-knowledge-20261020/`。未测试华为实体手机、任意网盘 provider、长期一年容量与完整画像维护旅程。长期任务归档、跨任务经验演化和纠正继承、主题概况、普通复盘自动对照行动仍是后续范围。
+证据在仓库外 `~/Library/Caches/trace-life-tools/knowledge-optimization-20261020/`，包括应用身份文件探针、操作记录、稳定 UI XML／截图、`journey-verification.json` 与 ZIP 核验；全量测试归档在 `~/Library/Caches/trace-life-tools/durable-knowledge-20261020/`。临时 DeepSeek 凭据已从模拟器移除，自动整理保持关闭；结束后已关闭模拟器并保留合成资料。未测试华为实体手机、任意网盘 provider、长期一年容量与完整画像维护旅程。长期任务归档、跨任务经验演化和纠正继承、主题概况、普通复盘自动对照行动仍是后续范围。
 
 版本号 4，版本名 `0.1.0-preview.4`，包名保持 `dev.tracelife.app`。APK 4,665,489 字节，SHA-256：`2ff7f2209a55803f5b6cc5e7061cfba0517fdef77e1bfeaa058616de2e915c88`。签名验证通过，证书与前版相同，可覆盖安装保留数据。[发布页](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.4)。
