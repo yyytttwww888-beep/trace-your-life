@@ -2,6 +2,7 @@ package dev.tracelife.transfer
 
 import dev.tracelife.analysis.AnalysisCall
 import dev.tracelife.analysis.AnalysisRequest
+import dev.tracelife.analysis.AnalysisLimits
 import dev.tracelife.analysis.AnalysisRunCodec
 import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.analysis.BatchProposal
@@ -269,6 +270,22 @@ class BackupArchiveTest {
         assertEquals(1, state.calls.single().evidence.single().revision)
         assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, state.calls.single().proposal!!.claims.single().kind)
         assertFalse(archive.readBytes().toString(Charsets.ISO_8859_1).contains("synthetic-provider"))
+    }
+
+    @Test fun `encrypted transfer preserves old and new output reserves without replacing saved budgets`() {
+        val base = fixture()
+        val template = analysisRun(base)
+        val state = AnalysisRunCodec.decode(template.payload)
+        val rows = listOf(2_000, 8_000).map { reserve ->
+            template.copy(id = "synthetic-budget-$reserve", payload = AnalysisRunCodec.encode(state.copy(
+                request = state.request.copy(limits = AnalysisLimits(outputTokenReserve = reserve)))))
+        }
+        val snapshot = base.copy(analysisRuns = rows, analysisGeneration = 3)
+        val archive = File(root, "saved-budgets.tlb")
+        BackupArchive.write(snapshot, attachments, archive, password)
+        val restored = BackupArchive.read(archive, File(root, "restored-budgets"), password)
+        assertEquals(snapshot, restored)
+        assertEquals(listOf(2_000, 8_000), restored.analysisRuns.map { AnalysisRunCodec.decode(it.payload).request.limits.outputTokenReserve })
     }
 
     @Test fun `explicit task deletion tombstones survive encryption and cannot coexist with restored task`() {

@@ -2,11 +2,13 @@
 
 面向个人的 Android AI 记录与知识管理应用。将日常随记和复盘组织成可追溯、可分析、可迁移的个人知识库，帮助理解近期变化、长期模式和下一步行动；计划扩展授权健康数据，餐食照片分析暂缓。
 
-**当前阶段：日常知识库完整收口。** 已有离线随记、专业复盘模板与导入、DeepSeek 受控分析／核对、知识及经验演化、行动回看、长期画像、自由提问及追问。新增周期自动复盘与待查看入口、明确填写的工作学习投入和实践趋势、个人概览、主题叫法及语义导航、含独立说明与历史的阅读包。记录、分析状态、保存与待更新分别显示。华为运动健康连接尚未实现，需实际接入资格、项目配置及设备授权；餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，程序测试、真实模型、模拟器和真机分别记录。
+**当前阶段：完善日常知识库与分析可靠性。** 已有离线随记、专业复盘模板与导入、DeepSeek 受控分析／核对、知识及经验演化、行动回看、长期画像、自由提问及追问。新增周期自动复盘与待查看入口、明确填写的工作学习投入和实践趋势、个人概览、主题叫法及语义导航、含独立说明与历史的阅读包。记录、分析状态、保存与待更新分别显示。华为运动健康连接尚未实现，需实际接入资格、项目配置及设备授权；餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，程序测试、真实模型、模拟器和真机分别记录。
 
-手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.9/trace-life-0.1.0-preview.9.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#日常知识库完整收口验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
+手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.10/trace-life-0.1.0-preview.10.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#语义核对修正验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
 
-本版功能、验证与仍未实现项见[需求验收矩阵](docs/COMPLETION_ACCEPTANCE.md)。真实模型的固定语义验收尚未完全通过：仍见时长误读、建议误拒及未知项错误，核对通过不代表真值；保存重要结论时应查看原文。具体失败与修复均保留在[独立质量评审](docs/reviews/2026-10-20-complete-daily-knowledge-quality-review.md)。
+本版功能、验证与仍未实现项见[需求验收矩阵](docs/COMPLETION_ACCEPTANCE.md)。最新修正让核对逐项引用真实字段原文，支持记录日期与已提供的连续分片，并将影响结论的限制一起纳入核对。原始资料仍按范围、快照与预算读取，没有扩大为全库输入。
+
+**模型语义验收仍未完全通过。** 第五轮固定验证中，长复合句仍有时长、比较条件和顺序误判；真实引文及核对支持都不等于内容正确。已修程序边界、全部失败与最新结果见[语义核对复评](docs/reviews/2026-10-20-semantic-evidence-repair-review.md)，此前版本的[独立质量评审](docs/reviews/2026-10-20-complete-daily-knowledge-quality-review.md)继续保留。
 
 **用户旅程优化（2026-10-20）：** 根据[评审报告](docs/reviews/2026-10-20-user-knowledge-journey-review.md)修复保存与有效性混淆，新增范围维护、按依赖删除、主题阅读、经验到行动和手机文件交付。经验演化、历史意见与任务归档已按[新一轮设计](docs/superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)接通；七项后续流程按[知识导航与回看设计](docs/superpowers/specs/2026-10-20-connected-knowledge-workflows-design.md)实现。
 

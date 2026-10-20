@@ -75,6 +75,7 @@ class DeepSeekKnowledgeQualityLiveTest {
                         runId = turn.runId
                         val limits = analysis.task(turn.runId).state.request.limits
                         row.put("configuredLimits", JSONObject().put("inputTokenLimit", limits.inputTokenLimit)
+                            .put("outputTokenReserve", limits.outputTokenReserve)
                             .put("maxInputBytes", limits.maxInputBytes).put("totalInputBytes", limits.totalInputBytes)
                             .put("maxCalls", limits.maxCalls).put("fragmentCodePoints", limits.fragmentCodePoints)
                             .put("paidRequestsPerCase", 9).put("paidRequestsSuite", 54))
@@ -160,7 +161,7 @@ class DeepSeekKnowledgeQualityLiveTest {
     }
 
     private fun fixtureRow(case: SyntheticQualityCases.Case) = JSONObject()
-        .put("id", case.id).put("model", qualityModel.apiId).put("adapter", "deepseek:${qualityModel.apiId}:json-v1:utf8-bound-v1:review-checks-v2")
+        .put("id", case.id).put("model", qualityModel.apiId).put("adapter", "deepseek:${qualityModel.apiId}:json-v1:utf8-bound-v1:review-clauses-v4")
         .put("question", case.question).put("from", case.from).put("through", case.through).put("zoneId", "Asia/Shanghai")
         .put("requiredDistinctions", JSONArray(case.requiredDistinctions)).put("forbiddenConclusions", JSONArray(case.forbiddenConclusions))
         .put("expectedNewValue", case.expectedNewValue).put("sources", JSONArray(case.sources.map { source ->

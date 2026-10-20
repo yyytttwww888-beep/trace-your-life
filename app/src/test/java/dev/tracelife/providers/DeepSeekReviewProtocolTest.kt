@@ -41,8 +41,44 @@ class DeepSeekReviewProtocolTest {
     @Test fun `malformed Unicode target and response diagnostics fail closed`() {
         assertThrows(IllegalArgumentException::class.java) { DeepSeekReviewProtocol.parts("\uD83D") }
         assertThrows(IllegalArgumentException::class.java) { DeepSeekReviewProtocol.parts("\uDE00") }
-        val brokenReason = """{"verdict":"SUPPORTED","checks":[{"partId":"p1","status":"SUPPORTED","reason":"\ud83d","evidenceIds":["$a"]}],"issues":[],"unknowns":[]}"""
+        val brokenReason = """{"verdict":"SUPPORTED","checks":[{"partId":"p1","statementType":"REPORTED_FACT","status":"SUPPORTED","reason":"\ud83d","anchors":[{"evidenceId":"$a","field":"/text","quote":"合成原文与限定相符"}]}],"issues":[],"unknowns":[]}"""
         assertThrows(IllegalArgumentException::class.java) { DeepSeekReviewProtocol.parse(brokenReason, envelope("😀"), false) }
+    }
+
+    @Test fun `clause commas split facts from cautious tails while numeric separators and enumeration stay intact`() {
+        val cases = linkedMapOf(
+            "任务更熟悉、时间也充足，所以这个做法是否适用，目前没有依据。" to listOf(
+                "任务更熟悉、时间也充足，", "所以这个做法是否适用，", "目前没有依据。"),
+            "合成支出1,000.25元，耗时12.5分钟, then reflect." to listOf(
+                "合成支出1,000.25元，", "耗时12.5分钟,", " then reflect."),
+            "累计-1,234,567.89，下一项1,000,再核对。" to listOf("累计-1,234,567.89，", "下一项1,000,", "再核对。"),
+            "１２,３４５.６单位，甲、乙、丙。" to listOf("１２,３４５.６单位，", "甲、乙、丙。"),
+            "编号1,2分别核对。" to listOf("编号1,", "2分别核对。"),
+        )
+        cases.forEach { (target, expected) ->
+            val parts = DeepSeekReviewProtocol.parts(target)
+            assertEquals(expected, parts.map { it.getValue("text") })
+            assertEquals(target, parts.joinToString("") { it.getValue("text") })
+        }
+    }
+
+    @Test fun `comma partitions retain conditional context and never truncate the twenty fourth part`() {
+        val target = "  如果任务陌生，先核对接口，再试小例子，仍需回看😀。  "
+        val original = envelope(target) + ("feedback" to mapOf("decision" to "CORRECT", "userText" to "合成历史条件不是本期事实"))
+        val wire = DeepSeekReviewProtocol.wireEnvelope(original)
+        assertEquals(original - "target", wire - "target")
+        assertEquals(mapOf("parts" to listOf(
+            mapOf("partId" to "p1", "text" to "  如果任务陌生，"),
+            mapOf("partId" to "p2", "text" to "先核对接口，"),
+            mapOf("partId" to "p3", "text" to "再试小例子，"),
+            mapOf("partId" to "p4", "text" to "仍需回看😀。  "),
+        )), wire["target"])
+        val bounded = List(31) { "条件$it，" }.joinToString("") + "尾部反例不能丢。"
+        val parts = DeepSeekReviewProtocol.parts(bounded)
+        assertEquals(24, parts.size)
+        assertEquals(List(23) { "条件$it，" }, parts.take(23).map { it.getValue("text") })
+        assertEquals((23..30).joinToString("") { "条件$it，" } + "尾部反例不能丢。", parts.last().getValue("text"))
+        assertEquals(bounded, parts.joinToString("") { it.getValue("text") })
     }
 
     @Test fun `unsupported premise plus supported cautious ending cannot be published as supported`() {
@@ -55,14 +91,15 @@ class DeepSeekReviewProtocolTest {
     }
 
     @Test fun `blocking unknown and unresolved issue each prevent overall support`() {
-        val blocked = parse(text, result(unknowns = listOf(unknown("必要比较基线没有提供", true))))
+        val blocked = parse(text, result(checks = listOf(check("p1", "UNSUPPORTED", emptyList()), check("p2")),
+            unknowns = listOf(unknown("必要比较基线没有提供"))))
         assertEquals(ReviewVerdict.UNSUPPORTED, blocked.verdict)
         assertTrue(ReviewIssue.INSUFFICIENT_CONTEXT in blocked.issues)
-        assertTrue(blocked.unknowns.single().contains("阻断当前判断"))
+        assertTrue(blocked.unknowns.any { it.contains("阻断当前判断") })
         val issue = parse(text, result(issues = listOf("CAUSAL_OVERREACH")))
         assertEquals(ReviewVerdict.UNSUPPORTED, issue.verdict)
         assertEquals(listOf(ReviewIssue.CAUSAL_OVERREACH), issue.issues)
-        assertEquals(ReviewVerdict.SUPPORTED, parse(text, result(unknowns = listOf(unknown("更远时期适用性未测", false)))).verdict)
+        assertInvalid(result(unknowns = listOf(unknown("更远时期适用性未测", false))))
     }
 
     @Test fun `never upgrades overall rejection or invents a direct counterexample`() {
@@ -100,27 +137,43 @@ class DeepSeekReviewProtocolTest {
 
     @Test fun `future optional experiments can retain support without claiming observed effectiveness`() {
         val target = "可以在下一次练习前先写假设，再观察是否完成；这只是待选实验，效果未证明。"
-        val value = parse(target, result(checks = listOf(check("p1", reason = "针对已有困难提出有限实验，没有声称已执行"), check("p2")),
-            unknowns = listOf(unknown("未来效果需要尝试后观察", false))))
+        val value = parse(target, result(checks = listOf(
+            check("p1", reason = "针对已有困难提出有限实验，没有声称已执行", statementType = "FUTURE_PROPOSAL"),
+            check("p2", reason = "继续描述同一个待选实验的观察步骤", statementType = "FUTURE_PROPOSAL"),
+            check("p3", statementType = "LIMITATION"), check("p4", statementType = "LIMITATION"))))
         assertEquals(ReviewVerdict.SUPPORTED, value.verdict)
         assertTrue(DeepSeekReviewProtocol.INSTRUCTIONS.contains("不要求已执行或已有效"))
     }
 
+    @Test fun `interpretation category accepts domain terminology without relaxing anchors or verdicts`() {
+        val supported = result(checks = listOf(check("p1", statementType = "POSSIBLE_INTERPRETATION"), check("p2")))
+        assertEquals(ReviewVerdict.SUPPORTED, parse(text, supported).verdict)
+        assertInvalid(result(checks = listOf(check("p1", statementType = "CERTAIN_PERSONALITY"), check("p2"))))
+        listOf("POSSIBLE_INTERPRETATION", "FUTURE_PROPOSAL", "LIMITATION").forEach { type ->
+            assertInvalid(result(checks = listOf(check("p1", ids = emptyList(), statementType = type), check("p2"))))
+            val rejected = result(checks = listOf(check("p1", "UNSUPPORTED", emptyList(), statementType = type), check("p2")))
+            assertEquals(ReviewVerdict.UNSUPPORTED, parse(text, rejected).verdict)
+        }
+    }
+
     @Test fun `metric and action source identities remain distinct and checked`() {
         val metric = "metric-v1-$a"
-        val input = mapOf("target" to mapOf("text" to text), "metricEvidence" to listOf(mapOf("id" to metric)))
-        val body = AnalysisRunCodec.json(result(checks = listOf(check("p1", ids = listOf(metric)), check("p2", ids = listOf(metric)))))
+        val input = mapOf("target" to mapOf("text" to text), "metricEvidence" to listOf(mapOf("id" to metric, "values" to mapOf("totalRecords" to 3))))
+        val body = AnalysisRunCodec.json(result(checks = listOf(check("p1", ids = listOf(metric), field = "/values/totalRecords", quote = "3"),
+            check("p2", ids = listOf(metric), field = "/values/totalRecords", quote = "3"))))
         assertEquals(listOf(metric), DeepSeekReviewProtocol.parse(body, input, true).supportingEvidenceIds)
         assertThrows(IllegalArgumentException::class.java) { DeepSeekReviewProtocol.parse(body, input, false) }
-        val action = mapOf("target" to mapOf("text" to text), "actionEvidence" to listOf(mapOf("id" to a)))
-        assertEquals(listOf(a), DeepSeekReviewProtocol.parse(AnalysisRunCodec.json(result()), action, false).supportingEvidenceIds)
+        val action = mapOf("target" to mapOf("text" to text), "actionEvidence" to listOf(mapOf("id" to a,
+            "plan" to mapOf("behavior" to "合成原文与限定相符"))))
+        val actionBody = result(checks = listOf(check("p1", field = "/plan/behavior"), check("p2", field = "/plan/behavior")))
+        assertEquals(listOf(a), DeepSeekReviewProtocol.parse(AnalysisRunCodec.json(actionBody), action, false).supportingEvidenceIds)
     }
 
     @Test fun `bounded diagnostics preserve every rejected clause and blocking explanation`() {
         val parts = List(24) { "片段$it：" + "合成".repeat(30) + "。" }
         val target = parts.joinToString("")
         val checks = parts.mapIndexed { index, _ -> check("p${index + 1}", "UNSUPPORTED", emptyList(), "理由$index：" + "限".repeat(140)) }
-        val value = parse(target, result(checks = checks, unknowns = List(12) { unknown("缺口$it", true) }))
+        val value = parse(target, result(checks = checks, unknowns = List(12) { unknown("缺口$it", partId = "p${it + 1}") }))
         assertEquals(ReviewVerdict.UNSUPPORTED, value.verdict)
         assertTrue(value.unknowns.size <= 20)
         assertTrue(value.unknowns.all { it.length <= 2_000 })
@@ -132,8 +185,8 @@ class DeepSeekReviewProtocolTest {
         listOf(
             result(checks = listOf(check("p1", reason = "x".repeat(161)), check("p2"))),
             result(checks = listOf(check("p1", reason = " "), check("p2"))),
-            result(unknowns = List(13) { unknown("合成缺口", false) }),
-            result(unknowns = listOf(unknown("x".repeat(501), false))),
+            result(unknowns = List(13) { unknown("合成缺口") }),
+            result(unknowns = listOf(unknown("x".repeat(501)))),
         ).forEach(::assertInvalid)
     }
 
@@ -153,14 +206,17 @@ class DeepSeekReviewProtocolTest {
         assertThrows(Exception::class.java) { DeepSeekReviewProtocol.parse(duplicate, envelope(text), false) }
     }
 
-    private fun check(partId: String, status: String = "SUPPORTED", ids: List<String> = listOf(a), reason: String = "合成原文与限定相符") =
-        mapOf("partId" to partId, "status" to status, "reason" to reason, "evidenceIds" to ids)
-    private fun unknown(text: String, blocks: Boolean) = mapOf("text" to text, "blocksConclusion" to blocks)
+    private fun check(partId: String, status: String = "SUPPORTED", ids: List<String> = listOf(a), reason: String = "合成原文与限定相符",
+        statementType: String = "REPORTED_FACT", field: String = "/text", quote: String = "合成原文与限定相符") =
+        mapOf("partId" to partId, "statementType" to statementType, "status" to status, "reason" to reason,
+            "anchors" to ids.map { mapOf("evidenceId" to it, "field" to field, "quote" to quote) })
+    private fun unknown(text: String, blocks: Boolean = true, partId: String = "p1") =
+        mapOf("partId" to partId, "text" to text, "blocksConclusion" to blocks)
     private fun result(verdict: String = "SUPPORTED", checks: List<Map<String, Any?>> = listOf(check("p1"), check("p2")),
         issues: List<String> = emptyList(), unknowns: List<Map<String, Any?>> = emptyList()): Map<String, Any?> =
         mapOf("verdict" to verdict, "checks" to checks, "issues" to issues, "unknowns" to unknowns)
     private fun envelope(target: String) = mapOf("target" to mapOf("text" to target),
-        "evidence" to listOf(mapOf("id" to a), mapOf("id" to b)))
+        "evidence" to listOf(mapOf("id" to a, "text" to "合成原文与限定相符"), mapOf("id" to b, "text" to "合成原文与限定相符")))
     private fun parse(target: String, value: Map<String, Any?>) = DeepSeekReviewProtocol.parse(AnalysisRunCodec.json(value), envelope(target), false)
     private fun assertInvalid(value: Map<String, Any?>) { assertThrows(IllegalArgumentException::class.java) { parse(text, value) } }
 }

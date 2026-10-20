@@ -73,7 +73,7 @@ class DeepSeekProviderTest {
         assertEquals("合成记录中的练习体验", result.proposal.claims.single().text)
         assertEquals(listOf(evidenceId), result.proposal.claims.single().evidenceIds)
         assertEquals(ClaimKind.REPORTED_EXPERIENCE, result.proposal.claims.single().kind)
-        assertEquals(listOf("合成缺口：没有后续表现记录"), result.proposal.unknowns)
+        assertTrue(result.proposal.unknowns.isEmpty())
     }
 
     @Test fun `navigation uses a distinct fully measured request and rejects claim shaped output`() {
@@ -134,11 +134,11 @@ class DeepSeekProviderTest {
         val wire = JSONObject(prepared.payloadJson)
         val instructions = wire.getJSONArray("messages").getJSONObject(0).getString("content")
         assertTrue(instructions.contains("整体整理"))
-        assertTrue(instructions.contains("不是多个独立事件"))
+        assertTrue(instructions.contains("不增加独立事件"))
         assertTrue(instructions.contains("派生"))
         assertTrue(instructions.contains("逐项跨批对照旧疑问"))
         assertTrue(instructions.contains("不输出协议字段名"))
-        assertTrue(instructions.contains("单次后续记录不能证明始终如此"))
+        assertTrue(instructions.contains("不据单次后续记录宣称持续如此"))
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, adapter.completePrepared(prepared).proposal.claims.single().kind)
         assertEquals(1, sent)
@@ -201,7 +201,7 @@ class DeepSeekProviderTest {
         val review = adapter.prepareReview(request.copy(payloadJson = AnalysisRunCodec.json(envelope + ("purpose" to "REVIEW"))))
         val reviewSystem = JSONObject(review.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
         assertTrue(reviewSystem.contains("本次须同时核对全部 actionEvidence 与 evidence"))
-        assertTrue(reviewSystem.contains("evidenceIds仅用本次完整ID"))
+        assertTrue(reviewSystem.contains("anchors"))
         assertTrue(reviewSystem.contains("UNKNOWN"))
         assertFalse(reviewSystem.contains("只核对 target.text 与 target.kind 是否得到本次 evidence 原文支持"))
         assertFalse(reviewSystem.contains("支持和反例必须引用本次 evidence 的完整 id"))
@@ -280,12 +280,12 @@ class DeepSeekProviderTest {
         val targetText = "合成指标：当前范围共有一条记录。"
         val input = request.copy(payloadJson = AnalysisRunCodec.json(mapOf("purpose" to "REVIEW", "evidenceType" to "RECORD_METRIC",
             "target" to mapOf("text" to targetText, "kind" to "POSSIBLE_INTERPRETATION"),
-            "metricEvidence" to listOf(mapOf("id" to metricId)))))
+            "metricEvidence" to listOf(mapOf("id" to metricId, "values" to mapOf("totalRecords" to 1))))))
         var citation = metricId
         val provider = provider { _, _ -> DeepSeekHttpResponse(200, response(content = AnalysisRunCodec.json(mapOf(
-            "verdict" to "SUPPORTED", "checks" to listOf(mapOf("partId" to "p1", "status" to "SUPPORTED",
-                "reason" to "合成程序指标直接提供记录总数。", "evidenceIds" to listOf(citation))),
-            "issues" to emptyList<String>(), "unknowns" to listOf(mapOf("text" to "合成限定：记录数量不代表成长。", "blocksConclusion" to false)),
+            "verdict" to "SUPPORTED", "checks" to listOf(mapOf("partId" to "p1", "statementType" to "REPORTED_FACT", "status" to "SUPPORTED",
+                "reason" to "合成程序指标直接提供记录总数。", "anchors" to listOf(mapOf("evidenceId" to citation, "field" to "/values/totalRecords", "quote" to "1")))),
+            "issues" to emptyList<String>(), "unknowns" to emptyList<String>(),
         )))) }
         val prepared = provider.prepareReview(input)
         val system = JSONObject(prepared.payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
@@ -311,6 +311,23 @@ class DeepSeekProviderTest {
             assertNull(failure.cause)
             assertFalse(failure.toString().contains(syntheticKey))
         }
+    }
+
+    @Test fun `an absent empty supplement preserves cited content without dropping supplied restrictions`() {
+        val cited = claim(text = "合成记录：计划每次练习八分钟，尚未执行，效果未知。")
+        var content = AnalysisRunCodec.json(mapOf("claims" to listOf(cited)))
+        val adapter = provider { _, _ -> DeepSeekHttpResponse(200, response(content = content)) }
+        val omitted = adapter.complete(request)
+        assertEquals(cited.getValue("text"), omitted.claims.single().text)
+        assertTrue(omitted.unknowns.isEmpty())
+        content = proposal(listOf(cited))
+        assertEquals(omitted, adapter.complete(request))
+        listOf(null, listOf("另外几天是否练习未知"), "", false).forEach { supplied ->
+            content = AnalysisRunCodec.json(mapOf("claims" to listOf(cited), "unknowns" to supplied))
+            assertThrows(DeepSeekException::class.java) { adapter.complete(request) }
+        }
+        content = AnalysisRunCodec.json(mapOf("unknowns" to emptyList<String>()))
+        assertThrows(DeepSeekException::class.java) { adapter.complete(request) }
     }
 
     @Test fun `malformed duplicate trailing and invalid UTF8 responses fail closed`() {
@@ -355,6 +372,7 @@ class DeepSeekProviderTest {
             proposal(claims = List(21) { validClaim }),
             proposal(claims = listOf(validClaim + ("untrusted" to true))),
             proposal(unknowns = listOf(7)),
+            proposal(unknowns = listOf("没有核对的生活未知不能旁路进入结果")),
             proposal(unknowns = listOf(" ")),
             proposal(unknowns = List(21) { "synthetic gap" }),
             AnalysisRunCodec.json(mapOf("claims" to emptyList<Any>(), "unknowns" to emptyList<Any>(), "extra" to true)),
@@ -430,7 +448,7 @@ class DeepSeekProviderTest {
     private fun claim(text: String = "合成记录中的练习体验", evidence: List<*> = listOf(evidenceId), kind: String = "REPORTED_EXPERIENCE") =
         mapOf("text" to text, "evidenceIds" to evidence, "kind" to kind)
 
-    private fun proposal(claims: List<*> = listOf(claim()), unknowns: List<*> = listOf("合成缺口：没有后续表现记录")) =
+    private fun proposal(claims: List<*> = listOf(claim()), unknowns: List<*> = emptyList<String>()) =
         AnalysisRunCodec.json(mapOf("claims" to claims, "unknowns" to unknowns))
 
     private fun response(
