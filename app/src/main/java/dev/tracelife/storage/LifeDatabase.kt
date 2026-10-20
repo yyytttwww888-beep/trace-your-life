@@ -6,7 +6,7 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.util.UUID
 
 /** Source writes and saved analysis progress have separate generations. */
-internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 10) {
+internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(context, name, null, 11) {
     override fun onConfigure(db: SQLiteDatabase) {
         db.setForeignKeyConstraintsEnabled(true)
         // Deleted material must not remain in SQLite's reusable pages.
@@ -24,10 +24,11 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         upgradeToVersionEight(db)
         upgradeToVersionNine(db)
         upgradeToVersionTen(db)
+        ConversationStore.createTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        require(oldVersion in 1..9 && newVersion == 10) { "缺少数据库迁移：$oldVersion → $newVersion" }
+        require(oldVersion in 1..10 && newVersion == 11) { "缺少数据库迁移：$oldVersion → $newVersion" }
         if (oldVersion < 2) upgradeToVersionTwo(db)
         if (oldVersion < 3) upgradeToVersionThree(db)
         if (oldVersion < 4) upgradeToVersionFour(db)
@@ -36,7 +37,8 @@ internal class LifeDatabase(context: Context, name: String) : SQLiteOpenHelper(c
         if (oldVersion < 7) upgradeToVersionSeven(db)
         if (oldVersion < 8) upgradeToVersionEight(db)
         if (oldVersion < 9) upgradeToVersionNine(db)
-        upgradeToVersionTen(db)
+        if (oldVersion < 10) upgradeToVersionTen(db)
+        ConversationStore.createTables(db)
     }
 
     private fun upgradeToVersionTen(db: SQLiteDatabase) {

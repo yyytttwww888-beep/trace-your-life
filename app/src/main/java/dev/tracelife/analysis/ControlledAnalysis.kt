@@ -30,6 +30,9 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
         val now = clock.instant()
         require(request.expiresAt == null || request.expiresAt > now) { "任务有效期已过" }
+        request.conversationContext?.let {
+            if (!ConversationContextCatalog(repository, clock).current(it)) throw StaleSnapshotException("先前回答或其依据已变化，请重新提问")
+        }
         val source = repository.analysisSourceStamp()
         // Scope validation and counts use SQL metadata, not a full-store snapshot.
         repository.analysisSourcePage(source, request.scope, 0, 1)
@@ -153,7 +156,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 }, "coverage" to mapOf("total" to plan.references.size, "previouslyCompared" to completed.size,
                     "provided" to rows.size, "wholeHistoryCompared" to false, "originalEvidenceProvided" to false)))
             // Do not append generation history: this purpose already selects its own exact page.
-            val request = ModelRequest(payload, AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
+            val request = ModelRequest(ConversationContextProtocol.attach(payload, state.request.conversationContext), AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
             val prepared = provider.prepareHistoricalFeedbackScan(request)
             val fits = prepared.payloadJson.toByteArray(Charsets.UTF_8).size <= limits.maxInputBytes &&
                 prepared.inputTokens in 1..limits.inputTokenLimit && prepared.inputTokens.toLong() + limits.outputTokenReserve <= provider.contextWindowTokens
@@ -892,13 +895,15 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val historicalFeedbackScan: HistoricalFeedbackScan? = null)
 
     private fun modelRequest(id: String, batchKey: String, payload: String, limits: AnalysisLimits): ModelRequest {
-        val context = current(id).state.feedbackContext
-        val complete = if (context == null) payload else {
+        val state = current(id).state
+        val context = state.feedbackContext
+        val routedPayload = ConversationContextProtocol.attach(payload, state.request.conversationContext)
+        val complete = if (context == null) routedPayload else {
             val catalog = FeedbackContextCatalog(repository)
             val entries = mutableListOf<Map<String, Any?>>()
             // Reserve room for provider framing and original evidence. A large opinion remains
             // reachable in the human pages; it is never silently truncated into a shorter claim.
-            val allowance = minOf(limits.maxInputBytes, limits.inputTokenLimit) - payload.toByteArray(Charsets.UTF_8).size - 2_048
+            val allowance = minOf(limits.maxInputBytes, limits.inputTokenLimit) - routedPayload.toByteArray(Charsets.UTF_8).size - 2_048
             for (ref in context.references.take(FeedbackContextProtocol.MODEL_PAGE_SIZE)) {
                 val value = catalog.resolve(ref)
                 // Keep control references visibly distinct from original 64-hex evidence IDs.
@@ -912,8 +917,8 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             val controls = mapOf("instructions" to FeedbackContextProtocol.INSTRUCTIONS, "originalEvidence" to false,
                 "totalRelevantOpinions" to context.references.size, "providedOpinions" to entries.size,
                 "remainingForHumanReview" to context.references.size - entries.size, "entries" to entries)
-            require(payload.endsWith("}"))
-            payload.dropLast(1) + ",\"historicalFeedback\":" + AnalysisRunCodec.json(controls) + "}"
+            require(routedPayload.endsWith("}"))
+            routedPayload.dropLast(1) + ",\"historicalFeedback\":" + AnalysisRunCodec.json(controls) + "}"
         }
         if (complete.toByteArray(Charsets.UTF_8).size > limits.maxInputBytes) throw AnalysisBudgetException("完整模型输入超过字节预算，请减少片段或历史")
         return ModelRequest(complete, AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
@@ -1118,6 +1123,9 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
     }
     private fun ensureCurrent(run: StoredAnalysisRun) {
+        AnalysisRunCodec.decode(run.payload).request.conversationContext?.let {
+            if (!ConversationContextCatalog(repository, clock).current(it)) throw StaleSnapshotException("先前回答或其依据已变化，请重新提问")
+        }
         AnalysisRunCodec.decode(run.payload).feedbackContext?.let {
             if (!FeedbackContextCatalog(repository).current(run.id, it)) throw StaleSnapshotException("相关历史意见已变化，请重新分析")
         }
@@ -1128,6 +1136,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         val state = AnalysisRunCodec.decode(run.payload)
         val status = when {
             !repository.analysisSourceCurrent(run.source, state.request.scope) -> AnalysisStatus.STALE
+            state.request.conversationContext?.let { !ConversationContextCatalog(repository, clock).current(it) } == true -> AnalysisStatus.STALE
             state.feedbackContext?.let { !FeedbackContextCatalog(repository).current(run.id, it) } == true -> AnalysisStatus.STALE
             state.actionPlan?.let { clock.instant() < run.updatedAt || !repository.actionEvidencePlanCurrent(state.request.scope, it) } == true -> AnalysisStatus.STALE
             run.expiresAt != null && !clock.instant().isBefore(run.expiresAt) -> AnalysisStatus.EXPIRED

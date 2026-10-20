@@ -2,9 +2,9 @@
 
 面向个人的 Android AI 记录与知识管理应用。将日常随记和复盘组织成可追溯、可分析、可迁移的个人知识库，帮助理解近期变化、长期模式和下一步行动；计划扩展授权健康数据，餐食照片分析暂缓。
 
-**当前阶段：贯通知识导航与持续回看。** 已有离线记录、DeepSeek 受控分析与核对、知识发布、行动回看、画像维护等后端及首轮页面；已修复无关资料影响旧知识与手机导出，现已接通主题概况、本地查找、关联候选、历史意见辅助比较、行动复盘、长期画像维护及记录趋势图。健康数据和华为接入待验证，餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，真实模型、自动测试与模拟器分别记录。仓库管理代码和设计，个人资料保存在应用数据区。
+**当前阶段：对话式回看与持续积累。** 已有离线记录、DeepSeek 受控分析与核对、知识发布、行动回看、画像维护等后端及首轮页面；已修复无关资料影响旧知识与手机导出，现已接通主题概况、本地查找、关联候选、历史意见辅助比较、行动复盘、长期画像维护及记录趋势图，并支持自由提问与有依据的连续追问。健康数据和华为接入待验证，餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，真实模型、自动测试与模拟器分别记录。仓库管理代码和设计，个人资料保存在应用数据区。
 
-手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.6/trace-life-0.1.0-preview.6.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#知识导航与回看流程验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
+手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.7/trace-life-0.1.0-preview.7.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#对话式回看验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
 
 **用户旅程优化（2026-10-20）：** 根据[评审报告](docs/reviews/2026-10-20-user-knowledge-journey-review.md)修复保存与有效性混淆，新增范围维护、按依赖删除、主题阅读、经验到行动和手机文件交付。经验演化、历史意见与任务归档已按[新一轮设计](docs/superpowers/specs/2026-10-20-experience-memory-and-archive-design.md)接通；七项后续流程按[知识导航与回看设计](docs/superpowers/specs/2026-10-20-connected-knowledge-workflows-design.md)实现。
 
@@ -16,6 +16,7 @@
 - 将图片作为受管附件保存；当前阶段尚不识别食物或生成 AI 分析。
 - 界面采用原生控件与单色设计语言：固定顶栏、侧边导航、内容优先的记录页、按需展开的筛选与补充信息，支持浅色／深色模式。设计与范围见[移动端优化](docs/superpowers/specs/2026-10-19-mobile-ui-polish-design.md)。
 - 首页可直接分析今天、近 7／30 天或自选日期的记录，查看经验、值得关注的问题和下一步建议；进度与历史可恢复，结果可查看依据、否定或确认后核对保存。知识库按主题连接经历与经验，默认保留待更新内容；有效知识可明确采纳为行动，再记录回看。
+- [对话式回看](docs/CONVERSATION.md)：直接提问并预览自动识别的日期，追问具体发现或后来的变化；问题与进度可恢复，回答仍经明确确认和原文核对后保存。
 - [主题概况与查找](docs/KNOWLEDGE_DISCOVERY.md)汇集当前理解、关注点、行动和经验变化；查找覆盖当前记录、复盘答案、知识及经验历史说明，按主题或日期定位。主题与经验关联仅提供候选，由你确认。
 - 同一经验可串联后续的补充、例外、收窄和替代，保留变化过程与用户说明；新分析带入预算内历史意见，保存前分页逐项对照；任务可归档与恢复，保留知识和依据。详情见[经验线索](docs/EXPERIENCE_CONTINUITY.md)、[历史意见](docs/HISTORICAL_FEEDBACK.md)和[分析归档](docs/TASK_ARCHIVE.md)。
 - 看板、核对与整理、知识库、行动实验、周期复盘材料、个人画像、备份与导出及设置（DeepSeek 密钥、后台增量整理）页面已接入对应后端接口；新增[主动分析](docs/REFLECTION.md)已接通文字综合、跨批归并、原文查阅与确认后保存；画像维护、纵向画像与行动周期分析流程已接通；看板渲染实际记录指标图表，点选可查来源。

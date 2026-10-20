@@ -168,9 +168,12 @@ class KnowledgeLibrary(private val repository: LifeRepository, private val clock
             !repository.analysisSourceCurrent(value.source, value.scope) -> KnowledgeEvidenceState.STALE
             !contextValidity.getOrPut(value.runId) {
                 if (!states.containsKey(value.runId)) states[value.runId] = repository.analysisRun(value.runId)?.let { it.source to AnalysisRunCodec.decode(it.payload) }
-                states[value.runId]?.second?.feedbackContext?.let {
+                val runState = states[value.runId]?.second
+                (runState?.feedbackContext?.let {
                     dev.tracelife.analysis.FeedbackContextCatalog(repository).current(value.runId, it)
-                } ?: true
+                } ?: true) && (runState?.request?.conversationContext?.let {
+                    dev.tracelife.analysis.ConversationContextCatalog(repository, clock).current(it)
+                } ?: true)
             } -> KnowledgeEvidenceState.FEEDBACK_CHANGED
             value.actionPlan?.let { !repository.actionEvidencePlanCurrent(value.scope, it) } == true -> KnowledgeEvidenceState.STALE
             value.expiresAt != null && !now.isBefore(value.expiresAt) -> KnowledgeEvidenceState.EXPIRED

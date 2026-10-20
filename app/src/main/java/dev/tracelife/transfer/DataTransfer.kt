@@ -42,6 +42,8 @@ data class RestorePreview(
     val archivedAnalysisRuns: Int = 0,
     val experienceThreads: Int = 0,
     val historicalComparisons: Int = 0,
+    val conversations: Int = 0,
+    val conversationTurns: Int = 0,
 )
 
 /**
@@ -177,7 +179,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
             repository.listTemplates(includeArchived = true).isNotEmpty() || repository.analysisRuns(0, 1).isNotEmpty() ||
             repository.claimFeedbacks(0, 1).isNotEmpty() || repository.knowledgeHeads(0, 1).isNotEmpty() ||
             repository.actionHeads(0, 1).isNotEmpty() || repository.profileHeads(0, 1).isNotEmpty() ||
-            repository.experienceThreads(limit = 1).isNotEmpty() || repository.historicalComparisonRuns(limit = 1).isNotEmpty()
+            repository.experienceThreads(limit = 1).isNotEmpty() || repository.historicalComparisonRuns(limit = 1).isNotEmpty() || repository.conversationPage(limit = 1).isNotEmpty()
         if (repository.currentGeneration() != generation || repository.currentAnalysisGeneration() != analysisGeneration) {
             throw StaleSnapshotException("资料在预览期间发生变化，请重新预览")
         }
@@ -188,7 +190,7 @@ class DataTransfer(context: Context, private val repository: LifeRepository, pri
             snapshot.deletedRecords.size, snapshot.deletedTemplates.size, digest,
             repository.currentStoreId(), generation, hasData,
             snapshot.analysisRuns.size, analysisGeneration, snapshot.claimFeedback.size, snapshot.knowledgeHeads.size, snapshot.actionHeads.size, snapshot.profileHeads.size,
-            snapshot.analysisRuns.count { it.archivedAt != null }, snapshot.experienceThreads.size, snapshot.historicalComparisons.size,
+            snapshot.analysisRuns.count { it.archivedAt != null }, snapshot.experienceThreads.size, snapshot.historicalComparisons.size, snapshot.conversations.size, snapshot.conversationTurns.size,
         )
     }
 

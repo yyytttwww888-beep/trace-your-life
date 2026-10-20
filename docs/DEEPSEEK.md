@@ -253,3 +253,8 @@ val result = app.analysisProcessor.process(
 ```
 
 沿用本页仓库外密钥文件配置；普通回归默认跳过。固定案例及更广泛的评估边界见[分析质量](ANALYSIS_QUALITY.md)，本次实际结果见[开发验证](DEVELOPMENT.md)。
+
+
+### 对话式回看真实验证
+
+`DeepSeekConversationLiveTest` 默认跳过，明确执行 `./gradlew testDebugUnitTest --tests 'dev.tracelife.providers.DeepSeekConversationLiveTest' -PtraceLifeDeepSeekConversation=true` 才读取仓库外凭据。测试最多调用 2 次，不自动重试：三个月学习问题与选定发现的改善／反例追问，使用四条合成记录，其中一条无主题。实际用量与结果见[开发验证](DEVELOPMENT.md#对话式回看验证)。

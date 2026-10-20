@@ -10,8 +10,12 @@ internal object ProfileMaintenanceDeletion {
         knowledge: List<StoredKnowledgeRevision>, feedback: List<StoredClaimFeedback>,
         deletedProfiles: Set<String> = emptySet(), deletedFeedback: Set<String> = emptySet(),
         deletedKnowledge: Set<String> = emptySet(), deletedRuns: Set<String> = emptySet()): Set<String> {
-        val plans = runs.associate { it.id to AnalysisRunCodec.decode(it.payload).profileMaintenancePlans }
-        val histories = runs.associate { it.id to dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(AnalysisRunCodec.decode(it.payload)) }
+        // Decode once per task and retain only dependency metadata, not the full call graph.
+        val dependencies = runs.associate { run ->
+            val state = AnalysisRunCodec.decode(run.payload)
+            run.id to Triple(state.request.conversationContext, state.profileMaintenancePlans,
+                dev.tracelife.analysis.FeedbackContextProtocol.usedReferences(state))
+        }
         val profileMap = profiles.groupBy { it.id to it.revision }
         val knowledgeMap = knowledge.groupBy { it.id to it.revision }
         val feedbackMap = feedback.groupBy { it.id }
@@ -22,8 +26,11 @@ internal object ProfileMaintenanceDeletion {
             changed = false
             knowledge.filter { it.runId in forbiddenRuns }.forEach { forbiddenKnowledge += it.id }
             runs.filter { it.id !in forbiddenRuns }.forEach { run ->
-                val affected = histories.getValue(run.id).any { it.id in deletedFeedback || it.runId in forbiddenRuns } ||
-                    plans.getValue(run.id).flatMap { it.references }.any { ref ->
+                val (conversation, plans, history) = dependencies.getValue(run.id)
+                val affected = conversation?.let { context -> context.parentRunId in forbiddenRuns ||
+                    context.targets.flatMap { it.feedbackTokens }.any { AnalysisRunCodec.feedbackId(context.parentRunId, it.claim) in deletedFeedback } } == true ||
+                    history.any { it.id in deletedFeedback || it.runId in forbiddenRuns } ||
+                    plans.flatMap { it.references }.any { ref ->
                     ref.feedbackVersions.keys.any { it in deletedFeedback } || when (ref.kind) {
                         ProfileMaintenanceReferenceKind.PROFILE -> ref.id in deletedProfiles || profileMap[ref.id to ref.version].orEmpty().any { profile ->
                             profile.draft.knowledge.knowledgeId in forbiddenKnowledge || knowledgeMap[profile.draft.knowledge.knowledgeId to profile.draft.knowledge.revision]

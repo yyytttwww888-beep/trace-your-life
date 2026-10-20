@@ -83,3 +83,8 @@
 - [经验线索](EXPERIENCE_CONTINUITY.md)：固定知识修订、变化过程、独立说明及导出范围。
 - [历史意见](HISTORICAL_FEEDBACK.md)：目录路由、有限上下文、人工对照与发布门槛。
 - [分析归档](TASK_ARCHIVE.md)：生命周期、分页、容量、备份与恢复。
+
+## 对话式回看
+
+- [使用与接口](CONVERSATION.md)：自由提问、固定范围、受控追问及独立保存。
+- [行为设计](superpowers/specs/2026-10-20-conversational-reflection-design.md)与[实施计划](plans/2026-10-20-conversational-reflection.md)。

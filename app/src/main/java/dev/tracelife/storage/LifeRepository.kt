@@ -4,6 +4,10 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import dev.tracelife.conversation.ConversationCollection
+import dev.tracelife.conversation.ConversationThread
+import dev.tracelife.conversation.ConversationTurn
+import dev.tracelife.conversation.ConversationValidation
 import dev.tracelife.dashboard.DashboardPreferences
 import dev.tracelife.dashboard.StoredDashboardPreferences
 import dev.tracelife.actions.ActionEvidencePlan
@@ -597,6 +601,9 @@ class LifeRepository(
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
             }
             val state = AnalysisRunCodec.decode(run.payload)
+            state.request.conversationContext?.let { context ->
+                require(context.parentRunId != run.id && dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(context)) { "先前回答或其依据已变化，请重新提问" }
+            }
             state.request.profileTarget?.takeIf { it.layer == dev.tracelife.profile.ProfileLayer.LONG_TERM }?.let { target ->
                 state.calls.forEach { call ->
                     val metadata = call.evidence.map { it.recordId }.distinct().map { id ->
@@ -804,6 +811,45 @@ class LifeRepository(
         }
     }
 
+    fun createConversation(id: String = UUID.randomUUID().toString()): ConversationThread = access { db ->
+        transaction(db) { ConversationStore.create(db, id, clock.instant()) }
+    }
+
+    fun conversation(id: String): ConversationThread? = access { db -> ConversationStore.get(db, id) }
+
+    fun conversationTurn(id: String): ConversationTurn? = access { db -> ConversationStore.turn(db, id) }
+
+    fun latestConversationTurn(threadId: String): ConversationTurn? = access { db -> ConversationStore.latestTurn(db, threadId) }
+
+    fun conversationPage(offset: Int = 0, limit: Int = 20): List<ConversationThread> =
+        access { db -> ConversationStore.page(db, offset, limit) }
+
+    fun conversationTurns(threadId: String, offset: Int = 0, limit: Int = 20): List<ConversationTurn> =
+        access { db -> ConversationStore.turns(db, threadId, offset, limit) }
+
+    fun appendConversationTurn(turn: ConversationTurn): ConversationTurn = access { db ->
+        transaction(db) {
+            ConversationStore.append(db, turn) {
+                val run = requireNotNull(readAnalysisRun(db, turn.runId)) { "问题的分析任务不存在" }
+                val request = AnalysisRunCodec.decode(run.payload).request
+                require(turn.runId == "reflection-v1-conversation-${turn.id}" && request.scope == turn.scope &&
+                    (request.question == turn.question || request.question.startsWith(turn.question + "\n"))) {
+                    "问题与固定分析范围不一致"
+                }
+            }
+        }
+    }
+
+    /** Explicit thread deletion removes owned answers and derived copies in the same transaction. */
+    fun deleteConversation(id: String) = access { db ->
+        transaction(db) {
+            ConversationStore.ownedRuns(db, id).forEach { runId ->
+                readAnalysisRun(db, runId)?.let { deleteAnalysisRun(runId, it.version) }
+            }
+            ConversationStore.delete(db, id, clock.instant())
+        }
+    }
+
     fun experienceThread(id: String): StoredExperienceThread? = access { db -> ExperienceThreadStore.get(db, id) }
 
     fun experienceThreads(topic: String? = null, knowledgeId: String? = null, offset: Int = 0,
@@ -870,6 +916,9 @@ class LifeRepository(
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
             val publicationState = AnalysisRunCodec.decode(run.payload)
+            publicationState.request.conversationContext?.let {
+                require(dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(it)) { "先前回答或其依据已变化，不能保存旧结果" }
+            }
             publicationState.feedbackContext?.let { plan ->
                 require(FeedbackContextCatalog(this).current(run.id, plan)) { "历史意见或原判断已变化，请重新分析" }
                 val review = requireNotNull(publicationState.calls.lastOrNull { it.batchKey == value.reviewBatchKey &&
@@ -1207,6 +1256,7 @@ class LifeRepository(
                     buildList { while (cursor.moveToNext()) add(requireNotNull(readTemplate(db, cursor.getString(0), cursor.getInt(1)))) }
                 }
                 val attachments = records.flatMap { it.draft.attachmentIds }.toSortedSet().map { requireNotNull(readAttachment(db, it)) }
+                val conversations = ConversationStore.all(db)
                 val snapshot = RepositorySnapshot(UUID.randomUUID().toString(), state.first, state.second, clock.instant(),
                     records, templates, attachments, deletions(db, "deleted_records"), deletions(db, "deleted_templates"), allChanges(db),
                     analysisRuns = allAnalysisRuns(db), analysisGeneration = analysisGeneration(db), deletedAnalysisRuns = deletions(db, "deleted_analysis_runs"),
@@ -1218,10 +1268,14 @@ class LifeRepository(
                     experienceThreads = ExperienceThreadStore.allThreads(db), experienceChanges = ExperienceThreadStore.allChanges(db),
                     deletedExperienceThreads = ExperienceThreadStore.deletions(db),
                     historicalComparisons = HistoricalComparisonStore.all(db),
-                    historicalComparisonDeletions = HistoricalComparisonStore.deletions(db))
+                    historicalComparisonDeletions = HistoricalComparisonStore.deletions(db),
+                    conversations = conversations.threads, conversationTurns = conversations.turns, deletedConversations = conversations.deletions)
                 snapshot.currentKnowledgeSourceRevisions = snapshot.knowledgeRevisions.filter {
                     SourceScopeLedger.current(db, it.source, it.scope)
                 }.map { it.id to it.revision }.toSet()
+                snapshot.currentAnalysisSourceRunIds = snapshot.analysisRuns.filter {
+                    SourceScopeLedger.current(db, it.source, AnalysisRunCodec.decode(it.payload).request.scope)
+                }.map { it.id }.toSet()
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
                 snapshot
@@ -1301,9 +1355,11 @@ class LifeRepository(
         require(attachmentSource.isDirectory && !Files.isSymbolicLink(attachmentSource.toPath())) { "恢复附件目录不存在" }
         if (storeState(db).second != expectedGeneration) throw StaleSnapshotException("目标资料已变化，请重新核对恢复")
         if (expectedAnalysisGeneration != null && analysisGeneration(db) != expectedAnalysisGeneration) throw StaleSnapshotException("目标分析已变化，请重新核对恢复")
-        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1") || exists(db, "experience_threads", "1 = 1") || exists(db, "historical_comparisons", "1 = 1"))) {
+        if (!replaceExisting && (exists(db, "records", "1 = 1") || exists(db, "templates", "1 = 1") || exists(db, "analysis_runs", "1 = 1") || exists(db, "claim_feedback", "1 = 1") || exists(db, "knowledge_heads", "1 = 1") || exists(db, "action_heads", "1 = 1") || exists(db, "profile_heads", "1 = 1") || exists(db, "experience_threads", "1 = 1") || exists(db, "historical_comparisons", "1 = 1") || exists(db, "conversation_threads", "1 = 1"))) {
             throw IllegalStateException("目标已有记录、模板、分析、反馈、知识、行动或画像，须明确允许替换后恢复")
         }
+        val conversations = ConversationValidation.merge(ConversationStore.all(db),
+            ConversationCollection(snapshot.conversations, snapshot.conversationTurns, snapshot.deletedConversations))
         val restoredPreferences = DashboardPreferencesStore.read(db) ?: snapshot.dashboardPreferences
         val mergedProfileDeletions = mergeDeletions(deletions(db, "deleted_profiles"), snapshot.deletedProfiles)
         require(mergedProfileDeletions.size <= ProfileValidation.MAX_DELETIONS) { "画像删除标记超过上限" }
@@ -1331,7 +1387,12 @@ class LifeRepository(
         require(comparisonDeletions.size <= HistoricalComparisonCodec.MAX_DELETIONS) { "独立对照说明删除标记达到上限" }
         val comparisonDeletedRuns = comparisonDeletions.map { it.id }.toSet()
         val comparisons = HistoricalComparisonStore.merge(HistoricalComparisonStore.all(db), snapshot.historicalComparisons, comparisonDeletedRuns)
-        val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns).toMutableList()
+        // Deleted/replaced question chains must not resurrect their wording through an old task.
+        val retainedConversationTurns = conversations.turns.associateBy { it.runId }
+        val suppressedConversationRunIds = snapshot.conversationTurns.filter { retainedConversationTurns[it.runId] != it }.map { it.runId }.toSet()
+        val suppressedConversationRuns = snapshot.analysisRuns.filter { it.id in suppressedConversationRunIds }
+            .map { Deletion(it.id, it.version, clock.instant()) }
+        val mergedAnalyses = mergeDeletions(deletions(db, "deleted_analysis_runs"), snapshot.deletedAnalysisRuns + suppressedConversationRuns).toMutableList()
         require(mergedAnalyses.size <= 100_000) { "分析任务删除标记超过上限" }
         val mergedFeedbackDeletions = mergeDeletions(deletions(db, "deleted_claim_feedback"), snapshot.deletedClaimFeedback)
         require(mergedFeedbackDeletions.size <= ClaimFeedbackValidation.MAX_DELETIONS) { "反馈删除标记超过保存上限" }
@@ -1474,8 +1535,8 @@ class LifeRepository(
             } || FeedbackContextProtocol.usedReferences(state).any { ref ->
                 ref.id !in retainedFeedbackIds || ref.runId !in retainedRunIds &&
                     (ref.sourceRecordIds.isNotEmpty() || ref.runId in incomingRunIds)
-            } || run.id in comparisonDeletedRuns ||
-                state.historicalFeedbackResolutions.toSet() != comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()
+            } || state.request.conversationContext?.let { it.parentRunId !in retainedRunIds } == true ||
+                run.id in comparisonDeletedRuns || state.historicalFeedbackResolutions.toSet() != comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()
         }.map { it.id }.toSet()
         analyses.filter { it.id in missingReferenceRuns }.forEach { run ->
             require(mergedAnalyses.size < 100_000) { "维护依赖缺口清理超过任务删除上限" }
@@ -1587,6 +1648,7 @@ class LifeRepository(
                 mergedKnowledgeDeletions.forEach { insertDeletion(db, "deleted_knowledge", it) }
                 ActionStore.replace(db, actionRevisions, actionHeads, mergedActionDeletions)
                 ProfileStore.replace(db, profileRevisions, profileHeads, mergedProfileDeletions)
+                ConversationStore.replace(db, conversations)
                 ExperienceThreadStore.replace(db, experience.threads, experience.changes, experience.deletions)
                 HistoricalComparisonStore.replace(db, comparisons, comparisonDeletions)
                 restoredPreferences?.let { DashboardPreferencesStore.write(db, it) }
@@ -1874,6 +1936,7 @@ class LifeRepository(
 
     private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
         val state = AnalysisRunCodec.decode(run.payload)
+        if (state.request.conversationContext?.let { !dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(it) } == true) return false
         if (state.feedbackContext?.let { !FeedbackContextCatalog(this).current(run.id, it) } == true) return false
         val dependencies = try {
             ReductionGraph.feedbackDependencies(state, claim)
@@ -1979,6 +2042,7 @@ class LifeRepository(
         ActionStore.ensureBounds(db)
         ProfileStore.ensureBounds(db)
         HistoricalComparisonStore.ensureBounds(db)
+        ConversationStore.ensureBounds(db)
         val usage = analysisStorageUsage(db)
         require(usage.activeTasks <= AnalysisStorageLimits.ACTIVE_TASKS && usage.activeBytes <= AnalysisStorageLimits.ACTIVE_BYTES &&
             usage.archivedTasks <= AnalysisStorageLimits.ARCHIVED_TASKS && usage.archivedBytes <= AnalysisStorageLimits.ARCHIVED_BYTES) { "活动分析或归档超过保存上限" }
@@ -1992,7 +2056,8 @@ class LifeRepository(
             "profile_revisions" to ProfileValidation.MAX_REVISIONS, "profile_heads" to ProfileValidation.MAX_REVISIONS,
             "deleted_profiles" to ProfileValidation.MAX_DELETIONS, "experience_threads" to ExperienceValidation.MAX_THREADS,
             "experience_changes" to ExperienceValidation.MAX_CHANGES, "deleted_experience_threads" to ExperienceValidation.MAX_DELETIONS,
-            "historical_comparisons" to HistoricalComparisonCodec.MAX_NOTES, "deleted_historical_comparison_runs" to HistoricalComparisonCodec.MAX_DELETIONS)
+            "historical_comparisons" to HistoricalComparisonCodec.MAX_NOTES, "deleted_historical_comparison_runs" to HistoricalComparisonCodec.MAX_DELETIONS,
+            "conversation_threads" to ConversationValidation.MAX_THREADS, "conversation_turns" to ConversationValidation.MAX_TURNS, "deleted_conversations" to ConversationValidation.MAX_DELETIONS)
         rowLimits.forEach { (table, limit) ->
             require(count(db, "SELECT COUNT(*) FROM $table", emptyList()) <= limit) { "资料超过当前快照数量上限：$table" }
         }
@@ -2015,6 +2080,7 @@ class LifeRepository(
             "experience_threads" to listOf("id", "payload"), "experience_changes" to listOf("thread_id", "payload"),
             "deleted_experience_threads" to listOf("id"),
             "historical_comparisons" to listOf("id", "run_id", "payload"), "deleted_historical_comparison_runs" to listOf("id"),
+            "conversation_threads" to listOf("id", "payload"), "conversation_turns" to listOf("id", "payload"), "deleted_conversations" to listOf("id"),
         )
         var textBytes = 0L
         textColumns.forEach { (table, columns) ->

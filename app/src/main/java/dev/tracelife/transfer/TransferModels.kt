@@ -1,5 +1,7 @@
 package dev.tracelife.transfer
 
+import dev.tracelife.conversation.ConversationThread
+import dev.tracelife.conversation.ConversationTurn
 import dev.tracelife.knowledge.StoredExperienceThread
 import dev.tracelife.knowledge.StoredExperienceChange
 import dev.tracelife.dashboard.StoredDashboardPreferences
@@ -32,7 +34,7 @@ data class RepositorySnapshot(
     val deletedRecords: List<Deletion>,
     val deletedTemplates: List<Deletion>,
     val changes: List<ChangeEvent>,
-    val sourceSchemaVersion: Int = 10,
+    val sourceSchemaVersion: Int = 11,
     val analysisRuns: List<StoredAnalysisRun> = emptyList(),
     val analysisGeneration: Long = 0,
     val deletedAnalysisRuns: List<Deletion> = emptyList(),
@@ -53,10 +55,14 @@ data class RepositorySnapshot(
     val deletedExperienceThreads: List<Deletion> = emptyList(),
     val historicalComparisons: List<HistoricalComparisonNote> = emptyList(),
     val historicalComparisonDeletions: List<Deletion> = emptyList(),
+    val conversations: List<ConversationThread> = emptyList(),
+    val conversationTurns: List<ConversationTurn> = emptyList(),
+    val deletedConversations: List<Deletion> = emptyList(),
 ) {
     // Derived locally during capture; deliberately absent from the constructor/codec so copies
     // and imported backups never inherit a trusted current-source classification.
     internal var currentKnowledgeSourceRevisions: Set<Pair<String, Int>>? = null
+    internal var currentAnalysisSourceRunIds: Set<String>? = null
 }
 
 data class Deletion(val id: String, val lastRevision: Int, val deletedAt: Instant)

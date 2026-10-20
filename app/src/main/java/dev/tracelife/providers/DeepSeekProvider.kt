@@ -154,7 +154,8 @@ class DeepSeekProvider internal constructor(
         val body = AnalysisRunCodec.json(mapOf(
             "model" to model.apiId,
             "messages" to listOf(mapOf("role" to "system", "content" to (instructions +
-                if (envelope["historicalFeedback"] != null) FeedbackContextProtocol.MODEL_INSTRUCTIONS else "")),
+                (if (envelope["historicalFeedback"] != null) FeedbackContextProtocol.MODEL_INSTRUCTIONS else "") +
+                (if (envelope["conversationContext"] != null) dev.tracelife.analysis.ConversationContextProtocol.INSTRUCTIONS else ""))),
                 mapOf("role" to "user", "content" to request.payloadJson)),
             "thinking" to mapOf("type" to "disabled"),
             "response_format" to mapOf("type" to "json_object"),

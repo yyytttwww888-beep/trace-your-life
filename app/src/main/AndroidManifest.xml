@@ -38,6 +38,7 @@
         <activity android:name=".ui.ReviewActivity" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.TaskArchiveActivity" android:exported="false" />
         <activity android:name=".ui.ReflectionActivity" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".ui.ConversationActivity" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.ActionsActivity" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.PeriodActivity" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".ui.ProfileActivity" android:windowSoftInputMode="adjustResize" />
