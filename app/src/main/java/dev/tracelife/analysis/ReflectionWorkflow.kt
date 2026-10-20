@@ -1,5 +1,6 @@
 package dev.tracelife.analysis
 
+import dev.tracelife.actions.*
 import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.knowledge.KnowledgeLibrary
 import dev.tracelife.model.RevisionConflictException
@@ -50,6 +51,9 @@ data class ReflectionRun(
     /** Complete, current findings only. A failed review can still be resumed explicitly. */
     val canReviewFindings: Boolean,
     val archivedAt: Instant? = null,
+    val knowledgeContext: KnowledgeContextPlan? = null,
+    val actionEvents: Int = 0,
+    val processedActionEvents: Int = 0,
 )
 
 data class ReflectionHistoryPage(val items: List<ReflectionRun>, val nextOffset: Int?)
@@ -66,6 +70,7 @@ class ReflectionWorkflow(
     private val feedback: AnalysisFeedback = AnalysisFeedback(repository),
     private val knowledge: KnowledgeLibrary = KnowledgeLibrary(repository),
 ) {
+    private val actionWorkflow = ActionReflectionWorkflow(repository, analysis, feedback, knowledge)
     private val synthesis = PeriodSynthesisProcessor(analysis)
     private val reduction = PeriodReductionProcessor(analysis)
     private val review = PeriodReductionReviewProcessor(analysis)
@@ -76,12 +81,13 @@ class ReflectionWorkflow(
 
     /** Conversation and shortcuts share the same complete-range synthesis and publication gates. */
     fun startQuestion(question: String, scope: AnalysisQuery, limits: AnalysisLimits = AnalysisLimits(),
-        context: ConversationContext? = null, id: String = PREFIX + UUID.randomUUID()): ReflectionRun {
+        context: ConversationContext? = null, id: String = PREFIX + UUID.randomUUID(),
+        knowledgeContext: KnowledgeContextPlan? = null, includeActions: Boolean = false): ReflectionRun {
         require(id.startsWith(PREFIX))
         val source = repository.analysisSourceStamp()
         val focus = FeedbackContextCatalog(repository).routeTopics(source, scope)
         return inspect(analysis.start(AnalysisRequest(question, scope, limits, focusTopics = focus,
-            inheritHistoricalFeedback = true, conversationContext = context), id).stored.id)
+            inheritHistoricalFeedback = true, conversationContext = context, knowledgeContext = knowledgeContext, actionPeriod = includeActions), id).stored.id)
     }
 
     /** Filtering happens before limiting: unrelated extraction/profile tasks cannot hide history. */
@@ -112,6 +118,7 @@ class ReflectionWorkflow(
 
     fun inspect(runId: String): ReflectionRun {
         val task = task(runId)
+        if (task.state.request.actionPeriod) return inspectAction(runId)
         val progress = synthesis.inspect(runId)
         val integrated = reduction.inspect(runId)
         val leaves = task.state.calls.filter { it.purpose == CallPurpose.SYNTHESIS && it.status == CallStatus.SUCCEEDED }
@@ -138,7 +145,10 @@ class ReflectionWorkflow(
         } else leaves.flatMap { leaf -> requireNotNull(leaf.proposal).claims.mapIndexed { index, claim ->
             finding(task, ReflectionTarget.Claim(ClaimRef(leaf.batchKey, index, AnalysisRunCodec.claimSha256(claim))), claim.text, readableCurrent)
         } }
-        val unknowns = (leaves.flatMap { it.proposal?.unknowns.orEmpty() } + nodes.flatMap { it.reductionOutput?.unknowns.orEmpty() }).distinct()
+        // A later batch may answer an earlier batch's question. Keep those local caveats in
+        // their own ledger; the complete root owns the reconciled answer's remaining unknowns.
+        val unknowns = if (root != null) requireNotNull(root.reductionOutput).unknowns
+            else leaves.flatMap { it.proposal?.unknowns.orEmpty() }.distinct()
         val complete = progress.coverage?.remainingTextFragments == 0L &&
             (leaves.size == 1 || integrated.status == ReductionProcessingStatus.TREE_INTEGRATED)
         val reviewable = complete && status !in setOf(ReflectionStatus.STALE, ReflectionStatus.EXPIRED,
@@ -157,7 +167,7 @@ class ReflectionWorkflow(
         ensureUnchanged(task)
         return ReflectionRun(runId, task.stored.createdAt, task.state.request.scope, finalStatus, task.stored.version,
             progress.coverage, leaves.size, nodes.size, task.state.calls.size, rows, unknowns,
-            reviewable && task.stored.archivedAt == null, task.stored.archivedAt)
+            reviewable && task.stored.archivedAt == null, task.stored.archivedAt, task.state.request.knowledgeContext)
     }
 
     /** A single shared pass limit spans original synthesis and all reduction levels. */
@@ -165,7 +175,14 @@ class ReflectionWorkflow(
         onProgress: (ReflectionRun) -> Unit = {},
     ): ReflectionPass {
         require(maxRequests in 1..100)
-        task(runId)
+        val task = task(runId)
+        if (task.state.request.actionPeriod) {
+            val pass = actionWorkflow.process(runId, provider, maxRequests, inputsPerBatch = 16)
+            val result = inspectAction(runId)
+            onProgress(result)
+            val status = runCatching { ReflectionStatus.valueOf(pass.status) }.getOrDefault(result.status)
+            return ReflectionPass(result, pass.requests, status)
+        }
         var requests = 0
         while (requests < maxRequests) {
             val current = inspect(runId)
@@ -175,7 +192,7 @@ class ReflectionWorkflow(
             val before = current.taskVersion
             val outcome: ReflectionStatus
             if (pending.coverage?.remainingTextFragments?.let { it > 0 } == true) {
-                val result = synthesis.process(runId, provider, maxBatches = 1)
+                val result = synthesis.process(runId, provider, maxBatches = 1, fragmentsPerBatch = if (task.state.request.knowledgeContext != null) 16 else 4)
                 requests += result.modelRequestsThisPass
                 outcome = when (result.status) {
                     SynthesisProcessingStatus.RETRY_NEEDED -> ReflectionStatus.RETRY_NEEDED
@@ -358,6 +375,62 @@ class ReflectionWorkflow(
         return result
     }
 
+    fun actionEvidence(runId: String, target: ReflectionTarget, offset: Int = 0, limit: Int = 25): ActionEvidencePage {
+        require(offset >= 0 && limit in 1..100)
+        val task = currentTask(runId); requireTarget(task, target)
+        val entries = when (target) {
+            is ReflectionTarget.Claim -> task.state.calls.single { it.batchKey == target.ref.batchKey && it.status == CallStatus.SUCCEEDED }.actionEvidence
+            is ReflectionTarget.Reduction -> analysis.reductionDependencies(runId, target.ref.root).originalActionEvidence
+        }
+        val selected = entries.drop(offset).take(limit)
+        ensureUnchanged(task)
+        return ActionEvidencePage(runId, selected, entries.size, (offset + selected.size).takeIf { it < entries.size })
+    }
+
+    fun actionOriginal(runId: String, target: ReflectionTarget, evidenceId: String): Map<String, Any?> {
+        val task = currentTask(runId); requireTarget(task, target)
+        val entries = when (target) {
+            is ReflectionTarget.Claim -> task.state.calls.single { it.batchKey == target.ref.batchKey && it.status == CallStatus.SUCCEEDED }.actionEvidence
+            is ReflectionTarget.Reduction -> analysis.reductionDependencies(runId, target.ref.root).originalActionEvidence
+        }
+        val ref = requireNotNull(entries.singleOrNull { it.id == evidenceId }) { "行动凭据不属于此发现" }
+        return repository.actionEvidenceBody(ref).also { ensureUnchanged(task) }
+    }
+
+    private fun inspectAction(runId: String): ReflectionRun {
+        val value = actionWorkflow.inspect(runId)
+        val task = value.task; val progress = value.progress
+        val status = when (task.status) {
+            AnalysisStatus.STALE -> ReflectionStatus.STALE
+            AnalysisStatus.EXPIRED -> ReflectionStatus.EXPIRED
+            AnalysisStatus.IN_FLIGHT -> ReflectionStatus.NEEDS_RECOVERY
+            AnalysisStatus.NEEDS_RETRY -> ReflectionStatus.RETRY_NEEDED
+            else -> when (progress.integration) {
+                ActionPeriodIntegration.INCOMPLETE -> ReflectionStatus.ANALYZING
+                ActionPeriodIntegration.MULTIPLE_BATCHES_NOT_INTEGRATED ->
+                    if (reduction.inspect(runId).status == ReductionProcessingStatus.DEPENDENCY_BLOCKED)
+                        ReflectionStatus.DEPENDENCY_BLOCKED else ReflectionStatus.INTEGRATING
+                ActionPeriodIntegration.NO_INPUTS -> ReflectionStatus.NO_TEXT
+                else -> ReflectionStatus.READY
+            }
+        }
+        val exhausted = task.state.calls.size >= task.state.request.limits.maxCalls ||
+            task.state.calls.sumOf { it.inputBytes.toLong() } >= task.state.request.limits.totalInputBytes
+        val finalStatus = if (exhausted && status in setOf(ReflectionStatus.ANALYZING, ReflectionStatus.INTEGRATING)) ReflectionStatus.BUDGET_EXHAUSTED else status
+        val findings = value.findings.map { f ->
+            val target = when (val t = f.target) {
+                is ActionReflectionTarget.Claim -> ReflectionTarget.Claim(t.ref)
+                is ActionReflectionTarget.Reduction -> ReflectionTarget.Reduction(t.ref)
+            }
+            ReflectionFinding(target, f.text, f.feedback, f.verdict, f.reviewProgress, f.saved?.value?.id,
+                f.saved?.evidenceState, FeedbackContextProtocol.coverage(task.state, claimRef(target)))
+        }
+        return ReflectionRun(runId, task.stored.createdAt, task.state.request.scope, finalStatus, task.stored.version,
+            progress.recordCoverage, progress.batches.size, task.state.calls.count { it.purpose == CallPurpose.REDUCTION && it.status == CallStatus.SUCCEEDED },
+            task.state.calls.size, findings, value.unknowns, value.canReview, task.stored.archivedAt, task.state.request.knowledgeContext,
+            progress.actionEvents, progress.processedActionEvents)
+    }
+
     private fun finding(task: AnalysisTask, target: ReflectionTarget, text: String, current: Boolean): ReflectionFinding {
         val runId = task.stored.id
         val progress = if (current && target is ReflectionTarget.Reduction) review.inspect(runId, target.ref) else null
@@ -391,7 +464,7 @@ class ReflectionWorkflow(
     private fun requireTarget(task: AnalysisTask, target: ReflectionTarget) {
         when (target) {
             is ReflectionTarget.Claim -> require(task.state.calls.any { call ->
-                call.purpose == CallPurpose.SYNTHESIS && call.status == CallStatus.SUCCEEDED && call.batchKey == target.ref.batchKey &&
+                call.purpose in setOf(CallPurpose.SYNTHESIS, CallPurpose.ACTION_SYNTHESIS) && call.status == CallStatus.SUCCEEDED && call.batchKey == target.ref.batchKey &&
                     call.proposal?.claims?.getOrNull(target.ref.claimIndex)?.let { AnalysisRunCodec.claimSha256(it) == target.ref.claimSha256 } == true
             }) { "发现已变化或不属于这次分析" }
             is ReflectionTarget.Reduction -> require(task.state.calls.any { call ->
@@ -411,7 +484,7 @@ class ReflectionWorkflow(
 
     private fun task(runId: String): AnalysisTask = analysis.task(runId).also { require(isReflection(it)) { "这不是主动分析任务" } }
     private fun isReflection(task: AnalysisTask) = task.stored.id.startsWith(PREFIX) &&
-        task.state.request.profileTarget == null && !task.state.request.actionPeriod
+        task.state.request.profileTarget == null
     private fun currentTask(runId: String) = task(runId).also {
         if (it.status in setOf(AnalysisStatus.STALE, AnalysisStatus.EXPIRED)) throw StaleSnapshotException("来源已变化，请重新分析；旧结果仅供回顾")
     }

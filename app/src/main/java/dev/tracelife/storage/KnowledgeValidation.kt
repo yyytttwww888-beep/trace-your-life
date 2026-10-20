@@ -17,6 +17,7 @@ import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.knowledge.KnowledgeCodec
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.model.RecordRevision
+import dev.tracelife.profile.ProfileIntegrationProtocol
 import java.time.Instant
 import java.time.ZoneId
 
@@ -46,7 +47,11 @@ object KnowledgeValidation {
             require(category == KnowledgeCategory.INSIGHT) { "周期归并陈述只能发布为洞察" }
             ReductionReviewProtocol.proof(state, call)
         } else null
-        val claim = if (reductionProof != null) {
+        val integrated = call.profileMaintenanceProof?.plan?.integration
+        val claim = if (integrated != null) {
+            require(ProfileIntegrationProtocol.matches(state, integrated)) { "整体画像来源链不一致" }
+            ProposedClaim(integrated.statement.text, requireNotNull(call.review).supportingEvidenceIds, ClaimKind.POSSIBLE_INTERPRETATION)
+        } else if (reductionProof != null) {
             // Derived input IDs stay in the proof. The published statement cites only original
             // evidence actually supporting the final review, and keeps the exact draft wording.
             ProposedClaim(reductionProof.statement.text, requireNotNull(call.review).supportingEvidenceIds, ClaimKind.POSSIBLE_INTERPRETATION)
@@ -94,7 +99,13 @@ object KnowledgeValidation {
             "指标知识只能保存独立指标核对后的可能解释"
         }
         value.metricEvidence.forEach { RecordMetricProtocol.validate(it, value.scope, value.source) }
-        if (proof == null) {
+        val integrated = value.profileMaintenanceProof?.plan?.integration
+        if (integrated != null) {
+            require(value.claim.text == integrated.statement.text && value.claim.evidenceIds == value.review.supportingEvidenceIds &&
+                value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION && ReductionGraph.feedbackRef(integrated.target) == value.claimRef) {
+                "整体画像陈述或原文支持与维护证明不一致"
+            }
+        } else if (proof == null) {
             require(AnalysisRunCodec.claimSha256(value.claim) == value.claimRef.claimSha256) { "知识陈述摘要不一致" }
         } else {
             require(value.category == KnowledgeCategory.INSIGHT && value.claim.kind == ClaimKind.POSSIBLE_INTERPRETATION)
@@ -146,6 +157,7 @@ object KnowledgeValidation {
                 else it.purpose == CallPurpose.REDUCTION_REVIEW && it.reductionTarget == proof.target
         } ?: return false
         if (!dev.tracelife.analysis.FeedbackContextProtocol.publicationReady(state, value.claimRef, latest)) return false
+        if (value.profileMaintenanceProof?.plan?.integration?.let { !ProfileIntegrationProtocol.matches(state, it) } == true) return false
         if (latest.batchKey != value.reviewBatchKey || latest.attempt != value.reviewAttempt ||
             latest.providerId != value.reviewProviderId || latest.requestSha256 != value.reviewRequestSha256 ||
             latest.review != value.review || latest.evidence != value.evidence || latest.metricEvidence != value.metricEvidence ||
@@ -158,7 +170,7 @@ object KnowledgeValidation {
     /** All feedback fences, including zero versions and the independent publication confirmation. */
     fun feedbackDependencies(value: StoredKnowledgeRevision): List<ReductionFeedbackToken> {
         val tokens = listOf(ReductionFeedbackToken(value.claimRef, value.feedbackVersion)) +
-            value.reductionProof?.dependencyTokens.orEmpty()
+            value.reductionProof?.dependencyTokens.orEmpty() + value.profileMaintenanceProof?.plan?.integration?.feedbackTokens.orEmpty()
         require(tokens.groupBy { it.claim }.values.all { group -> group.map { it.version }.distinct().size == 1 }) {
             "知识反馈依赖版本不一致"
         }

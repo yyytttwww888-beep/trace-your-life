@@ -258,3 +258,9 @@ val result = app.analysisProcessor.process(
 ### 对话式回看真实验证
 
 `DeepSeekConversationLiveTest` 默认跳过，明确执行 `./gradlew testDebugUnitTest --tests 'dev.tracelife.providers.DeepSeekConversationLiveTest' -PtraceLifeDeepSeekConversation=true` 才读取仓库外凭据。测试最多调用 2 次，不自动重试：三个月学习问题与选定发现的改善／反例追问，使用四条合成记录，其中一条无主题。实际用量与结果见[开发验证](DEVELOPMENT.md#对话式回看验证)。
+
+## 固定质量案例与整体画像验证
+
+新增显式测试 `DeepSeekKnowledgeQualityLiveTest`（`-PtraceLifeDeepSeekQuality=true`），使用六组固定合成案例检查重复事件、长文末尾反例、资料缺期、历史纠正、计划与执行以及相对旧理解的新信息。全套最多 12 次真实请求，单案例最多 3 次；不为得到理想结论自动重试。通过 `-PtraceLifeQualityReportDir=/仓库外目录` 保存 JSON／Markdown 报告；程序协议校验与逐案例语义评价分别报告。测试通过不能代表总体准确率。
+
+新增 `DeepSeekProfileIntegrationLiveTest`，沿用 `-PtraceLifeDeepSeekProfile=true`，两个月四条合成原文最多使用 5 次请求验证分批生成、批内核对与整体整理。该测试不执行付费全范围维护扫描，不自动发布或采用画像。默认构建跳过两类真实调用。

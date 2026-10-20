@@ -601,6 +601,9 @@ class LifeRepository(
                 require(current.createdAt == run.createdAt && current.source == run.source && run.updatedAt >= current.updatedAt) { "分析任务身份或时间不一致" }
             }
             val state = AnalysisRunCodec.decode(run.payload)
+            state.request.knowledgeContext?.let { context ->
+                require(context.entries.none { it.runId == run.id } && dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(context)) { "已有知识、经验或画像已变化" }
+            }
             state.request.conversationContext?.let { context ->
                 require(context.parentRunId != run.id && dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(context)) { "先前回答或其依据已变化，请重新提问" }
             }
@@ -635,6 +638,13 @@ class LifeRepository(
             checkedPlans.distinct().forEach { plan ->
                 if (!profileMaintenanceCatalogCurrent(plan.profileTarget, run.id, plan.target, plan.references))
                     throw dev.tracelife.analysis.AnalysisDependencyBlockedException("画像维护目录在条件保存前发生变化")
+                plan.integration?.feedbackTokens.orEmpty().forEach { token ->
+                    val dependencyId = AnalysisRunCodec.feedbackId(run.id, token.claim)
+                    val dependency = readClaimFeedback(db, dependencyId)
+                    if (claimFeedbackVersion(dependencyId) != token.version ||
+                        dependency?.decision?.let { it != ClaimFeedbackDecision.CONFIRMED } == true || dependency == null && token.version > 0)
+                        throw dev.tracelife.analysis.AnalysisDependencyBlockedException("整体画像的祖先意见在条件保存前发生变化")
+                }
             }
             requireActiveCapacity(db, run.id, analysisStorageBytes(run))
             HistoricalComparisonStore.append(db, run.id, state.historicalFeedbackResolutions)
@@ -872,7 +882,10 @@ class LifeRepository(
     }
 
     fun deleteExperienceThread(id: String, expectedVersion: Int) = access { db ->
-        transaction(db) { ExperienceThreadStore.delete(db, id, expectedVersion, clock.instant()) }
+        transaction(db) {
+            purgeProfileMaintenanceRuns(db, deletedExperienceId = id)
+            ExperienceThreadStore.delete(db, id, expectedVersion, clock.instant())
+        }
     }
 
     fun knowledgeRevision(id: String, revision: Int? = null): StoredKnowledgeRevision? = access { db ->
@@ -916,6 +929,9 @@ class LifeRepository(
             require(proof == value) { "知识内容与已保存核对不一致" }
             require(KnowledgeValidation.reviewStillCurrent(value, run)) { "核对已有新结果，不能发布旧意见" }
             val publicationState = AnalysisRunCodec.decode(run.payload)
+            publicationState.request.knowledgeContext?.let {
+                require(dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(it)) { "已有理解发生变化，不能保存旧结果" }
+            }
             publicationState.request.conversationContext?.let {
                 require(dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(it)) { "先前回答或其依据已变化，不能保存旧结果" }
             }
@@ -1105,6 +1121,17 @@ class LifeRepository(
         }
         val state = AnalysisRunCodec.decode(run.payload)
         val plan = requireNotNull(state.profileMaintenancePlans.singleOrNull { ProfileMaintenanceProtocol.planSha256(it) == planId && it.target == claim })
+        plan.integration?.let { integration ->
+            require(dev.tracelife.profile.ProfileIntegrationProtocol.matches(state, integration)) { "整体画像来源链已变化" }
+            integration.feedbackTokens.forEach { token ->
+                val dependencyId = AnalysisRunCodec.feedbackId(runId, token.claim)
+                val dependency = readClaimFeedback(db, dependencyId)
+                require(claimFeedbackVersion(dependencyId) == token.version &&
+                    (dependency?.decision == ClaimFeedbackDecision.CONFIRMED || dependency == null && token.version == 0)) {
+                    "整体画像的祖先意见已变化，不能应用旧维护结果"
+                }
+            }
+        }
         val feedback = requireNotNull(readClaimFeedback(db, AnalysisRunCodec.feedbackId(runId, claim))) { "维护候选需要明确确认" }
         require(feedback.decision == ClaimFeedbackDecision.CONFIRMED && feedback.source == run.source)
         val review = requireNotNull(state.calls.lastOrNull { it.purpose == dev.tracelife.analysis.CallPurpose.REVIEW &&
@@ -1274,7 +1301,10 @@ class LifeRepository(
                     SourceScopeLedger.current(db, it.source, it.scope)
                 }.map { it.id to it.revision }.toSet()
                 snapshot.currentAnalysisSourceRunIds = snapshot.analysisRuns.filter {
-                    SourceScopeLedger.current(db, it.source, AnalysisRunCodec.decode(it.payload).request.scope)
+                    val state = AnalysisRunCodec.decode(it.payload)
+                    SourceScopeLedger.current(db, it.source, state.request.scope) &&
+                        (state.request.knowledgeContext?.let { context -> dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(context) } ?: true) &&
+                        (state.actionPlan?.let { plan -> actionEvidencePlanCurrent(state.request.scope, plan) } ?: true)
                 }.map { it.id }.toSet()
                 SnapshotValidation.validate(snapshot)
                 attachments.forEach { copyVerifiedAttachment(attachmentFile(it.id), File(attachmentDestination, "${it.id}.blob"), it) }
@@ -1440,7 +1470,8 @@ class LifeRepository(
         val maintenanceDeleted = ProfileMaintenanceDeletion.affectedRuns(snapshot.analysisRuns,
             snapshot.profileRevisions + ProfileStore.allRevisions(db), snapshot.knowledgeRevisions + allKnowledgeRevisions(db),
             snapshot.claimFeedback + allClaimFeedback(db), deletedProfileIds, deletedFeedbackIds,
-            (snapshot.deletedKnowledge + deletions(db, "deleted_knowledge")).map { it.id }.toSet(), deletedAnalysisIds)
+            (snapshot.deletedKnowledge + deletions(db, "deleted_knowledge")).map { it.id }.toSet(), deletedAnalysisIds,
+            experience.deletions.map { it.id }.toSet())
         snapshot.analysisRuns.filter { it.id in maintenanceDeleted }.forEach { run ->
             require(mergedAnalyses.size < 100_000) { "维护依赖清理超过任务删除上限" }
             mergedAnalyses += Deletion(run.id, run.version, clock.instant())
@@ -1535,7 +1566,10 @@ class LifeRepository(
             } || FeedbackContextProtocol.usedReferences(state).any { ref ->
                 ref.id !in retainedFeedbackIds || ref.runId !in retainedRunIds &&
                     (ref.sourceRecordIds.isNotEmpty() || ref.runId in incomingRunIds)
-            } || state.request.conversationContext?.let { it.parentRunId !in retainedRunIds } == true ||
+            } || state.request.knowledgeContext?.entries?.any { ref ->
+                ref.runId !in retainedRunIds || !KnowledgeContextIdentity.matches(ref, retainedKnowledge,
+                    profileRevisions, experience.threads, experience.changes)
+            } == true || state.request.conversationContext?.let { it.parentRunId !in retainedRunIds } == true ||
                 run.id in comparisonDeletedRuns || state.historicalFeedbackResolutions.toSet() != comparisonsByRun[run.id].orEmpty().map { it.resolution }.toSet()
         }.map { it.id }.toSet()
         analyses.filter { it.id in missingReferenceRuns }.forEach { run ->
@@ -1546,7 +1580,7 @@ class LifeRepository(
         val finalMaintenanceDeletions = ProfileMaintenanceDeletion.affectedRuns(analyses,
             snapshot.profileRevisions + ProfileStore.allRevisions(db), candidateKnowledge.values.flatten(),
             snapshot.claimFeedback + allClaimFeedback(db), deletedProfileIds, deletedFeedbackIds,
-            mergedKnowledgeDeletions.map { it.id }.toSet(), deletedAnalysisIds) + missingReferenceRuns
+            mergedKnowledgeDeletions.map { it.id }.toSet(), deletedAnalysisIds, experience.deletions.map { it.id }.toSet()) + missingReferenceRuns
         analyses.filter { it.id in finalMaintenanceDeletions && it.id !in deletedAnalysisIds }.forEach { run ->
             require(mergedAnalyses.size < 100_000) { "维护依赖清理超过任务删除上限" }
             mergedAnalyses += Deletion(run.id, run.version, clock.instant())
@@ -1917,13 +1951,15 @@ class LifeRepository(
     /** Pure identity references let us erase complete affected tasks without retaining or
      * searching deleted prose. Follow the closure because another task may quote their knowledge. */
     private fun purgeProfileMaintenanceRuns(db: SQLiteDatabase, deletedProfileId: String? = null,
-        deletedFeedbackId: String? = null, deletedKnowledgeId: String? = null, deletedRunId: String? = null): Set<String> {
+        deletedFeedbackId: String? = null, deletedKnowledgeId: String? = null, deletedRunId: String? = null,
+        deletedExperienceId: String? = null): Set<String> {
         val runs = db.rawQuery("SELECT $ANALYSIS_METADATA_COLUMNS FROM analysis_runs ORDER BY id", null).use { cursor ->
             buildList { while (cursor.moveToNext()) add(analysisRunFromCursor(db, cursor)) }
         }
         val affected = ProfileMaintenanceDeletion.affectedRuns(runs, ProfileStore.allRevisions(db),
             allKnowledgeRevisions(db), allClaimFeedback(db), listOfNotNull(deletedProfileId).toSet(),
-            listOfNotNull(deletedFeedbackId).toSet(), listOfNotNull(deletedKnowledgeId).toSet(), listOfNotNull(deletedRunId).toSet())
+            listOfNotNull(deletedFeedbackId).toSet(), listOfNotNull(deletedKnowledgeId).toSet(), listOfNotNull(deletedRunId).toSet(),
+            listOfNotNull(deletedExperienceId).toSet())
         val purged = runs.filter { it.id in affected }
         require(count(db, "SELECT COUNT(*) FROM deleted_analysis_runs", emptyList()) + purged.size <= 100_000) { "分析任务删除标记达到上限" }
         purged.forEach { run ->
@@ -1936,6 +1972,7 @@ class LifeRepository(
 
     private fun feedbackDependenciesCurrent(db: SQLiteDatabase, run: StoredAnalysisRun, claim: ClaimRef): Boolean {
         val state = AnalysisRunCodec.decode(run.payload)
+        if (state.request.knowledgeContext?.let { !dev.tracelife.analysis.KnowledgeContextCatalog(this, clock).current(it) } == true) return false
         if (state.request.conversationContext?.let { !dev.tracelife.analysis.ConversationContextCatalog(this, clock).current(it) } == true) return false
         if (state.feedbackContext?.let { !FeedbackContextCatalog(this).current(run.id, it) } == true) return false
         val dependencies = try {

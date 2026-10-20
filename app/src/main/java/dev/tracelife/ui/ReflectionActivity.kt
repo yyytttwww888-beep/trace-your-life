@@ -19,6 +19,8 @@ import dev.tracelife.knowledge.KnowledgeEvidenceState
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.analysis.HistoricalFeedbackCheck
 import dev.tracelife.analysis.HistoricalFeedbackChoice
+import dev.tracelife.actions.ActionEvidenceKind
+import dev.tracelife.actions.ActionEvidenceReceipt
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.ClaimFeedbackDecision
 import java.time.LocalDate
@@ -26,10 +28,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /** An explicit, resumable analysis journey. Opening or recreating this page never calls a model. */
-class ReflectionActivity : ScreenActivity() {
+class ReflectionActivity : FindingCaptureActivity() {
     private var runId: String? = null
     private var restoredScreen = "home"
     private var findingKey: String? = null
+    private var openHistoricalFeedback = false
     private var selectedRange = 1
     private var historyOffset = 0
     private var showArchived = false
@@ -49,6 +52,7 @@ class ReflectionActivity : ScreenActivity() {
             runId = savedInstanceState.getString("reflection.run")
             restoredScreen = savedInstanceState.getString("reflection.screen", "home")
             findingKey = savedInstanceState.getString("reflection.finding")
+            openHistoricalFeedback = restoredScreen == "feedback"
             selectedRange = savedInstanceState.getInt("reflection.range", 1)
             historyOffset = savedInstanceState.getInt("reflection.historyOffset", 0)
             showArchived = savedInstanceState.getBoolean("reflection.archived", false)
@@ -63,6 +67,7 @@ class ReflectionActivity : ScreenActivity() {
             selectedRecordIds = intent.getStringArrayListExtra(EXTRA_RECORD_IDS)?.toSet()
             runId = intent.getStringExtra(EXTRA_RUN_ID)
             findingKey = intent.getStringExtra(EXTRA_FINDING_KEY)
+            openHistoricalFeedback = intent.getBooleanExtra(EXTRA_HISTORICAL_FEEDBACK, false)
             if (runId != null) restoredScreen = "run"
             intent.getStringExtra(EXTRA_FROM)?.let { from = it; selectedRange = 3 }
             intent.getStringExtra(EXTRA_THROUGH)?.let { through = it; selectedRange = 3 }
@@ -263,7 +268,10 @@ class ReflectionActivity : ScreenActivity() {
         progressLabel = Ui.note(root, "正在读取已保存的进度…").apply { tag = "reflectionProgress" }
         runIo({ app.reflectionWorkflow.inspect(id) }) { run ->
             val selected = findingKey?.let { key -> run.findings.firstOrNull { targetKey(it.target) == key } }
-            if (selected == null) { findingKey = null; renderRun(run) } else renderFinding(run, selected)
+            val history = openHistoricalFeedback
+            openHistoricalFeedback = false
+            if (selected == null) { findingKey = null; renderRun(run) }
+            else if (history) showHistoricalFeedback(run, selected) else renderFinding(run, selected)
         }
     }
 
@@ -303,6 +311,7 @@ class ReflectionActivity : ScreenActivity() {
             }
         }
         renderCoverage(run)
+        showKnowledgeContext(root, run.knowledgeContext, "reflectionKnowledgeContext")
         if (run.findings.isEmpty()) {
             section("本次发现")
             emptyState(root, when (run.status) {
@@ -318,7 +327,7 @@ class ReflectionActivity : ScreenActivity() {
                 section(group.second)
                 items.forEach { finding ->
                     val container = card()
-                    chip(container, findingStatus(finding), findingTone(finding))
+                    chip(container, FindingCapture.status(finding), FindingCapture.tone(finding))
                     Ui.body(container, finding.text)
                     addButton(container, "查看依据与处理", "reflectionFinding:${targetKey(finding.target)}") {
                         findingKey = targetKey(finding.target)
@@ -341,6 +350,7 @@ class ReflectionActivity : ScreenActivity() {
                 Ui.note(card, "范围内 ${coverage.records} 条记录；已处理 ${coverage.completedTextCodePoints} / ${coverage.textCodePoints} 字，还有 ${coverage.remainingTextFragments} 段待分析。")
                 Ui.note(card, "未读附件 ${coverage.unreadAttachments} 个；不可读取记录 ${coverage.unreadableRecords} 条。")
                 Ui.note(card, "日期未知 ${coverage.unknownTimeRecords} 条；跨越所选日期 ${coverage.overlappingRecords} 条。它们不能直接归为这段时间内发生。")
+                if (run.actionEvents > 0) Ui.note(card, "行动计划与执行回看 ${run.actionEvents} 份，已处理 ${run.processedActionEvents} 份。计划不等于执行，未回看仍是未知。")
                 if (coverage.missingExactIds.isNotEmpty()) Ui.note(card, "有 ${coverage.missingExactIds.size} 条指定记录不在当前可用范围。")
             }
             Ui.note(card, "成功分析 ${run.synthesizedBatches} 批，汇总 ${run.reducedBatches} 批；累计请求 ${run.totalRequests} 次。")
@@ -371,14 +381,15 @@ class ReflectionActivity : ScreenActivity() {
         findingKey = targetKey(finding.target)
         beginScreen("finding", "这条发现")
         note("${run.scope.from} 至 ${run.scope.through}")
-        chip(root, findingStatus(finding), findingTone(finding))
+        chip(root, FindingCapture.status(finding), FindingCapture.tone(finding))
         text(finding.text)
         progressLabel = Ui.note(root, finding.reviewVerdict?.let(::verdictLabel) ?: "尚未完成原文核对。你的确认与原文核对会分别保留。").apply { tag = "reflectionProgress" }
         finding.reviewProgress?.let { progress ->
             note("已查阅 ${progress.scannedFragments} / ${progress.originalFragments} 段来源；最终核对重读 ${progress.finalRereadFragments} 段。")
+            if (progress.originalActionEvents > 0) note("行动材料已查阅 ${progress.scannedActionEvents} / ${progress.originalActionEvents} 份；最终核对重读 ${progress.finalRereadActionEvents} 份。")
             reviewHint(progress.status)?.let { note(it) }
         }
-        addButton(root, "查看记录依据", "reflectionEvidence") { showEvidence(run, finding) }
+        addButton(root, "查看记录与行动依据", "reflectionEvidence") { showEvidence(run, finding) }
         val prior = finding.historicalFeedback
         if (prior.total > 0) {
             val history = card()
@@ -396,11 +407,12 @@ class ReflectionActivity : ScreenActivity() {
             primaryButton("查看已保存内容与后续尝试", "openSavedFinding") {
                 startActivity(Intent(this, KnowledgeActivity::class.java).putExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID, savedId))
             }
+            if (finding.knowledgeEvidenceState == KnowledgeEvidenceState.CURRENT)
+                savedFindingActions(root, savedId, "savedReflectionFinding")
         }
         if (run.status !in blocked && (run.canReviewFindings || run.archivedAt != null)) {
             val decision = finding.feedback?.feedback?.decision
-            if (run.archivedAt == null && run.canReviewFindings && finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT && decision !in rejected && finding.reviewVerdict !in unsupported &&
-                prior.resolved == prior.total && prior.conflicts == 0) {
+            if (FindingCapture.canSave(run, finding)) {
                 primaryButton(if (decision == ClaimFeedbackDecision.CONFIRMED) "继续核对并保存" else "保留到知识库", "keepReflectionFinding") {
                     keepFinding(run, finding)
                 }
@@ -500,36 +512,9 @@ class ReflectionActivity : ScreenActivity() {
     }
 
     private fun keepFinding(run: ReflectionRun, finding: ReflectionFinding) {
-        withConfigured {
-            runIo({ app.reflectionWorkflow.suggestedTopics(run.id, finding.target) }) { topics ->
-                showKeepDialog(run, finding, topics)
-            }
-        }
-    }
-
-    private fun showKeepDialog(run: ReflectionRun, finding: ReflectionFinding, suggestedTopics: Set<String>) {
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), 0, dp(20), 0) }
-        val topics = labeledFieldIn(layout, "主题（可选）", "例如：学习、工作", value = suggestedTopics.joinToString("、"))
-        if (suggestedTopics.isNotEmpty()) Ui.note(layout, "已带入来源记录的主题，可在保存前调整。")
-        AlertDialog.Builder(this).setTitle("确认并保留这条发现？")
-            .setMessage("确认表示内容符合你的记录。接着会将相关原文发送给 DeepSeek 再次核对，可能产生费用，本轮最多请求 $REQUESTS_PER_PASS 次；只有记录支持时才保存到知识库。未完成时可继续。")
-            .setView(layout).setNegativeButton("取消", null)
-            .setPositiveButton("确认并核对") { _, _ ->
-                val selectedTopics = topics.text.toString().split(",", "，", "、").map(String::trim).filter(String::isNotEmpty).toSet()
-                if (selectedTopics.size > 30 || selectedTopics.any { it.length > 80 }) {
-                    showError(IllegalArgumentException("最多填写 30 个主题，每个主题不超过 80 字")); return@setPositiveButton
-                }
-                progressLabel?.text = "正在核对记录依据…本轮最多请求 $REQUESTS_PER_PASS 次。"
-                runIo({
-                    if (finding.feedback?.feedback?.decision != ClaimFeedbackDecision.CONFIRMED) {
-                        app.reflectionWorkflow.respond(run.id, finding.target, run.taskVersion,
-                            ClaimFeedbackDecision.CONFIRMED, finding.feedback?.feedback?.version)
-                    }
-                    app.reflectionWorkflow.reviewAndSave(run.id, finding.target, app.deepSeekProvider, app.deepSeekProvider,
-                        maxRequests = REQUESTS_PER_PASS, topics = selectedTopics,
-                        onProgress = { updated -> reportProgress(updated, run.totalRequests, true) })
-                }) { pass -> renderUpdatedFinding(pass.run.copy(status = pass.status)) }
-            }.show()
+        captureFinding(run.id, finding.target, REQUESTS_PER_PASS,
+            onProgress = { updated -> reportProgress(updated, run.totalRequests, true) },
+            onComplete = ::renderUpdatedFinding)
     }
 
     private fun renderUpdatedFinding(run: ReflectionRun) {
@@ -537,17 +522,63 @@ class ReflectionActivity : ScreenActivity() {
         if (finding == null) { findingKey = null; renderRun(run) } else renderFinding(run, finding)
     }
 
-    private fun showEvidence(run: ReflectionRun, finding: ReflectionFinding, offset: Int = 0) {
-        beginScreen("evidence", "记录依据")
-        note("这里只展示这条发现关联的原文。批内上下文也会用于核对，列出来源不表示每段都支持这条判断。")
-        runIo({ app.reflectionWorkflow.evidence(run.id, finding.target, offset) }) { page ->
-            if (page.items.isEmpty()) emptyState(root, "当前没有可读取的依据。来源可能已变化，请返回刷新结果。")
+    private fun showEvidence(run: ReflectionRun, finding: ReflectionFinding, offset: Int = 0, actionOffset: Int = 0) {
+        beginScreen("evidence", "这条发现的依据")
+        note("这里包含形成发现时的原始上下文。记录、计划和执行回看分别保留；列出来源不表示每份材料都支持这条判断。")
+        runIo({ app.reflectionWorkflow.evidence(run.id, finding.target, offset) to
+            app.reflectionWorkflow.actionEvidence(run.id, finding.target, actionOffset) }) { (page, actions) ->
+            if (page.total == 0 && actions.total == 0) emptyState(root, "当前没有可读取的依据。来源可能已变化，请返回刷新结果。")
+            if (actions.total > 0) {
+                section("计划与执行回看 · ${actions.total}")
+                actions.entries.forEach { receipt ->
+                    listRow(root, "${actionKindLabel(receipt.kind)} · 版本 ${receipt.revision}", "reflectionActionOriginal:${receipt.id}") {
+                        showActionOriginal(run, finding, receipt, offset, actionOffset)
+                    }
+                }
+                if (actionOffset > 0) button("上一页行动依据", "previousReflectionActionEvidence") {
+                    showEvidence(run, finding, offset, (actionOffset - 25).coerceAtLeast(0))
+                }
+                actions.nextOffset?.let { next -> button("下一页行动依据", "nextReflectionActionEvidence") { showEvidence(run, finding, offset, next) } }
+            }
+            if (page.total > 0) section("记录原文 · ${page.total}")
             page.items.forEachIndexed { index, receipt ->
                 listRow(root, "记录原文 · 第 ${offset + index + 1} 段\n${if (receipt.field == "body") "随记正文" else "复盘回答"} · 修订 ${receipt.revision}",
                     "reflectionOriginal:${receipt.id}") { showOriginal(run, finding, receipt, offset) }
             }
-            page.nextOffset?.let { next -> button("下一页依据", "nextReflectionEvidence") { showEvidence(run, finding, next) } }
-            if (offset > 0) button("返回第一页", "firstReflectionEvidence") { showEvidence(run, finding) }
+            page.nextOffset?.let { next -> button("下一页记录依据", "nextReflectionEvidence") { showEvidence(run, finding, next, actionOffset) } }
+            if (offset > 0) button("返回记录第一页", "firstReflectionEvidence") { showEvidence(run, finding, actionOffset = actionOffset) }
+        }
+    }
+
+    private fun showActionOriginal(run: ReflectionRun, finding: ReflectionFinding, receipt: ActionEvidenceReceipt,
+        recordOffset: Int, actionOffset: Int,
+    ) {
+        beginScreen("original", "行动原文")
+        runIo({ app.reflectionWorkflow.actionOriginal(run.id, finding.target, receipt.id) }) { body ->
+            note("${actionKindLabel(receipt.kind)} · 版本 ${receipt.revision}，保存于 ${body["savedAt"]}。这些是你的计划与执行自述。")
+            fun plan(title: String, value: Map<*, *>) {
+                val container = card()
+                Ui.sectionTitle(container, title)
+                Ui.body(container, value["title"].toString())
+                listOf("trigger" to "什么时候做", "behavior" to "准备怎么做", "expectedSignal" to "怎样看出效果").forEach { (key, label) ->
+                    Ui.fieldLabel(container, label); Ui.body(container, value[key].toString())
+                }
+                Ui.note(container, "安排回看：${value["reviewOn"]}")
+            }
+            (body["plan"] as? Map<*, *>)?.let { plan("原计划", it) }
+            (body["reviewedPlan"] as? Map<*, *>)?.let { plan("这次回看针对的旧计划", it) }
+            val review = body["review"] as? Map<*, *>
+            val observed = card()
+            Ui.sectionTitle(observed, "执行回看")
+            if (review == null) Ui.body(observed, "这份材料没有本期执行回看，执行与效果仍未知。")
+            else {
+                Ui.body(observed, when (review["execution"]) { "EXECUTED" -> "自述已执行"; "NOT_EXECUTED" -> "自述未执行"; else -> "执行情况仍未知" })
+                Ui.body(observed, review["observedText"].toString())
+                Ui.note(observed, "回看日期：${review["reviewedOn"]}")
+            }
+            (body["nextPlan"] as? Map<*, *>)?.let { plan("之后选择的新计划", it) }
+            note(if (body["planStatus"] == "STOPPED") "这份修订的计划已停止。停止不等于未执行。" else "这份修订的计划仍开放。开放不等于已执行。")
+            button("返回依据列表", "backReflectionActionEvidence") { showEvidence(run, finding, recordOffset, actionOffset) }
         }
     }
 
@@ -573,7 +604,8 @@ class ReflectionActivity : ScreenActivity() {
     private fun progressText(run: ReflectionRun): String {
         val coverage = run.coverage
         return if (coverage == null) "累计请求 ${run.totalRequests} 次。"
-        else "${coverage.records} 条记录 · 已处理 ${coverage.completedTextCodePoints} / ${coverage.textCodePoints} 字 · 累计请求 ${run.totalRequests} 次"
+        else "${coverage.records} 条记录 · 已处理 ${coverage.completedTextCodePoints} / ${coverage.textCodePoints} 字" +
+            (if (run.actionEvents > 0) " · 行动材料 ${run.processedActionEvents} / ${run.actionEvents} 份" else "") + " · 累计请求 ${run.totalRequests} 次"
     }
 
     private fun statusHint(run: ReflectionRun): String = when (run.status) {
@@ -591,38 +623,18 @@ class ReflectionActivity : ScreenActivity() {
         ReflectionStatus.CONFLICT -> "资料正在其他地方变化。请刷新结果后再操作。"
     }
 
-    private fun findingStatus(finding: ReflectionFinding): String = when {
-        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.REJECTED -> "已保存 · 已否定"
-        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CORRECTED -> "已保存 · 已纠正"
-        finding.knowledgeId != null && finding.feedback?.feedback?.decision == ClaimFeedbackDecision.WITHDRAWN -> "已保存 · 已撤回"
-        finding.knowledgeId != null && finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT -> "已保存 · 待更新"
-        finding.knowledgeId != null -> "已保存到知识库"
-        finding.feedback?.feedback?.decision == ClaimFeedbackDecision.REJECTED -> "已否定"
-        finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CORRECTED -> "已纠正，原判断不再收录"
-        finding.feedback?.feedback?.decision == ClaimFeedbackDecision.WITHDRAWN -> "已撤回"
-        finding.reviewVerdict == ReviewVerdict.CONTRADICTED -> "有反例，未保存"
-        finding.reviewVerdict == ReviewVerdict.UNSUPPORTED -> "依据不支持，未保存"
-        finding.reviewVerdict == ReviewVerdict.INSUFFICIENT_CONTEXT -> "资料不足，未保存"
-        finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED -> "你已确认，待完成核对"
-        else -> "待核对"
-    }
-
-    private fun findingTone(finding: ReflectionFinding): Ui.Tone = when {
-        finding.knowledgeId == null -> Ui.Tone.NEUTRAL
-        finding.knowledgeEvidenceState == KnowledgeEvidenceState.CURRENT -> Ui.Tone.OK
-        else -> Ui.Tone.WARN
-    }
-
     private fun formatTime(run: ReflectionRun) = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
         .withZone(ZoneId.systemDefault()).format(run.createdAt)
 
     companion object {
         const val EXTRA_RUN_ID = "dev.tracelife.reflection.RUN_ID"
         private const val EXTRA_FINDING_KEY = "dev.tracelife.reflection.FINDING_KEY"
+        private const val EXTRA_HISTORICAL_FEEDBACK = "dev.tracelife.reflection.HISTORICAL_FEEDBACK"
         /** Bind an existing target; opening still resolves its identity against the persisted run. */
-        fun intent(context: Context, runId: String, target: ReflectionTarget): Intent =
+        fun intent(context: Context, runId: String, target: ReflectionTarget, historicalFeedback: Boolean = false): Intent =
             Intent(context, ReflectionActivity::class.java).putExtra(EXTRA_RUN_ID, runId)
                 .putExtra(EXTRA_FINDING_KEY, targetKey(target))
+                .putExtra(EXTRA_HISTORICAL_FEEDBACK, historicalFeedback)
         const val EXTRA_ZONE_ID = "reflectionZoneId"
         const val EXTRA_INCLUDE_ARCHIVED = "reflectionIncludeArchived"
         const val EXTRA_RECORD_IDS = "reflectionRecordIds"
@@ -633,10 +645,13 @@ class ReflectionActivity : ScreenActivity() {
         private val continuable = setOf(ReflectionStatus.ANALYZING, ReflectionStatus.INTEGRATING, ReflectionStatus.RETRY_NEEDED)
         private val blocked = setOf(ReflectionStatus.STALE, ReflectionStatus.EXPIRED, ReflectionStatus.NEEDS_RECOVERY,
             ReflectionStatus.DEPENDENCY_BLOCKED, ReflectionStatus.CONFLICT, ReflectionStatus.BUDGET_EXHAUSTED)
-        private val rejected = setOf(ClaimFeedbackDecision.REJECTED, ClaimFeedbackDecision.CORRECTED, ClaimFeedbackDecision.WITHDRAWN)
-        private val unsupported = setOf(ReviewVerdict.UNSUPPORTED, ReviewVerdict.CONTRADICTED, ReviewVerdict.INSUFFICIENT_CONTEXT)
         private val groups = listOf("值得留下：" to "值得留下的经验", "值得关注：" to "值得关注", "可以尝试：" to "可以尝试的改进", "" to "其他发现")
         private fun groupFor(text: String) = groups.firstOrNull { it.first.isNotEmpty() && text.startsWith(it.first) }?.first.orEmpty()
+        private fun actionKindLabel(kind: ActionEvidenceKind) = when (kind) {
+            ActionEvidenceKind.OPENING_PLAN -> "期初计划"
+            ActionEvidenceKind.PLAN_CHANGE -> "期间计划与调整"
+            ActionEvidenceKind.USER_REVIEW -> "执行回看"
+        }
         private fun targetKey(target: ReflectionTarget): String = when (target) {
             is ReflectionTarget.Claim -> "claim:${target.ref.batchKey}:${target.ref.claimIndex}:${target.ref.claimSha256}"
             is ReflectionTarget.Reduction -> "reduction:${target.ref.root.batchKey}:${target.ref.root.attempt}:${target.ref.index}:${target.ref.statementSha256}"

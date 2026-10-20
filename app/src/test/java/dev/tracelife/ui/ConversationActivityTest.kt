@@ -14,9 +14,22 @@ import dev.tracelife.analysis.BatchProposal
 import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ProposedClaim
+import dev.tracelife.analysis.ClaimReview
+import dev.tracelife.analysis.PreparedModelRequest
+import dev.tracelife.analysis.ReflectionTarget
+import dev.tracelife.analysis.ReviewCompletion
+import dev.tracelife.analysis.ReviewVerdict
+import dev.tracelife.analysis.SemanticReviewProvider
+import dev.tracelife.actions.ActionDecision
+import dev.tracelife.actions.ActionDraft
+import dev.tracelife.actions.ActionExecution
+import dev.tracelife.actions.ActionEvidenceKind
+import dev.tracelife.actions.ActionReview
+import dev.tracelife.knowledge.KnowledgeContinuity
 import dev.tracelife.conversation.ConversationTurn
 import dev.tracelife.model.Occurrence
 import dev.tracelife.model.RecordDraft
+import dev.tracelife.storage.ClaimFeedbackDecision
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -33,6 +46,7 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.annotation.SQLiteMode
 import org.robolectric.shadows.ShadowAlertDialog
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /** Synthetic local journeys. The online provider is never invoked by these UI tests. */
@@ -167,7 +181,9 @@ class ConversationActivityTest {
         open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, first.threadId))
         val scroll = layoutConversation()
         val newest = view<View>("conversationTurn:${second.id}")
-        assertTrue("The preceding answer must extend beyond the viewport", newest.top > scroll.height)
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationExpand:${first.id}"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationProgress:${first.runId}"))
+        assertTrue("The latest question follows the earlier question directory", newest.top > 0)
         assertTrue("The latest answer must not remain buried below the first", scroll.scrollY > 0)
         assertTurnAtTop(second.id, scroll)
         assertEquals(calls, provider.calls)
@@ -201,6 +217,163 @@ class ConversationActivityTest {
         assertFalse(texts().any { it.contains("部分记录中的发现") })
         assertNull(activity.window.decorView.findViewWithTag<View>("conversationFollowup:${turn.id}:0"))
         assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationOpenAnswer:${turn.id}"))
+    }
+
+    @Test fun `opening an earlier answer resolves current state and leaves other answers collapsed`() {
+        val (first, second) = seedLongThread()
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, first.threadId))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationFinding:${first.id}:0"))
+        app.io.submit {
+            val original = app.repository.listRecords().items.single()
+            app.repository.updateRecord(original.id, original.revision, original.draft.copy(body = "合成修订：做法仍须继续观察。"))
+        }.get(20, TimeUnit.SECONDS)
+        click("conversationExpand:${first.id}")
+        assertTrue(texts().any { it.contains("旧回答需要更新") })
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationFinding:${first.id}:0"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationProgress:${second.runId}"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${first.id}:0"))
+    }
+
+    @Test fun `answer can reuse its current review save once and directly continue to experience or action`() {
+        val turn = seedReviewedTurn()
+        val calls = app.analysis.task(turn.runId).state.calls.size
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        click("conversationKeep:${turn.id}:0")
+        var dialog = ShadowAlertDialog.getLatestAlertDialog()
+        assertTrue(dialog.findViewById<TextView>(android.R.id.message).text.contains("不再发起模型请求"))
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).performClick()
+        drain()
+        assertNull(app.reflectionWorkflow.inspect(turn.runId).findings.first().knowledgeId)
+        click("conversationKeep:${turn.id}:0")
+        dialog = ShadowAlertDialog.getLatestAlertDialog()
+        dialog.window!!.decorView.findViewWithTag<EditText>("captureFindingTopics").setText("学习、实践")
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick()
+        drain()
+        val saved = requireNotNull(app.reflectionWorkflow.inspect(turn.runId).findings.first().knowledgeId)
+        val knowledge = requireNotNull(app.knowledge.get(saved)).value
+        assertEquals(setOf("学习", "实践"), knowledge.topics)
+        assertTrue(texts().contains("已保存到知识库"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        click("conversationSaved:${turn.id}:0:experience")
+        var intent = shadowOf(activity).nextStartedActivity
+        assertEquals(ExperienceActivity::class.java.name, intent.component!!.className)
+        assertEquals(saved, intent.getStringExtra(ExperienceActivity.EXTRA_KNOWLEDGE_ID))
+        assertEquals(knowledge.revision, intent.getIntExtra(ExperienceActivity.EXTRA_KNOWLEDGE_REVISION, -1))
+        click("conversationSaved:${turn.id}:0:action")
+        intent = shadowOf(activity).nextStartedActivity
+        assertEquals(ActionsActivity::class.java.name, intent.component!!.className)
+        assertEquals(saved, intent.getStringExtra(ActionsActivity.EXTRA_ORIGIN_ID))
+        requireNotNull(controller).recreate(); drain()
+        assertTrue(texts().contains("已保存到知识库"))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        assertEquals(knowledge.revision, app.knowledge.get(saved)!!.value.revision)
+        assertEquals(calls, app.analysis.task(turn.runId).state.calls.size)
+        assertFalse(app.deepSeekCredentials.isConfigured())
+    }
+
+    @Test fun `source change while capture confirmation is open cannot save a stale finding`() {
+        val turn = seedReviewedTurn()
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        click("conversationKeep:${turn.id}:0")
+        val dialog = ShadowAlertDialog.getLatestAlertDialog()
+        app.io.submit {
+            val original = app.repository.listRecords().items.single()
+            app.repository.updateRecord(original.id, original.revision, original.draft.copy(body = "合成补记：练习还没有完成。"))
+        }.get(20, TimeUnit.SECONDS)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick(); drain()
+        assertNull(app.reflectionWorkflow.inspect(turn.runId).findings.first().knowledgeId)
+        assertNotSame(dialog, ShadowAlertDialog.getLatestAlertDialog())
+    }
+
+    @Test fun `saved continuation rechecks evidence instead of trusting the visible answer card`() {
+        val turn = seedReviewedTurn()
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        click("conversationKeep:${turn.id}:0")
+        ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick(); drain()
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationSaved:${turn.id}:0:action"))
+        app.io.submit {
+            val original = app.repository.listRecords().items.single()
+            app.repository.updateRecord(original.id, original.revision, original.draft.copy(body = "合成更正：当时的实际方法不一致。"))
+        }.get(20, TimeUnit.SECONDS)
+        click("conversationSaved:${turn.id}:0:action")
+        assertNull(shadowOf(activity).nextStartedActivity)
+        assertTrue(ShadowAlertDialog.getLatestAlertDialog().findViewById<TextView>(android.R.id.message).text.contains("需要更新"))
+    }
+
+    @Test fun `unresolved historical feedback routes directly to the selected comparison and prevents inline save`() {
+        val old = seedTurn()
+        val next = app.io.submit<ConversationTurn> {
+            val run = app.reflectionWorkflow.inspect(old.runId)
+            app.reflectionWorkflow.respond(run.id, run.findings.first().target, run.taskVersion,
+                ClaimFeedbackDecision.CORRECTED, userText = "合成纠正：题目更简单也可能影响结果。")
+            val turn = app.conversations.submit(app.conversations.prepare("这周的学习有哪些值得保留的方法？"))
+            app.reflectionWorkflow.process(turn.runId, provider)
+            turn
+        }.get(20, TimeUnit.SECONDS)
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, next.threadId))
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${next.id}:0"))
+        click("conversationHistoryReview:${next.id}:0")
+        val detail = Robolectric.buildActivity(ReflectionActivity::class.java, shadowOf(activity).nextStartedActivity).setup()
+        drain()
+        assertNotNull(detail.get().window.decorView.findViewWithTag<View>("historicalFeedbackDone"))
+        assertTrue(descendants(detail.get().window.decorView).filterIsInstance<TextView>().any { it.text.contains("题目更简单") })
+        detail.pause().stop().destroy()
+        assertNull(app.reflectionWorkflow.inspect(next.runId).findings.first().knowledgeId)
+    }
+
+    @Test fun `preview exposes selected existing experience and opens its exact knowledge revision`() {
+        val seed = seedReviewedTurn()
+        val saved = app.io.submit<dev.tracelife.storage.StoredKnowledgeRevision> {
+            val run = app.reflectionWorkflow.inspect(seed.runId)
+            val pass = app.reflectionWorkflow.reviewAndSave(run.id, run.findings.first().target,
+                app.deepSeekProvider, app.deepSeekProvider, topics = setOf("学习"))
+            val knowledge = app.knowledge.get(requireNotNull(pass.run.findings.first().knowledgeId))!!.value
+            KnowledgeContinuity(app.repository).create(knowledge.id, knowledge.revision, "合成练习方法", setOf("学习"), "合成说明：继续观察条件", id = "synthetic-context-thread")
+            knowledge
+        }.get(20, TimeUnit.SECONDS)
+        open()
+        view<EditText>("conversationQuestion").setText("这周我的学习方法发生了什么变化？")
+        click("previewConversation")
+        click("conversationPlannedKnowledge")
+        assertTrue(texts().any { it.contains("合成练习方法") })
+        assertTrue(texts().any { it.contains("不是新的原始证据") })
+        click("conversationPlannedKnowledge:knowledge:0")
+        var destination = shadowOf(activity).nextStartedActivity
+        assertEquals(saved.id, destination.getStringExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_ID))
+        assertEquals(saved.revision, destination.getIntExtra(KnowledgeActivity.EXTRA_KNOWLEDGE_REVISION, -1))
+        click("conversationPlannedKnowledge:experience:0")
+        destination = shadowOf(activity).nextStartedActivity
+        assertEquals("synthetic-context-thread", destination.getStringExtra(ExperienceActivity.EXTRA_THREAD_ID))
+        assertEquals(1, provider.calls)
+    }
+
+    @Test fun `conversation answer opens action evidence with old plan report and later adjustment separated`() {
+        app.io.submit {
+            val draft = ActionDraft("合成学习行动", "学习开始", "合成原计划：做完整练习", "观察实际结果",
+                LocalDate.now().plusDays(7), ZoneId.systemDefault().id)
+            app.actions.create(draft, "synthetic-conversation-action")
+            app.actions.review("synthetic-conversation-action", 1, "synthetic-adjustment",
+                ActionReview(ActionExecution.UNKNOWN, "合成观察：是否完成尚不清楚", ActionDecision.ADJUST, LocalDate.now()),
+                adjustedDraft = draft.copy(behavior = "合成新计划：先尝试五分钟"))
+        }.get(20, TimeUnit.SECONDS)
+        val turn = seedTurn()
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        assertTrue(texts().any { it.contains("行动材料") })
+        click("conversationFinding:${turn.id}:0")
+        val details = Robolectric.buildActivity(ReflectionActivity::class.java, shadowOf(activity).nextStartedActivity).setup()
+        drain()
+        details.get().window.decorView.findViewWithTag<View>("reflectionEvidence").performClick(); drain()
+        val run = app.reflectionWorkflow.inspect(turn.runId)
+        val review = app.reflectionWorkflow.actionEvidence(turn.runId, run.findings.first().target).entries.single { it.kind == ActionEvidenceKind.USER_REVIEW }
+        details.get().window.decorView.findViewWithTag<View>("reflectionActionOriginal:${review.id}").performClick(); drain()
+        val words = descendants(details.get().window.decorView).filterIsInstance<TextView>().map { it.text.toString() }.toList()
+        assertTrue(words.contains("这次回看针对的旧计划"))
+        assertTrue(words.contains("合成原计划：做完整练习"))
+        assertTrue(words.contains("之后选择的新计划"))
+        assertTrue(words.contains("合成新计划：先尝试五分钟"))
+        assertTrue(words.contains("执行情况仍未知"))
+        assertTrue(words.contains("合成观察：是否完成尚不清楚"))
+        details.pause().stop().destroy()
     }
 
     @Test fun `refreshing a stale followup returns to its complete original question and chosen scope`() {
@@ -309,6 +482,27 @@ class ConversationActivityTest {
             turn
         }.get(20, TimeUnit.SECONDS)
         return first to second
+    }
+
+    private fun seedReviewedTurn(): ConversationTurn {
+        val turn = seedTurn()
+        app.io.submit {
+            val run = app.reflectionWorkflow.inspect(turn.runId)
+            val finding = run.findings.first()
+            app.reflectionWorkflow.respond(run.id, finding.target, run.taskVersion, ClaimFeedbackDecision.CONFIRMED)
+            app.analysis.reviewClaim(run.id, "synthetic-capture-review", (finding.target as ReflectionTarget.Claim).ref,
+                provider = object : SemanticReviewProvider {
+                    override val id = "synthetic-capture-reviewer"
+                    override val contextWindowTokens = 100_000
+                    override fun prepareReview(request: ModelRequest) = PreparedModelRequest(request, request.payloadJson, 100)
+                    override fun reviewPrepared(request: PreparedModelRequest): ReviewCompletion {
+                        val evidence = JSONObject(request.payloadJson).getJSONArray("evidence")
+                        return ReviewCompletion(ClaimReview(ReviewVerdict.SUPPORTED,
+                            (0 until evidence.length()).map { evidence.getJSONObject(it).getString("id") }))
+                    }
+                })
+        }.get(20, TimeUnit.SECONDS)
+        return turn
     }
 
     private fun layoutConversation(): ScrollView {

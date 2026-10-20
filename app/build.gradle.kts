@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tracelife.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.1.0-preview.7"
+        versionCode = 8
+        versionName = "0.1.0-preview.8"
     }
 
     compileOptions {
@@ -41,8 +41,11 @@ android {
             val actionReportEnabled = providers.gradleProperty("traceLifeDeepSeekActionReport").orNull == "true"
             val reflectionEnabled = providers.gradleProperty("traceLifeDeepSeekReflection").orNull == "true"
             val historicalAssistEnabled = providers.gradleProperty("traceLifeDeepSeekHistoricalAssist").orNull == "true"
+            val qualityEnabled = providers.gradleProperty("traceLifeDeepSeekQuality").orNull == "true"
+            providers.gradleProperty("traceLifeQualityReportDir").orNull?.let { path -> it.systemProperty("traceLife.qualityReportDir", path) }
             val conversationEnabled = providers.gradleProperty("traceLifeDeepSeekConversation").orNull == "true"
-            if (conversationEnabled || historicalAssistEnabled || smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
+            if (qualityEnabled || conversationEnabled || historicalAssistEnabled || smokeEnabled || reviewEnabled || synthesisEnabled || reductionEnabled || periodReviewEnabled || metricEnabled || profileEnabled || maintenanceEnabled || actionPeriodEnabled || actionReportEnabled || reflectionEnabled) {
+                if (qualityEnabled) it.systemProperty("traceLife.deepSeek.quality", "true")
                 if (conversationEnabled) it.systemProperty("traceLife.deepSeekConversation", "true")
                 if (smokeEnabled) it.systemProperty("traceLife.deepSeekSmoke", "true")
                 if (reviewEnabled) it.systemProperty("traceLife.deepSeekReview", "true")

@@ -4,7 +4,7 @@
 
 ## 建立维护计划
 
-应用入口为 `TraceLifeApplication.profileMaintenance`，类型为 `ProfileMaintenance(repository, analysis, clock)`。在后台线程调用。`runId` 须为带 `profileTarget` 的当前任务，`claim` 须属于该任务成功的原文综合。
+应用入口为 `TraceLifeApplication.profileMaintenance`，类型为 `ProfileMaintenance(repository, analysis, clock)`。在后台线程调用。`runId` 须为带 `profileTarget` 的当前任务，`claim` 须属于该任务成功的原文综合，或[长期整体整理](LONGITUDINAL_PROFILE.md)的完整归并根。局部归并根不能进入维护。整体候选的最终核对须重读整个生成来源链；祖先反馈随维护证明保存、参与发布和删除传播。
 
 ```kotlin
 val progress = app.profileMaintenance.begin(runId, claim)
@@ -92,7 +92,7 @@ val result = app.profileMaintenance.apply(
 
 ## 保存、删除与导出
 
-分析载荷 v10 保存维护计划、关系、扫描与最终核对凭据，并严格兼容旧 v1–v9。知识内部载荷 v5 严格读取 v1–v4，画像载荷 v2 严格读取 v1；外层备份为逻辑 v7，数据库为 schema v8。长期目标及跨周期支持的额外校验见[纵向画像](LONGITUDINAL_PROFILE.md)。
+分析载荷 v9 引入维护计划、关系、扫描与最终核对凭据，知识内部载荷 v4 引入相应维护证明；分析 v10 与知识 v5 增加长期目标及比较周期。画像载荷 v2 兼容 v1，旧版本不能夹带新字段。当前数据库与外层备份格式见[数据转移](DATA_TRANSFER.md)。长期目标、整体候选的新增载荷及跨周期支持校验见[纵向画像](LONGITUDINAL_PROFILE.md)。
 
 执行期间历史目录或反馈变化使旧计划不可用；正式知识继续检查原始来源、共享反馈与删除依赖。自身画像改绑和采用不会让刚发布的知识立即失效。画像注释和采用状态与共享陈述真伪分别管理。
 

@@ -5,6 +5,8 @@ import dev.tracelife.analysis.AnalysisTaskUnavailableException
 import dev.tracelife.analysis.ControlledAnalysis
 import dev.tracelife.analysis.ConversationContext
 import dev.tracelife.analysis.ConversationContextCatalog
+import dev.tracelife.analysis.KnowledgeContextPlan
+import dev.tracelife.analysis.KnowledgeContextCatalog
 import dev.tracelife.analysis.ReflectionRun
 import dev.tracelife.analysis.ReflectionWorkflow
 import dev.tracelife.storage.AnalysisQuery
@@ -28,6 +30,9 @@ data class ConversationPlan(
     val parentFindingIndex: Int?,
     val context: ConversationContext?,
     val expectedLastTurnId: String?,
+    val knowledgeContext: KnowledgeContextPlan? = null,
+    val includeActions: Boolean = false,
+    val actionEvents: Int = 0,
 ) {
     val canStart: Boolean get() = clarification == null
 }
@@ -72,14 +77,16 @@ class ConversationWorkflow(
                 }
                 val selected = if (chosenIndex != null) listOfNotNull(previous.findings.getOrNull(chosenIndex)) else previous.findings
                 if (selected.isEmpty() || selected.size > 6) issue = "请点选一项发现后追问，以确定这次要讨论的内容。"
-                else if (issue == null) context = ConversationContextCatalog(repository).plan(parent.runId, selected.map { it.target })
+                else if (issue == null) context = ConversationContextCatalog(repository, clock).plan(parent.runId, selected.map { it.target })
             }
         }
         if (Regex("^(?:不是这样|不对|我不是这个意思|不是这个意思|这不准确|我不同意)[。！!？?]*$").matches(trimmed))
             issue = "请说明哪一项不符合，以及实际情况。要纠正或否定已保存的判断，请在原回答中打开依据与保存，明确处理你的意见。"
         val topics = routed.focusTopics.ifEmpty { if (parent != null) parent.focusTopics else emptySet() }
+        val knowledge = KnowledgeContextCatalog(repository, clock).plan(trimmed, routed.scope, topics)
+        val actionEvents = repository.actionEvidencePlan(routed.scope).entries.size
         return ConversationPlan(UUID.randomUUID().toString(), thread?.id ?: UUID.randomUUID().toString(), trimmed,
-            routed.scope, topics, routed.intent, routed.label, issue, parent?.id, chosenIndex, context, latest?.id)
+            routed.scope, topics, routed.intent, routed.label, issue, parent?.id, chosenIndex, context, latest?.id, knowledge, actionEvents > 0, actionEvents)
     }
 
     /** Same prepared ID can be submitted again safely, including after the answer's source is deleted. */
@@ -102,10 +109,10 @@ class ConversationWorkflow(
                 require(parent.threadId == plan.threadId && plan.context?.parentRunId == parent.runId)
             }
             require((plan.parentTurnId == null) == (plan.context == null))
-            plan.context?.let { require(ConversationContextCatalog(repository).current(it)) { "旧回答的依据或意见已变化，请重新提问" } }
+            plan.context?.let { require(ConversationContextCatalog(repository, clock).current(it)) { "旧回答的依据或意见已变化，请重新提问" } }
             if (repository.conversation(plan.threadId) == null) repository.createConversation(plan.threadId)
             val runId = "reflection-v1-conversation-${plan.id}"
-            reflection.startQuestion(plan.question + "\n" + ANSWER_GUIDANCE, plan.scope, limits, plan.context, runId)
+            reflection.startQuestion(plan.question + "\n" + ANSWER_GUIDANCE, plan.scope, limits, plan.context, runId, plan.knowledgeContext, plan.includeActions)
             val turn = ConversationTurn(plan.id, plan.threadId, (latest?.position ?: 0) + 1, plan.question, plan.scope,
                 plan.focusTopics, plan.parentTurnId, plan.parentFindingIndex, runId, clock.instant())
             try { repository.appendConversationTurn(turn) } catch (failure: Exception) {
@@ -136,8 +143,11 @@ class ConversationWorkflow(
         private val locks = ConcurrentHashMap<String, Any>()
         internal const val ANSWER_GUIDANCE = "请围绕上面的实际问题回答记录者本人；按需要分别给出「变化：」「反复出现：」「可以尝试：」或「回答：」，总计最多6条，不强凑类别。" +
             "比较前后方法时说明时间和情境；问题重复出现须有独立事件依据，建议说明尝试条件和可观察信号。" +
+            "同一次经历的计划、回看和重复总结不是独立重复事件，不能据此使用‘反复出现’。区分记录条数、经历次数与一次经历内的次数，保留原文数量和单位。" +
+            "明确区分持续时长、发生时间与等待间隔，不把‘每次五分钟’改写成‘五分钟后’。" +
             "追问背景只用于确定指代，不是新证据；重新读取本轮原文，检查支持、例外和后来的变化。" +
             "缺少资料就说明未知，不把未记录当成没有进步，不作人格标签、健康诊断、成长评分或未经程序计算的统计。" +
-            "正文直接回答问题，不使用‘用户记录了’等第三人称复述。结果是待核对发现，不表示已确认、保存知识或采纳行动。"
+            "正文直接回答问题，不使用‘用户记录了’等第三人称复述；缺口用自然语言，不输出协议字段，也不把单批静态覆盖字段当成整个任务的未读结论。" +
+            "结果是待核对发现，不表示已确认、保存知识或采纳行动。"
     }
 }

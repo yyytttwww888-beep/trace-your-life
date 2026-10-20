@@ -21,6 +21,7 @@ class ProfileMaintenanceActivity : ScreenActivity() {
     private var feedbackInput: EditText? = null
     private var appliedProfile: String? = null
     private var operationId = UUID.randomUUID().toString()
+    private var passNotice: String? = null
 
     override fun restoreScreenState(savedInstanceState: Bundle?) {
         runId = requireNotNull(intent.getStringExtra("runId"))
@@ -31,6 +32,7 @@ class ProfileMaintenanceActivity : ScreenActivity() {
         feedbackDraftInitialized = savedInstanceState?.getBoolean("feedbackDraftInitialized") ?: false
         appliedProfile = savedInstanceState?.getString("appliedProfile")
         operationId = savedInstanceState?.getString("operationId") ?: operationId
+        passNotice = savedInstanceState?.getString("passNotice")
     }
     override fun onSaveInstanceState(outState: Bundle) {
         captureInputs()
@@ -40,6 +42,7 @@ class ProfileMaintenanceActivity : ScreenActivity() {
         outState.putBoolean("feedbackDraftInitialized", feedbackDraftInitialized)
         outState.putString("appliedProfile", appliedProfile)
         outState.putString("operationId", operationId)
+        outState.putString("passNotice", passNotice)
         super.onSaveInstanceState(outState)
     }
     private fun captureInputs() {
@@ -59,15 +62,16 @@ class ProfileMaintenanceActivity : ScreenActivity() {
         runIo({
             val task = app.analysis.task(runId)
             require(app.analysis.claimRef(runId, claim.batchKey, claim.claimIndex) == claim) { "描述已经变化" }
-            val generation = task.state.calls.last { it.batchKey == claim.batchKey && it.status == CallStatus.SUCCEEDED }
-            val proposal = requireNotNull(generation.proposal).claims[claim.claimIndex]
+            val generation = ProfileIntegrationProtocol.resolve(task.state, claim)
+            val proposal = generation.claim
             val progress = app.profileMaintenance.inspect(runId, claim, offset, 20)
             val feedback = app.analysisFeedback.forClaim(runId, claim)
-            MaintenanceView(task, proposal, generation.evidence, progress, feedback)
+            MaintenanceView(task, proposal, generation.originalEvidence, progress, feedback,
+                generation.call.reductionOutput?.unknowns ?: generation.call.proposal?.unknowns.orEmpty())
         }) { view -> render(view) }
     }
     private data class MaintenanceView(val task: AnalysisTask, val proposal: ProposedClaim, val evidence: List<EvidenceReceipt>,
-        val progress: ProfileMaintenanceProgress, val feedback: ClaimFeedbackView?)
+        val progress: ProfileMaintenanceProgress, val feedback: ClaimFeedbackView?, val unknowns: List<String>)
 
     private fun render(view: MaintenanceView) {
         val progress = view.progress
@@ -77,6 +81,9 @@ class ProfileMaintenanceActivity : ScreenActivity() {
         Ui.body(description, view.proposal.text)
         Ui.note(description, "${scope.from} 至 ${scope.through} · ${profileDimensionTitle(requireNotNull(task.state.request.profileTarget).dimension)}")
         Ui.note(description, "这是一条待核对的理解。历史描述用于对照，不能当作新的原始依据。")
+        if (view.unknowns.isNotEmpty()) Ui.disclosure(description, "还有哪些未知", "maintenanceUnknowns") { rows ->
+            view.unknowns.forEach { Ui.body(rows, it) }
+        }
         Ui.disclosure(description, "查看本次生成的原文依据", "maintenanceEvidence") { rows ->
             view.evidence.forEachIndexed { index, receipt ->
                 listRow(rows, "原文 ${index + 1} · 第 ${receipt.revision} 版 · ${receipt.end - receipt.start} 字", "maintenanceEvidence:${receipt.id}") {
@@ -86,6 +93,9 @@ class ProfileMaintenanceActivity : ScreenActivity() {
         }
         val status = card()
         Ui.sectionTitle(status, maintenanceStatusTitle(progress.status))
+        passNotice?.let { Ui.body(status, it) }
+        if (progress.status == ProfileMaintenanceStatus.RELATED_EVIDENCE_LIMIT)
+            Ui.note(status, "完整依据超过一次核对可读取的 32 段，当前描述保留为草稿。请缩小日期范围重新整理；不能删掉反例后保存。")
         Ui.note(status, "历史对照 ${progress.comparedReferences}／${progress.totalReferences} 项 · 已扫描 ${progress.scannedFragments} 段 · 反例 ${progress.counterevidenceFragments} 段 · 缺上下文 ${progress.contextRequiredFragments} 段")
         progress.coverage?.let { coverage ->
             Ui.note(status, "本范围已读 ${coverage.completedTextCodePoints}／${coverage.textCodePoints} 字；未读附件 ${coverage.unreadAttachments} 个、日期未知 ${coverage.unknownTimeRecords} 条、跨期 ${coverage.overlappingRecords} 条。")
@@ -114,11 +124,12 @@ class ProfileMaintenanceActivity : ScreenActivity() {
                     runIo({
                         require(app.deepSeekCredentials.isConfigured()) { "请先在设置中配置 DeepSeek 密钥" }
                         try {
-                            app.profileMaintenance.process(runId, claim, app.deepSeekProvider, app.deepSeekProvider, app.deepSeekProvider,
+                            val report = app.profileMaintenance.process(runId, claim, app.deepSeekProvider, app.deepSeekProvider, app.deepSeekProvider,
                                 maxModelRequests = 5, fragmentsPerBatch = 4)
-                            null
+                            if (report.status == ProfileMaintenanceStatus.BUDGET_EXHAUSTED)
+                                "本轮已停止：完整资料超出本次输入或累计额度。已有进度保留，请缩小范围重新整理。" else null
                         } catch (failure: AnalysisProviderException) { failure.message ?: "请求未成功" }
-                    }) { failure -> failure?.let { toast(it) }; showHome() }
+                    }) { notice -> passNotice = notice; showHome() }
                 }
             }
         }

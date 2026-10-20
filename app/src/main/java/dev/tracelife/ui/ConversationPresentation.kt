@@ -36,12 +36,15 @@ internal object ConversationPresentation {
     }
 
     fun progress(run: ReflectionRun): String = run.coverage?.let {
-        "已处理 ${it.completedTextCodePoints} / ${it.textCodePoints} 字 · ${run.totalRequests} 次请求"
+        "已处理 ${it.completedTextCodePoints} / ${it.textCodePoints} 字" +
+            (if (run.actionEvents > 0) " · 行动材料 ${run.processedActionEvents} / ${run.actionEvents} 份" else "") +
+            " · ${run.totalRequests} 次请求"
     } ?: "累计 ${run.totalRequests} 次请求。当前不能提供有效覆盖数据。"
 
     fun coverage(run: ReflectionRun): String = run.coverage?.let {
         "范围内 ${it.records} 条记录，${it.remainingTextFragments} 段待处理。日期未知 ${it.unknownTimeRecords} 条，跨越范围 ${it.overlappingRecords} 条，未读附件 ${it.unreadAttachments} 个，不可读取 ${it.unreadableRecords} 条。\n" +
             (if (it.missingExactIds.isEmpty()) "" else "${it.missingExactIds.size} 条指定记录当前不可用。\n") +
+            (if (run.actionEvents > 0) "另有 ${run.actionEvents} 份行动材料，已处理 ${run.processedActionEvents} 份。计划、执行自述和后续调整分别读取，未回看不代表未执行。\n" else "") +
             "日期未知和跨范围的记录不能直接认定发生在这段时间。没有记录不等于没有发生；处理完成也不保证理解正确。"
     } ?: "当前资料或判断已变化，不能使用旧的覆盖统计。请查看回答状态。"
 }

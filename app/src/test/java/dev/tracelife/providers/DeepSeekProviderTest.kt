@@ -91,6 +91,32 @@ class DeepSeekProviderTest {
         }
     }
 
+    @Test fun `longitudinal reduction uses derived output and complete profile guidance in measured wire`() {
+        var sent = 0
+        val adapter = provider { _, _ ->
+            sent++
+            DeepSeekHttpResponse(200, response(content = proposal(claims = listOf(claim(kind = "POSSIBLE_INTERPRETATION")))))
+        }
+        val envelope = JSONObject().put("purpose", "REDUCTION").put("derivedInputs", org.json.JSONArray()).put("profileTarget",
+            JSONObject().put("dimension", "ABILITIES_AND_STRATEGIES").put("layer", "LONG_TERM").put("periods", org.json.JSONArray()
+                .put(JSONObject().put("from", "2026-08-01").put("through", "2026-08-31"))
+                .put(JSONObject().put("from", "2026-09-01").put("through", "2026-09-30"))))
+        val prepared = adapter.prepare(request.copy(payloadJson = envelope.toString()))
+        val wire = JSONObject(prepared.payloadJson)
+        val instructions = wire.getJSONArray("messages").getJSONObject(0).getString("content")
+        assertTrue(instructions.contains("整体整理"))
+        assertTrue(instructions.contains("不是多个独立事件"))
+        assertTrue(instructions.contains("派生"))
+        assertTrue(instructions.contains("逐项跨批对照旧疑问"))
+        assertTrue(instructions.contains("不输出协议字段名"))
+        assertTrue(instructions.contains("单次后续记录不能证明始终如此"))
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        assertEquals(ClaimKind.POSSIBLE_INTERPRETATION, adapter.completePrepared(prepared).proposal.claims.single().kind)
+        assertEquals(1, sent)
+        envelope.put("profileTarget", JSONObject().put("dimension", "ABILITIES_AND_STRATEGIES").put("layer", "RECENT_STATE"))
+        assertThrows(IllegalArgumentException::class.java) { adapter.prepare(request.copy(payloadJson = envelope.toString())) }
+    }
+
     @Test fun `changed measured requests fail before transport and missing key does not make a request`() {
         var calls = 0
         val provider = provider { _, _ -> calls++; DeepSeekHttpResponse(200, response()) }
@@ -123,6 +149,9 @@ class DeepSeekProviderTest {
         val system = messages.getJSONObject(0).getString("content")
         assertTrue(system.contains("本次没有提供原文"))
         assertTrue(system.contains("仅允许本次 derivedInputs 的 id"))
+        assertTrue(system.contains("逐项跨批对照旧疑问"))
+        assertTrue(system.contains("只解决一部分时收窄"))
+        assertTrue(system.contains("不输出协议字段名"))
         assertEquals(envelope, messages.getJSONObject(1).getString("content"))
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         provider.completePrepared(prepared)

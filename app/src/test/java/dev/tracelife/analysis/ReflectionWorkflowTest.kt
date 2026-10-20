@@ -109,6 +109,63 @@ class ReflectionWorkflowTest {
         assertEquals(1, pass.run.reducedBatches)
     }
 
+    @Test fun `complete root reconciles local unknowns and keeps only final gaps after reopening`() {
+        val earlyQuestion = "合成：9月6日之后是否继续练习还不清楚。"
+        val laterQuestion = "合成：这些练习是否提高了成绩还不清楚。"
+        val finalGap = "合成：已有9月20日仍在练习的记录，但缺少成绩变化，无法判断学习效果。"
+        repeat(4) { index ->
+            repository.createRecord(RecordDraft("合成9月初记录 $index：今天先做小练习。",
+                Occurrence(LocalDate.parse("2026-09-03").plusDays(index.toLong()))), "early-$index")
+        }
+        repository.createRecord(RecordDraft("合成9月20日记录：今天仍在坚持先做小练习。",
+            Occurrence(LocalDate.parse("2026-09-20"))), "later")
+        repository.createRecord(RecordDraft("合成日期不详的资料：一次练习笔记，没有成绩。"), "unknown-date")
+        val requests = mutableListOf<ModelRequest>()
+        val reconciler = object : AnalysisProvider {
+            override val id = "synthetic-reconciled-unknowns"
+            override val contextWindowTokens = 128_000
+            override fun countInputTokens(request: ModelRequest) = 100
+            override fun complete(request: ModelRequest): BatchProposal {
+                requests += request
+                val json = JSONObject(request.payloadJson)
+                val reduced = json.getString("purpose") == "REDUCTION"
+                val inputs = json.getJSONArray(if (reduced) "derivedInputs" else "evidence")
+                val rows = (0 until inputs.length()).map(inputs::getJSONObject)
+                val later = !reduced && rows.any { it.getString("text").contains("9月20日") }
+                if (reduced) {
+                    val localContent = rows.map { it.getJSONObject("content").toString() }
+                    assertTrue(localContent.any { it.contains(earlyQuestion) })
+                    assertTrue(localContent.any { it.contains("9月20日仍在练习") })
+                }
+                return BatchProposal(listOf(ProposedClaim(
+                    if (reduced || later) "合成：9月20日仍在练习，方法的持续情况已有后续记录。" else "合成：9月初开始先练习再查资料。",
+                    rows.map { it.getString("id") }, ClaimKind.POSSIBLE_INTERPRETATION)),
+                    listOf(if (reduced) finalGap else if (later) laterQuestion else earlyQuestion))
+            }
+        }
+        val run = workflow.start(AnalysisQuery(LocalDate.parse("2026-09-01"), LocalDate.parse("2026-09-30"), "Asia/Shanghai"))
+        val partial = workflow.process(run.id, reconciler, maxRequests = 1)
+        assertEquals(ReflectionStatus.ANALYZING, partial.status)
+        assertEquals(listOf(earlyQuestion), partial.run.unknowns)
+
+        val completed = workflow.process(run.id, reconciler, maxRequests = 2)
+        assertEquals(ReflectionStatus.READY, completed.status)
+        assertEquals(2, completed.run.synthesizedBatches)
+        assertEquals(1, completed.run.reducedBatches)
+        assertEquals(listOf(finalGap), completed.run.unknowns)
+        assertEquals(1, requireNotNull(completed.run.coverage).unknownTimeRecords)
+        assertEquals(0L, requireNotNull(completed.run.coverage).remainingTextFragments)
+        assertEquals(listOf(earlyQuestion, laterQuestion), analysis.task(run.id).state.calls
+            .filter { it.purpose == CallPurpose.SYNTHESIS }.flatMap { requireNotNull(it.proposal).unknowns })
+
+        repository.close(); open()
+        assertEquals(listOf(finalGap), workflow.inspect(run.id).unknowns)
+        assertEquals(listOf(finalGap), workflow.history().single().unknowns)
+        assertEquals(1, requireNotNull(workflow.inspect(run.id).coverage).unknownTimeRecords)
+        assertEquals(3, requests.size)
+        assertTrue(repository.knowledgeHeads().isEmpty())
+    }
+
     @Test fun `empty findings and missing time remain completed material rather than personal failure`() {
         seed(5)
         repository.createRecord(RecordDraft("合成未知日期：还不能得出经验。"), "unknown")

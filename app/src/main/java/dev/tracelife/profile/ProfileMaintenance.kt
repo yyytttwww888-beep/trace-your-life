@@ -262,8 +262,8 @@ class ProfileMaintenance(
         val findings = context.scans.flatMap { requireNotNull(it.profileScan).findings }
         val related = findings.filter { it.classification != ReductionRelevance.IRRELEVANT }.map { it.receiptId }.toSet()
         // Review always includes the entire generation batch even if relevance says otherwise.
-        val generationCall = requireNotNull(task.state.calls.lastOrNull { it.batchKey == claim.batchKey && it.status == CallStatus.SUCCEEDED })
-        val finalIds = related + generationCall.evidence.map { it.id }
+        val candidateSource = ProfileIntegrationProtocol.resolve(task.state, claim)
+        val finalIds = related + candidateSource.originalEvidence.map { it.id }
         val needsContext = findings.count { it.classification == ReductionRelevance.NEEDS_CONTEXT }
         val status = when {
             context.relations.any { it.profileRelation?.relation == ProfileRelation.UNCERTAIN } -> ProfileMaintenanceStatus.NEEDS_ATTENTION
