@@ -81,6 +81,44 @@ class EvidenceFactsTest {
         assertFalse(check("合成资料：这次时间充足，任务更熟悉。", "这次时间充足，任务更熟悉。").blocked)
     }
 
+    @Test fun `a prospective colon label preserves the actual captured suggestion without licensing past claims`() {
+        val original = "合成验收资料，完全虚构，不是真实个人经历：今天先跑一个小模块，再根据报错补接口说明，完成一次熟悉的练习。有40分钟空闲，不能确认是启动方式导致完成。"
+        val suggestion = "可以尝试：在任务较熟悉、有约40分钟空闲时，先跑一个小模块，再按报错补接口说明；观察是否顺利推进和完成，之后回看这次做法是否适合自己，目前尚未采纳。"
+        assertFalse(check(original, suggestion).blocked)
+        assertTrue(check(original, "这次记录只有一次经历，且任务更熟悉、时间充足，因此不足以说明存在稳定做法。").blocked)
+
+        val other = "合成资料：完成一次熟悉的烘焙，有23分钟空闲。先称量原料，再调节温度。"
+        listOf("可以尝试：", "不妨尝试:", "建议：").forEach { label ->
+            assertFalse(check(other, label + "在配方更熟悉、时间充足时，先调节温度，再称量原料，记录结果。").blocked)
+        }
+        assertTrue(check(other, "记录者建议：这次配方更熟悉、时间充足。").blocked)
+        assertTrue(check(other, "原文说可以尝试：这次配方更熟悉、时间充足。").blocked)
+        assertTrue(check(other, "这次配方更熟悉，建议：下次记录开始时间。").blocked)
+        assertTrue(check(other, "可以尝试：先预热烤箱；这次时间充足。").blocked)
+    }
+
+    @Test fun `later advice within one clause cannot excuse an earlier factual assertion`() {
+        val original = "合成资料：完成一次熟悉的练习，有37分钟空闲。"
+        assertTrue(check(original, "这次时间充足所以建议下次记录开始时间。")
+            .findings.any { it.rule == EvidenceFactRule.UNGROUNDED_ADEQUACY })
+        assertTrue(check(original, "这次任务更熟悉所以建议下次对照难度。")
+            .findings.any { it.rule == EvidenceFactRule.UNGROUNDED_COMPARISON })
+        assertFalse(check(original, "建议下次选择时间充足的场合再尝试。").blocked)
+        assertFalse(check(original, "可以尝试：在时间充足、任务更熟悉时进行练习，记录完成情况。").blocked)
+    }
+
+    @Test fun `two different dates in a sentence cannot silently select its last date as the event`() {
+        val pack = requireNotNull(EvidenceFacts.build(mapOf("evidence" to listOf(
+            source("合成资料：揉面十七分钟。", from = "2026-10-07"),
+            source("合成资料：先等待十七分钟再开始揉面。", "b".repeat(64), "other-event", from = "2026-10-09")))))
+        assertFalse(EvidenceFacts.check("10月9日在10月7日那次之后先等待十七分钟再开始揉面。", pack).blocked)
+        assertFalse(EvidenceFacts.check("10月9日先等待十七分钟再开始揉面。", pack).blocked)
+        assertTrue(EvidenceFacts.check("10月7日先等待十七分钟再开始揉面。", pack)
+            .findings.any { it.rule == EvidenceFactRule.TIME_ROLE_CHANGED })
+        assertTrue(EvidenceFacts.check("10月7日（仍是10月7日）先等待十七分钟再开始揉面。", pack)
+            .findings.any { it.rule == EvidenceFactRule.TIME_ROLE_CHANGED })
+    }
+
     @Test fun `conditions differing cannot be rewritten as the authors causal attribution`() {
         val source = "合成资料：完成练习，时间和难度与上次不同，原因没有确定。"
         assertTrue(check(source, "记录者把差异归因于时间和难度，但方法是否有效未知。").findings.any { it.rule == EvidenceFactRule.ATTRIBUTION_CHANGED })
@@ -109,6 +147,16 @@ class EvidenceFactsTest {
         assertThrows(IllegalArgumentException::class.java) { EvidenceFacts.validatePack(pack.copy(sha256 = "0".repeat(64))) }
         assertThrows(IllegalArgumentException::class.java) { EvidenceFacts.validateReview(review.copy(findings = emptyList())) }
         assertThrows(IllegalArgumentException::class.java) { EvidenceFacts.validateReview(review.copy(targetText = "其他陈述。")) }
+    }
+
+    @Test fun `answer field accepts the existing 200 character question id boundary`() {
+        val maximum = source("合成资料：练习十二分钟。") + ("field" to "answer:" + "q".repeat(200))
+        val pack = requireNotNull(EvidenceFacts.build(mapOf("evidence" to listOf(maximum))))
+        assertEquals(207, pack.sources.single().field.length)
+        assertEquals(pack, EvidenceFacts.parsePack(EvidenceFacts.packMap(pack)))
+        assertThrows(IllegalArgumentException::class.java) {
+            EvidenceFacts.build(mapOf("evidence" to listOf(maximum + ("field" to "answer:" + "q".repeat(201)))))
+        }
     }
 
     @Test fun `same quantity in unrelated dated records is not a license to mix events`() {

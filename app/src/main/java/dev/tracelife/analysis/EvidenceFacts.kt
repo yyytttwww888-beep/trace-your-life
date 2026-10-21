@@ -37,7 +37,8 @@ object EvidenceFacts {
     private val execution = Regex("(已经|已|没有|尚未|还没|未曾|未能|没能)(?:执行|完成|实施)(?:了)?([^，,。；;！？\\n]{1,40})")
     private val actionFields = listOf("/plan/behavior", "/reviewedPlan/behavior", "/nextPlan/behavior", "/review/execution", "/review/observedText")
     private data class Literal(val kind: EvidenceFactKind, val start: Int, val end: Int, val quote: String,
-        val value: String, val related: String? = null, val mode: EvidenceFactMode = EvidenceFactMode.ASSERTED)
+        val value: String, val related: String? = null, val mode: EvidenceFactMode = EvidenceFactMode.ASSERTED,
+        val matchStart: Int = start)
 
     fun build(envelope: Map<String, Any?>): EvidenceFactPack? {
         val sources = mutableListOf<EvidenceFactSource>()
@@ -106,7 +107,7 @@ object EvidenceFacts {
                 literal.quote, refs.distinct().sorted(), reason)
         }
         extracted.forEach { current ->
-            if (newProposal(target, current.start, current.end) || current.mode == EvidenceFactMode.HYPOTHETICAL || current.mode == EvidenceFactMode.NEGATED) return@forEach
+            if (newProposal(target, current.matchStart, current.end) || current.mode == EvidenceFactMode.HYPOTHETICAL || current.mode == EvidenceFactMode.NEGATED) return@forEach
             val eligible = pack.facts.indices.filter { index -> sameOccurrence(target, current.end, pack.sources[pack.facts[index].source]) }
             fun matching(predicate: (EvidenceLiteralFact) -> Boolean) = eligible.filter { predicate(pack.facts[it]) }
             when (current.kind) {
@@ -214,7 +215,12 @@ object EvidenceFacts {
 
     private fun sameOccurrence(text: String, position: Int, source: EvidenceFactSource): Boolean {
         val prefix = text.substring(sentenceStart(text, position), position)
-        val date = Regex("(?:(\\d{4})[-年])?(\\d{1,2})[-月](\\d{1,2})日?").findAll(prefix).lastOrNull() ?: return true
+        val dates = Regex("(?:(\\d{4})[-年])?(\\d{1,2})[-月](\\d{1,2})日?").findAll(prefix).toList()
+        if (dates.isEmpty()) return true
+        // Multiple dates can be the event date, a comparison, or a subordinate reference.
+        // This literal guard cannot determine which role applies; do not pick the last one.
+        if (dates.map { it.groupValues.drop(1) }.distinct().size != 1) return false
+        val date = dates.singleOrNull() ?: dates.first()
         val from = source.from ?: return false
         if (source.through != from) return false
         val parsed = runCatching { java.time.LocalDate.parse(from) }.getOrNull() ?: return false
@@ -230,7 +236,7 @@ object EvidenceFacts {
             val quote = text.substring(begin, end)
             if (quote.length > 500) return
             // A later "not executed" limits execution, not the role of an earlier duration.
-            found += Literal(kind, begin, end, quote, value, related, mode(text.substring(begin, match.range.first)))
+            found += Literal(kind, begin, end, quote, value, related, mode(text.substring(begin, match.range.first)), match.range.first)
         }
         amount.findAll(text).forEach { match ->
             val number = number(match.groupValues[1]) ?: return@forEach
@@ -272,12 +278,22 @@ object EvidenceFacts {
     private fun newProposal(text: String, position: Int, end: Int): Boolean {
         // A previous factual clause must not turn a newly introduced experiment into history.
         // Nor may advice in the next clause excuse an earlier historical assertion.
-        val context = text.substring(clauseStart(text, position), end).substringBefore('，').substringBefore(',')
-        val proposal = Regex("(?:下次|下一次|接下来|今后|未来|不妨|建议|可先|可以|可尝试|可考虑|试着)").find(context)
-        val proposing = proposal != null
-        val reporting = proposal?.let { Regex("(?:原文|原记录|记录中|记录者|自述|提到|说过|表示|归因)")
-            .containsMatchIn(context.substring(0, it.range.first)) } ?: false
-        return proposing && !reporting
+        val begin = clauseStart(text, position)
+        val context = text.substring(begin, end).substringBefore('，').substringBefore(',')
+        val reported = Regex("(?:原文|原记录|原计划|记录中|记录者|用户|本人|自述|提到|说过|表示|归因|曾经|当时|此前|过去)")
+        fun proposes(value: String, latestCue: Int = value.length): Boolean {
+            val proposal = Regex("(?:下次|下一次|接下来|今后|未来|不妨|建议|可先|可以|可尝试|可考虑|试着)").find(value) ?: return false
+            if (proposal.range.first > latestCue) return false
+            val prefix = value.substring(0, proposal.range.first)
+            return !reported.containsMatchIn(prefix) && mode(prefix) != EvidenceFactMode.NEGATED && !Regex("(?:不|别)$").containsMatchIn(prefix)
+        }
+        if (proposes(context, position - begin)) return true
+        // A prospective label such as 可以尝试： governs its following clauses until
+        // the sentence boundary. A reported suggestion is still a historical assertion.
+        val colon = (position - 1 downTo sentenceStart(text, position)).firstOrNull { text[it] == '：' || text[it] == ':' } ?: return false
+        val label = text.substring(clauseStart(text, colon), colon).trim()
+        val proposalLabel = Regex("(?:建议(?:尝试)?|可以(?:尝试|考虑)?|可(?:尝试|考虑)|不妨(?:尝试)?|试着|下次|下一次|接下来|今后|未来)$")
+        return proposalLabel.containsMatchIn(label) && proposes(label) && !reported.containsMatchIn(context)
     }
     private fun clauseStart(text: String, position: Int): Int = (position - 1 downTo 0).firstOrNull { text[it] in "，,。；;！？!?\n：:" }?.plus(1) ?: 0
     private fun sentenceStart(text: String, position: Int): Int = (position - 1 downTo 0).firstOrNull { text[it] in "。；;！？!?\n" }?.plus(1) ?: 0
@@ -344,7 +360,7 @@ object EvidenceFacts {
         require(pack.sources.distinct().size == pack.sources.size && pack.facts.distinct().size == pack.facts.size)
         pack.sources.forEach { source ->
             require(source.evidenceId.matches(hashPattern) && source.sourceType in setOf("RECORD", "ACTION") && source.recordId.isNotBlank() && source.recordId.length <= 200)
-            require(source.revision > 0 && source.field.isNotBlank() && source.field.length <= 200 && source.start >= 0 && source.end > source.start && source.end <= source.totalCodePoints)
+            require(source.revision > 0 && source.field.isNotBlank() && source.field.length <= 207 && source.start >= 0 && source.end > source.start && source.end <= source.totalCodePoints)
             require(source.sha256.matches(hashPattern) && source.textSha256.matches(hashPattern))
             require((source.from == null) == (source.through == null))
             source.from?.let { require(java.time.LocalDate.parse(it) <= java.time.LocalDate.parse(requireNotNull(source.through))) }

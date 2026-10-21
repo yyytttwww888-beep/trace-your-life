@@ -260,10 +260,26 @@ class GenerationSemanticGuidanceTest {
                         "end" to "end", "total" to "totalCodePoints", "sha256" to "sha256", "from" to "startDate", "through" to "endDate")
                         .forEach { (factKey, evidenceKey) -> assertEquals(source.get(evidenceKey), descriptor.get(factKey)) }
                     assertEquals(AnalysisRunCodec.sha256(source.getString("text")), descriptor.getString("textSha256"))
-                    compact.put(JSONObject().put("id", descriptor.getString("id")).put("field", descriptor.getString("field")))
+                    compact.put(JSONObject().put("evidence", (0 until evidence.length()).single { evidence.getJSONObject(it).getString("id") == descriptor.getString("id") }))
                 }
-                assertEquals(pack.getJSONArray("facts").toString(), actual.getJSONObject("sourceFacts").getJSONArray("facts").toString())
+                val columns = listOf("source", "kind", "start", "end", "value", "related", "mode")
+                val rows = JSONArray()
+                val facts = pack.getJSONArray("facts")
+                (0 until facts.length()).forEach { index ->
+                    val fact = facts.getJSONObject(index)
+                    val descriptor = descriptors.getJSONObject(fact.getInt("source"))
+                    val evidence = original.getJSONArray("evidence")
+                    val source = (0 until evidence.length()).map { evidence.getJSONObject(it) }
+                        .single { it.getString("id") == descriptor.getString("id") }
+                    val text = source.getString("text")
+                    val start = text.offsetByCodePoints(0, fact.getInt("start") - descriptor.getInt("start"))
+                    val end = text.offsetByCodePoints(0, fact.getInt("end") - descriptor.getInt("start"))
+                    assertEquals(fact.getString("quote"), text.substring(start, end))
+                    rows.put(JSONArray(columns.map { fact.get(it) }))
+                }
+                pack.put("factColumns", JSONArray(columns)).put("facts", rows)
                 pack.put("sources", compact)
+                pack.remove("sha256")
             }
         }
         original.remove("system")
@@ -274,7 +290,7 @@ class GenerationSemanticGuidanceTest {
     }
 
     private companion object {
-        const val SOURCE_FACT_GUIDANCE = "sourceFacts是原文中有限关系：source索引定位sources及原始证据，start/end为码点。保留数量角色、状态及顺序，未列出不等于不存在。derivedFactConstraints是派生约束。仍须核对原文；新建议标明待尝试。"
+        const val SOURCE_FACT_GUIDANCE = "sourceFacts是有限关系：facts按factColumns，source索引定位sources，再按evidence/actionEvidence下标定位原文；start/end为字段码点区间。保留数量角色、状态和顺序；未列出不等于不存在。derivedFactConstraints为派生约束。仍须核对原文；新建议标明待尝试。"
     }
 
     private class CapturingProvider(private val wire: DeepSeekProvider, private val legacyUnknown: String? = null,

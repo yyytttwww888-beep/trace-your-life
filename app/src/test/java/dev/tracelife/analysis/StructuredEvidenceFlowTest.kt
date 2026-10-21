@@ -15,6 +15,7 @@ import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.LifeRepository
 import dev.tracelife.transfer.StaleSnapshotException
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -118,12 +119,18 @@ class StructuredEvidenceFlowTest {
             assertEquals(persistedFacts.sources.size, wireSources.length())
             persistedFacts.sources.forEachIndexed { index, factSource ->
                 val descriptor = wireSources.getJSONObject(index)
-                assertEquals(setOf("id", "field"), descriptor.keys().asSequence().toSet())
-                assertEquals(factSource.evidenceId, descriptor.getString("id"))
-                assertEquals(factSource.field, descriptor.getString("field"))
+                assertEquals(setOf("evidence"), descriptor.keys().asSequence().toSet())
+                val originalSource = envelope.getJSONArray("evidence").getJSONObject(descriptor.getInt("evidence"))
+                assertEquals(factSource.evidenceId, originalSource.getString("id"))
+                assertEquals(factSource.field, originalSource.getString("field"))
             }
             val expectedFacts = JSONObject(AnalysisRunCodec.json(EvidenceFacts.packMap(persistedFacts))).getJSONArray("facts")
-            assertEquals(expectedFacts.toString(), wireFacts.getJSONArray("facts").toString())
+            val columns = listOf("source", "kind", "start", "end", "value", "related", "mode")
+            assertEquals(JSONArray(columns).toString(), wireFacts.getJSONArray("factColumns").toString())
+            val rows = JSONArray((0 until expectedFacts.length()).map { index ->
+                columns.map { expectedFacts.getJSONObject(index).get(it) }
+            })
+            assertEquals(rows.toString(), wireFacts.getJSONArray("facts").toString())
             val evidence = envelope.getJSONArray("evidence")
             assertEquals(1, evidence.length())
             assertEquals(source, evidence.getJSONObject(0).getString("text"))

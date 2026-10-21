@@ -132,7 +132,7 @@ class DeepSeekReductionReviewProviderTest {
     @Test fun `record scan retains its legacy prompt while final review pins the explicit v4 wire identity`() {
         // Scans keep their prompt. Review v4 is a new provider identity, never a retry of earlier parts.
         val provider = provider("{}")
-        assertTrue(provider.id.endsWith(":review-clauses-v4:facts-v1"))
+        assertTrue(provider.id.endsWith(":review-clauses-v4:facts-v2"))
         assertEquals("2dd9d2a987a729f9de844cd63da48be85a5f7ccb8c6f5079de44966335468a6f",
             AnalysisRunCodec.sha256(systemPrompt(provider.prepareScan(request))))
         val final = request.copy(payloadJson = request.payloadJson.replace("REDUCTION_SCAN", "REDUCTION_REVIEW"))

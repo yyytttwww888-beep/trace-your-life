@@ -59,7 +59,7 @@ class DeepSeekReviewProviderTest {
         }
         val prepared = provider.prepareReview(request)
         val json = JSONObject(prepared.payloadJson)
-        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1:review-clauses-v4:facts-v1", provider.id)
+        assertEquals("deepseek:deepseek-flash:json-v1:utf8-bound-v1:review-clauses-v4:facts-v2", provider.id)
         assertEquals(TokenCountKind.CONSERVATIVE_UTF8_BOUND, prepared.tokenCountKind)
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
         val messages = json.getJSONArray("messages")

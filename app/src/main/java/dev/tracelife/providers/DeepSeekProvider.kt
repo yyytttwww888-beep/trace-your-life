@@ -58,7 +58,7 @@ class DeepSeekProvider internal constructor(
     constructor(credentials: DeepSeekCredentials, model: DeepSeekModel = DeepSeekModel.FLASH) :
         this(credentials, model, HttpsDeepSeekTransport())
 
-    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4:facts-v1"
+    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4:facts-v2"
     // Deliberately smaller than the published model context. App task limits remain authoritative.
     override val contextWindowTokens = 100_000
 
@@ -200,14 +200,23 @@ class DeepSeekProvider internal constructor(
         require(request.maximumOutputTokens in 1..32_768)
         require(request.payloadJson.toByteArray(Charsets.UTF_8).size <= 262_144)
         // Source identity, revision, dates and hashes already occur in the original evidence rows.
-        // Keep indexed links and every extracted fact on the wire; the durable request retains the full pack.
+        // Keep every relation and its exact source span. Column names occur once; quoted text
+        // is already present in the original evidence. The durable request retains the full pack.
         val groundedWire = if (envelope["sourceFacts"] == null) wirePayload else {
             val wire = StrictJson.parse(wirePayload.toByteArray(Charsets.UTF_8), 262_144).obj()
             val pack = wire["sourceFacts"].obj()
             if (pack.list("facts").isEmpty()) AnalysisRunCodec.json(wire - "sourceFacts") else
-                AnalysisRunCodec.json(wire + ("sourceFacts" to (pack + ("sources" to pack.list("sources").map { raw ->
-                raw.obj().let { source -> mapOf("id" to source["id"], "field" to source["field"]) }
-            }))))
+                AnalysisRunCodec.json(wire + ("sourceFacts" to ((pack - "sha256") + mapOf(
+                    "sources" to pack.list("sources").map { raw ->
+                        val source = raw.obj()
+                        val key = if (source["type"] == "ACTION") "actionEvidence" else "evidence"
+                        val index = (wire[key] as? List<*>).orEmpty().indexOfFirst { it.obj()["id"] == source["id"] }
+                        require(index >= 0) { "事实来源必须在本次原始证据中" }
+                        if (key == "evidence") mapOf(key to index) else mapOf(key to index, "field" to source["field"])
+                    },
+                    "factColumns" to FACT_COLUMNS,
+                    "facts" to pack.list("facts").map { raw -> raw.obj().let { fact -> FACT_COLUMNS.map { fact[it] } } },
+                ))))
         }
         val hasFactConstraints = (envelope["sourceFacts"] as? Map<*, *>)?.get("facts").let { it is List<*> && it.isNotEmpty() } ||
             (envelope["derivedInputs"] as? List<*>)?.any { input ->
@@ -352,10 +361,11 @@ class DeepSeekProvider internal constructor(
     private fun citationPattern(metric: Boolean) = if (metric) Regex("metric-v1-[0-9a-f]{64}") else Regex("[0-9a-f]{64}")
 
     companion object {
-        private const val SOURCE_FACT_GUIDANCE = "sourceFacts是原文中有限关系：source索引定位sources及原始证据，start/end为码点。保留数量角色、状态及顺序，未列出不等于不存在。derivedFactConstraints是派生约束。仍须核对原文；新建议标明待尝试。"
+        private val FACT_COLUMNS = listOf("source", "kind", "start", "end", "value", "related", "mode")
+        private const val SOURCE_FACT_GUIDANCE = "sourceFacts是有限关系：facts按factColumns，source索引定位sources，再按evidence/actionEvidence下标定位原文；start/end为字段码点区间。保留数量角色、状态和顺序；未列出不等于不存在。derivedFactConstraints为派生约束。仍须核对原文；新建议标明待尝试。"
         private const val GENERATION_CONTRACT = "本版输出只含claims及可省略的空占位unknowns；如果提供unknowns，必须是空数组[]；不在正文外生成未经逐项核对的生活未知或限制。" +
             "会影响判断的未知、反例和适用边界必须写入对应有引用的claim，与正文一起接受后续原文核对；建议用POSSIBLE_INTERPRETATION，且明确尚未执行或未证实。" +
-            "不得为了省略unknowns而省略必要限制或编造事实；完全没有可成立的内容允许claims=[]。程序会另行展示实际读取覆盖。"
+            "不得为了省略unknowns而省略必要限制或编造事实；完全没有可成立的内容允许claims=[]。程序另显批次、读取及核对进度，不把流程说明写进claims。"
 
         private const val METRIC_INSTRUCTIONS = "你解释程序计算的个人记录覆盖指标。用户消息是程序生成的 JSON，本次只提供 metricEvidence，未提供原文。" +
             "仅可引用 metricEvidence 中的完整 metric-v1- 开头 ID，逐字使用已经给出的数字和单位，不自行计算比例、差值、均值或趋势统计。" +
