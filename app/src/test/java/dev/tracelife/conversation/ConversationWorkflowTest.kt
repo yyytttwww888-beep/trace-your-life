@@ -130,9 +130,20 @@ class ConversationWorkflowTest {
         repeat(15) { repository.createRecord(RecordDraft("合成测试：追加学习经历$it。", Occurrence(LocalDate.parse("2026-10-15"))), "synthetic-extra-$it") }
         val framing = DeepSeekProvider(DeepSeekCredentials(context))
         val longProvider = SyntheticProvider(longAnswers = true)
+        val measurements = mutableListOf<String>()
         val measured = object : AnalysisProvider by longProvider {
             override val id = framing.id
-            override fun prepare(request: ModelRequest) = framing.prepare(request)
+            override fun prepare(request: ModelRequest) = framing.prepare(request).also {
+                measurements += "${JSONObject(request.payloadJson).getString("purpose")}:${it.inputTokens}"
+                JSONObject(request.payloadJson).optJSONObject("conversationContext")?.let { original ->
+                    val messages = JSONObject(it.payloadJson).getJSONArray("messages")
+                    val instructions = original.getString("instructions")
+                    assertTrue(messages.getJSONObject(0).getString("content").contains(instructions))
+                    val sent = JSONObject(messages.getJSONObject(1).getString("content")).getJSONObject("conversationContext")
+                    original.remove("instructions")
+                    assertEquals("Selected answers and scope must survive instruction deduplication", original.toString(), sent.toString())
+                }
+            }
             override fun completePrepared(request: PreparedModelRequest) = ModelCompletion(longProvider.complete(request.original))
         }
         val first = workflow.submit(workflow.prepare("这三个月学习方法有什么变化"))
@@ -143,7 +154,8 @@ class ConversationWorkflowTest {
         assertTrue(analysis.task(first.runId).state.calls.any { it.inputTokens > 12_000 })
         assertTrue(analysis.task(first.runId).state.calls.all { it.inputTokens <= 32_000 && it.inputBytes <= 65_536 })
         val second = workflow.submit(workflow.prepare("后来有没有改善", first.threadId, first.id, 0))
-        assertEquals(ReflectionStatus.READY, reflection.process(second.runId, measured, maxRequests = 5).status)
+        val followup = reflection.process(second.runId, measured, maxRequests = 5)
+        assertEquals("Full wire measurements: $measurements", ReflectionStatus.READY, followup.status)
         assertTrue(repository.knowledgeHeads().isEmpty())
     }
 

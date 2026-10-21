@@ -58,7 +58,7 @@ class DeepSeekProvider internal constructor(
     constructor(credentials: DeepSeekCredentials, model: DeepSeekModel = DeepSeekModel.FLASH) :
         this(credentials, model, HttpsDeepSeekTransport())
 
-    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4"
+    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4:facts-v1"
     // Deliberately smaller than the published model context. App task limits remain authoritative.
     override val contextWindowTokens = 100_000
 
@@ -199,12 +199,36 @@ class DeepSeekProvider internal constructor(
         wirePayload: String = request.payloadJson): PreparedModelRequest {
         require(request.maximumOutputTokens in 1..32_768)
         require(request.payloadJson.toByteArray(Charsets.UTF_8).size <= 262_144)
+        // Source identity, revision, dates and hashes already occur in the original evidence rows.
+        // Keep indexed links and every extracted fact on the wire; the durable request retains the full pack.
+        val groundedWire = if (envelope["sourceFacts"] == null) wirePayload else {
+            val wire = StrictJson.parse(wirePayload.toByteArray(Charsets.UTF_8), 262_144).obj()
+            val pack = wire["sourceFacts"].obj()
+            if (pack.list("facts").isEmpty()) AnalysisRunCodec.json(wire - "sourceFacts") else
+                AnalysisRunCodec.json(wire + ("sourceFacts" to (pack + ("sources" to pack.list("sources").map { raw ->
+                raw.obj().let { source -> mapOf("id" to source["id"], "field" to source["field"]) }
+            }))))
+        }
+        val hasFactConstraints = (envelope["sourceFacts"] as? Map<*, *>)?.get("facts").let { it is List<*> && it.isNotEmpty() } ||
+            (envelope["derivedInputs"] as? List<*>)?.any { input ->
+                ((input as? Map<*, *>)?.get("derivedFactConstraints") as? List<*>)?.isNotEmpty() == true
+            } == true
+        val contextualWire = if (envelope["conversationContext"] == null) groundedWire else {
+            val wire = StrictJson.parse(groundedWire.toByteArray(Charsets.UTF_8), 262_144).obj()
+            val context = wire["conversationContext"].obj()
+            // This exact program rule is installed in the system message below. Keep every
+            // selected answer and its scope; remove only the duplicate trusted instruction.
+            if (context["instructions"] == dev.tracelife.analysis.ConversationContextProtocol.INSTRUCTIONS)
+                AnalysisRunCodec.json(wire + ("conversationContext" to (context - "instructions")))
+            else groundedWire
+        }
         val body = AnalysisRunCodec.json(mapOf(
             "model" to model.apiId,
             "messages" to listOf(mapOf("role" to "system", "content" to (instructions +
+                (if (hasFactConstraints) SOURCE_FACT_GUIDANCE else "") +
                 (if (envelope["historicalFeedback"] != null) FeedbackContextProtocol.MODEL_INSTRUCTIONS else "") +
                 (if (envelope["conversationContext"] != null) dev.tracelife.analysis.ConversationContextProtocol.INSTRUCTIONS else ""))),
-                mapOf("role" to "user", "content" to wirePayload)),
+                mapOf("role" to "user", "content" to contextualWire)),
             "thinking" to mapOf("type" to "disabled"),
             "response_format" to mapOf("type" to "json_object"),
             "stream" to false,
@@ -328,6 +352,7 @@ class DeepSeekProvider internal constructor(
     private fun citationPattern(metric: Boolean) = if (metric) Regex("metric-v1-[0-9a-f]{64}") else Regex("[0-9a-f]{64}")
 
     companion object {
+        private const val SOURCE_FACT_GUIDANCE = "sourceFacts是原文中有限关系：source索引定位sources及原始证据，start/end为码点。保留数量角色、状态及顺序，未列出不等于不存在。derivedFactConstraints是派生约束。仍须核对原文；新建议标明待尝试。"
         private const val GENERATION_CONTRACT = "本版输出只含claims及可省略的空占位unknowns；如果提供unknowns，必须是空数组[]；不在正文外生成未经逐项核对的生活未知或限制。" +
             "会影响判断的未知、反例和适用边界必须写入对应有引用的claim，与正文一起接受后续原文核对；建议用POSSIBLE_INTERPRETATION，且明确尚未执行或未证实。" +
             "不得为了省略unknowns而省略必要限制或编造事实；完全没有可成立的内容允许claims=[]。程序会另行展示实际读取覆盖。"

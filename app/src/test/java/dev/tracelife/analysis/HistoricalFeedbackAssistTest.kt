@@ -56,7 +56,7 @@ class HistoricalFeedbackAssistTest {
         assertEquals(17, scans.flatMap { it.historicalFeedbackReadIds }.distinct().size)
         assertEquals(17, reopened.historicalFeedbackAssistPage(run.id, target).unresolved)
         assertTrue(state.calls.first().historicalFeedbackReadIds.size <= 8)
-        assertEquals(13, JSONObject(AnalysisRunCodec.encode(state)).getInt("formatVersion"))
+        assertEquals(18, JSONObject(AnalysisRunCodec.encode(state)).getInt("formatVersion"))
         assertEquals(state, AnalysisRunCodec.decode(AnalysisRunCodec.encode(state)))
         val page = reopened.historicalFeedbackAssistPage(run.id, target)
         reopened.acceptHistoricalFeedbackSuggestions(page, page.items.map { it.content.reference.id }.toSet())

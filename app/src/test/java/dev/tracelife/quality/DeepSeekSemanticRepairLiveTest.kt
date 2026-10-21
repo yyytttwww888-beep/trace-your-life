@@ -104,7 +104,11 @@ class DeepSeekSemanticRepairLiveTest {
                                 row.put("httpStatus", response.status).put("responseBytes", response.body.size)
                                 // Preserve even malformed/semantically wrong successful HTTP responses.
                                 // Error bodies may contain account information, so retain status only.
-                                if (response.status == 200) File(report.directory, "${sample.id}-response.json").writeBytes(response.body)
+                                if (response.status == 200) {
+                                    val responseFile = "${sample.id}-response.json"
+                                    File(report.directory, responseFile).writeBytes(response.body)
+                                    row.recordRawReviewResponse(response.body, responseFile)
+                                }
                             }
                         }
                         val provider = DeepSeekProvider(credentials, qualityModel, transport)
@@ -113,10 +117,10 @@ class DeepSeekSemanticRepairLiveTest {
                         val publication = runCatching { KnowledgeLibrary(repository, SyntheticQualityCases.clock).publish(
                             task.stored.id, claim, "real-review", KnowledgeCategory.INSIGHT, analysis.task(task.stored.id).stored.version) }
                         val review = reviewed.getOrNull()
-                        row.put("publicationAttempted", true).put("published", publication.isSuccess)
+                        row.withReviewDiagnostics(review).put("publicationAttempted", true).put("published", publication.isSuccess)
                             .put("publicationFailureType", publication.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
                             .put("reviewFailureType", reviewed.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)
-                            .put("calls", JSONArray(analysis.task(task.stored.id).state.calls.map { call -> JSONObject()
+                            .put("calls", JSONArray(analysis.task(task.stored.id).state.calls.map { call -> JSONObject().withCallDiagnostics(call)
                                 .put("purpose", call.purpose.name).put("status", call.status.name)
                                 .put("requestSha256", call.requestSha256).put("providerId", call.providerId)
                                 .put("inputBytes", call.inputBytes).put("inputTokens", call.inputTokens) }))

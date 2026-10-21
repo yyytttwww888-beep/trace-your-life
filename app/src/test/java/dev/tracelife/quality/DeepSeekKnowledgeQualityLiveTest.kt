@@ -67,10 +67,15 @@ class DeepSeekKnowledgeQualityLiveTest {
                             // The wire body contains synthetic inputs only; the secret/header is never recorded.
                             File(report.directory, "${case.id}-request-$casePaidRequests.json").writeText(body)
                             actualTransport.execute(body, secret).also { response ->
-                                if (response.status == 200) File(report.directory, "${case.id}-response-$casePaidRequests.json").writeBytes(response.body)
+                                if (response.status == 200) {
+                                    val responseFile = "${case.id}-response-$casePaidRequests.json"
+                                    File(report.directory, responseFile).writeBytes(response.body)
+                                    row.recordRawReviewResponse(response.body, responseFile)
+                                }
                             }
                         }
                         val provider = DeepSeekProvider(credentials, qualityModel, transport)
+                        row.put("adapter", provider.id)
                         val turn = workflow.submit(workflow.prepare(case.question, scopeOverride = case.scope))
                         runId = turn.runId
                         val limits = analysis.task(turn.runId).state.request.limits
@@ -124,7 +129,7 @@ class DeepSeekKnowledgeQualityLiveTest {
                                 val publication = runCatching { KnowledgeLibrary(repository, SyntheticQualityCases.clock).publish(
                                     turn.runId, target.ref, reviewKey, KnowledgeCategory.INSIGHT,
                                     analysis.task(turn.runId).stored.version, topics = setOf("学习")) }
-                                reviews.put(JSONObject().put("text", finding.text).put("verdict", checked.verdict.name)
+                                reviews.put(JSONObject().withReviewDiagnostics(checked).put("text", finding.text).put("verdict", checked.verdict.name)
                                     .put("issues", JSONArray(checked.issues.map { it.name }))
                                     .put("unknowns", JSONArray(checked.unknowns))
                                     .put("supportingEvidenceIds", JSONArray(checked.supportingEvidenceIds))
@@ -161,7 +166,7 @@ class DeepSeekKnowledgeQualityLiveTest {
     }
 
     private fun fixtureRow(case: SyntheticQualityCases.Case) = JSONObject()
-        .put("id", case.id).put("model", qualityModel.apiId).put("adapter", "deepseek:${qualityModel.apiId}:json-v1:utf8-bound-v1:review-clauses-v4")
+        .put("id", case.id).put("model", qualityModel.apiId)
         .put("question", case.question).put("from", case.from).put("through", case.through).put("zoneId", "Asia/Shanghai")
         .put("requiredDistinctions", JSONArray(case.requiredDistinctions)).put("forbiddenConclusions", JSONArray(case.forbiddenConclusions))
         .put("expectedNewValue", case.expectedNewValue).put("sources", JSONArray(case.sources.map { source ->
@@ -173,7 +178,7 @@ class DeepSeekKnowledgeQualityLiveTest {
             .put("totalInputBytes", 1_048_576).put("paidRequestsPerCase", 9).put("paidRequestsSuite", 54))
         .put("published", false).put("finalOriginalReview", "NOT_YET_RUN")
 
-    private fun callRow(call: AnalysisCall) = JSONObject()
+    private fun callRow(call: AnalysisCall) = JSONObject().withCallDiagnostics(call)
         .put("purpose", call.purpose.name).put("status", call.status.name).put("failureCode", call.failureCode ?: JSONObject.NULL)
         .put("inputBytes", call.inputBytes).put("budgetInputTokens", call.inputTokens).put("tokenCountKind", call.tokenCountKind.name)
         .put("promptTokens", call.usage?.promptTokens ?: JSONObject.NULL).put("completionTokens", call.usage?.completionTokens ?: JSONObject.NULL)

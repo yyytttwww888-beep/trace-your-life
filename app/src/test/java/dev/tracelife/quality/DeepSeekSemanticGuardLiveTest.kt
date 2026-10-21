@@ -85,14 +85,18 @@ class DeepSeekSemanticGuardLiveTest {
                             sampleRequests++; requests++
                             File(report.directory, "${sample.id}-request.json").writeText(body)
                             actual.execute(body, secret).also { response ->
-                                if (response.status == 200) File(report.directory, "${sample.id}-response.json").writeBytes(response.body)
+                                if (response.status == 200) {
+                                    val responseFile = "${sample.id}-response.json"
+                                    File(report.directory, responseFile).writeBytes(response.body)
+                                    row.recordRawReviewResponse(response.body, responseFile)
+                                }
                             }
                         }
                         val provider = DeepSeekProvider(credentials, qualityModel, transport)
                         val review = analysis.reviewClaim(task.stored.id, "real-review", claim, provider = provider)
                         val publication = runCatching { KnowledgeLibrary(repository, SyntheticQualityCases.clock).publish(task.stored.id,
                             claim, "real-review", KnowledgeCategory.INSIGHT, analysis.task(task.stored.id).stored.version) }
-                        row.put("verdict", review.verdict.name).put("issues", JSONArray(review.issues.map { it.name }))
+                        row.withReviewDiagnostics(review).put("verdict", review.verdict.name).put("issues", JSONArray(review.issues.map { it.name }))
                             .put("unknowns", JSONArray(review.unknowns)).put("supportingEvidenceIds", JSONArray(review.supportingEvidenceIds))
                             .put("contradictingEvidenceIds", JSONArray(review.contradictingEvidenceIds)).put("publicationAttempted", true)
                             .put("published", publication.isSuccess).put("publicationFailureType", publication.exceptionOrNull()?.javaClass?.simpleName ?: JSONObject.NULL)

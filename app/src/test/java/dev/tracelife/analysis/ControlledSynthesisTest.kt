@@ -74,7 +74,7 @@ class ControlledSynthesisTest {
         assertEquals(CallPurpose.SYNTHESIS, saved.purpose)
         assertEquals(CallStatus.SUCCEEDED, saved.status)
         assertEquals(2, saved.evidence.size)
-        assertEquals(12, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(18, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(0L, AnalysisBatchProcessor(analysis).coverage("run").completedTextCodePoints)
         repository.close()
         repository = LifeRepository(context, clock, database)

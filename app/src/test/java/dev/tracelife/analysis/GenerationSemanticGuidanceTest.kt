@@ -13,6 +13,7 @@ import dev.tracelife.providers.DeepSeekCredentials
 import dev.tracelife.providers.DeepSeekProvider
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.LifeRepository
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -185,6 +186,24 @@ class GenerationSemanticGuidanceTest {
         assertTrue(repository.profileHeads().isEmpty())
     }
 
+    @Test fun `an empty fact pack stays in the original request but adds no wire data or instructions`() {
+        val text = "合成资料：今天窗外有风。"
+        val source = mapOf("id" to "e".repeat(64), "recordId" to "empty-facts", "revision" to 1,
+            "field" to "body", "start" to 0, "end" to text.length, "totalCodePoints" to text.length,
+            "sha256" to AnalysisRunCodec.sha256(text), "text" to text,
+            "startDate" to "2026-10-03", "endDate" to "2026-10-03")
+        val envelope = mapOf("purpose" to "SYNTHESIS", "question" to "整理合成资料", "evidence" to listOf(source))
+        val facts = requireNotNull(EvidenceFacts.build(envelope))
+        assertTrue(facts.facts.isEmpty())
+        val prepared = wire.prepare(ModelRequest(AnalysisRunCodec.json(envelope +
+            ("sourceFacts" to EvidenceFacts.packMap(facts))), "synthetic-empty-facts", 2_000))
+        assertWireContract(prepared, SemanticQualityGuidance.GENERATION)
+        assertTrue(JSONObject(prepared.original.payloadJson).has("sourceFacts"))
+        val messages = JSONObject(prepared.payloadJson).getJSONArray("messages")
+        assertFalse(JSONObject(messages.getJSONObject(1).getString("content")).has("sourceFacts"))
+        assertFalse(messages.getJSONObject(0).getString("content").contains(SOURCE_FACT_GUIDANCE))
+    }
+
     private fun request(target: ProfileAnalysisTarget?) = AnalysisRequest("合成资料中的方法变化及限制", scope,
         AnalysisLimits(maxInputBytes = 65_536, inputTokenLimit = 32_000), profileTarget = target)
 
@@ -198,7 +217,8 @@ class GenerationSemanticGuidanceTest {
         val original = JSONObject(prepared.original.payloadJson)
         val actual = JSONObject(messages.getJSONObject(1).getString("content"))
         // The original ledger remains complete. Only exact duplicated rules in the designated
-        // instruction field may differ; question, evidence, old drafts and feedback stay intact.
+        // instruction field and duplicated source descriptors may differ. An empty fact pack
+        // stays local; question, original evidence, facts, old drafts and feedback stay intact.
         val expectedInstructions = original.optString("system").let { instructions ->
             listOf(SemanticQualityGuidance.GENERATION, SemanticQualityGuidance.REDUCTION,
                 ProfileAnalysisProtocol.CANDIDATE_SHAPE).fold(instructions) { remaining, rule ->
@@ -207,11 +227,54 @@ class GenerationSemanticGuidanceTest {
         }
         assertEquals(expectedInstructions, actual.optString("system"))
         assertFalse(actual.optString("system").contains(guidance))
+        val withoutConstraints = JSONObject(prepared.original.payloadJson)
+        val factPack = original.optJSONObject("sourceFacts")
+        var hasConstraints = factPack?.getJSONArray("facts")?.length()?.let { it > 0 } == true
+        withoutConstraints.remove("sourceFacts")
+        withoutConstraints.optJSONArray("derivedInputs")?.let { inputs ->
+            (0 until inputs.length()).forEach { index ->
+                val input = inputs.getJSONObject(index)
+                hasConstraints = hasConstraints || (input.optJSONArray("derivedFactConstraints")?.length() ?: 0) > 0
+                input.remove("derivedFactConstraints")
+            }
+        }
+        val withoutConstraintSystem = JSONObject(wire.prepare(prepared.original.copy(
+            payloadJson = withoutConstraints.toString())).payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
+        assertEquals("Only the exact source-fact instruction may be added", withoutConstraintSystem,
+            system.replace(SOURCE_FACT_GUIDANCE, ""))
+        assertEquals(if (hasConstraints) 1 else 0, system.windowed(SOURCE_FACT_GUIDANCE.length).count { it == SOURCE_FACT_GUIDANCE })
+        factPack?.let { pack ->
+            if (pack.getJSONArray("facts").length() == 0) {
+                original.remove("sourceFacts")
+                assertFalse(actual.has("sourceFacts"))
+            } else {
+                val descriptors = pack.getJSONArray("sources")
+                val compact = JSONArray()
+                (0 until descriptors.length()).forEach { index ->
+                    val descriptor = descriptors.getJSONObject(index)
+                    val evidence = original.getJSONArray("evidence")
+                    val source = (0 until evidence.length()).map { evidence.getJSONObject(it) }
+                        .single { it.getString("id") == descriptor.getString("id") }
+                    assertEquals("RECORD", descriptor.getString("type"))
+                    mapOf("record" to "recordId", "revision" to "revision", "field" to "field", "start" to "start",
+                        "end" to "end", "total" to "totalCodePoints", "sha256" to "sha256", "from" to "startDate", "through" to "endDate")
+                        .forEach { (factKey, evidenceKey) -> assertEquals(source.get(evidenceKey), descriptor.get(factKey)) }
+                    assertEquals(AnalysisRunCodec.sha256(source.getString("text")), descriptor.getString("textSha256"))
+                    compact.put(JSONObject().put("id", descriptor.getString("id")).put("field", descriptor.getString("field")))
+                }
+                assertEquals(pack.getJSONArray("facts").toString(), actual.getJSONObject("sourceFacts").getJSONArray("facts").toString())
+                pack.put("sources", compact)
+            }
+        }
         original.remove("system")
         actual.remove("system")
         assertEquals(original.toString(), actual.toString())
         assertEquals(prepared, wire.prepare(prepared.original))
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+    }
+
+    private companion object {
+        const val SOURCE_FACT_GUIDANCE = "sourceFacts是原文中有限关系：source索引定位sources及原始证据，start/end为码点。保留数量角色、状态及顺序，未列出不等于不存在。derivedFactConstraints是派生约束。仍须核对原文；新建议标明待尝试。"
     }
 
     private class CapturingProvider(private val wire: DeepSeekProvider, private val legacyUnknown: String? = null,

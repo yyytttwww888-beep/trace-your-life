@@ -209,7 +209,8 @@ class ControlledReductionReviewTest {
                 repeat(inputs.length()) { inputs.getJSONObject(it).remove("includeDerivedFeedback") }
             } }
         }.toString()
-        assertEquals(calls, AnalysisRunCodec.decode(old).calls)
+        assertEquals(calls.map { it.copy(sourceFacts = null, review = it.review?.copy(factCheck = null)) },
+            AnalysisRunCodec.decode(old).calls)
         repository.saveAnalysisRun(task.stored.copy(version = task.stored.version + 1, payload = old), task.stored.version)
         val root = ReductionGraph.statementRef(calls.last(), 0)
         assertEquals(40, analysis.reductionReviewContext("run", root).originalEvidence.size)

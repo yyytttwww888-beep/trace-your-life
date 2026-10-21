@@ -23,12 +23,19 @@ internal class SyntheticQualityReport(kind: String, private val fixtureVersion: 
         check(directory.mkdirs())
     }
 
-    fun add(value: JSONObject) { rows.put(value); flush() }
+    fun add(value: JSONObject) {
+        if (value.has("target") && !value.has("finalVerdict")) value.withReviewDiagnostics(null)
+        value.put("sourceFactExtractionModelRequests", 0)
+            .put("reviewDiagnosticsVersion", 1)
+        rows.put(value)
+        flush()
+    }
 
     private fun flush() {
         File(directory, "report.json").writeText(JSONObject()
             .put("synthetic", true).put("fixtureVersion", fixtureVersion)
             .put("startedAt", started).put("reportedAt", Instant.now().toString())
+            .put("reportedPaidRequests", (0 until rows.length()).sumOf { rows.getJSONObject(it).optLong("paidRequests") })
             .put("cases", rows).toString(2))
         File(directory, "report.md").writeText(buildString {
             append("# 合成质量与规模运行报告\n\n全部输入为虚构资料。固定案例版本：$fixtureVersion。\n\n")
@@ -37,6 +44,7 @@ internal class SyntheticQualityReport(kind: String, private val fixtureVersion: 
                 val row = rows.getJSONObject(index)
                 append("## ${row.getString("id")}\n\n")
                 append("程序结果：${row.optString("programmaticStatus")}；耗时：${row.optLong("elapsedMillis")} ms。\n\n")
+                append("实际模型请求：${row.optLong("paidRequests")}；程序事实整理不增加模型请求。\n\n")
                 row.optJSONArray("requiredDistinctions")?.let { values ->
                     append("预先规定的语义检查（未自动评分）：\n\n")
                     for (i in 0 until values.length()) append("- 待人工评审：${values.getString(i)}\n")
@@ -57,15 +65,18 @@ internal class SyntheticQualityReport(kind: String, private val fixtureVersion: 
                     append("原文核对与发布门禁（用户确认／历史对照为合成操作，不是正确性证明）：\n\n")
                     for (i in 0 until values.length()) {
                         val review = values.getJSONObject(i)
-                        append("- ${review.getString("verdict")}；实际发布 ${review.getBoolean("published")}：${review.getString("text")}\n")
+                        append("- 模型有效意见 ${review.opt("modelVerdict")}；程序阻断 ${review.opt("programBlocked")}；最终 ${review.getString("verdict")}；实际发布 ${review.getBoolean("published")}：${review.getString("text")}\n")
                         append("  问题：${review.getJSONArray("issues")}；未知项：${review.getJSONArray("unknowns")}\n")
+                        append("  程序关系检查：${review.opt("programFactFindings")}\n")
                     }
                     append("\n不支持意见成功阻止发布是门禁正常，不当作产品失败；SUPPORTED 及已发布结果仍须独立评审。生成 unknowns 不是知识发布目标，另行检查与原文／正文是否冲突。\n\n")
                 }
                 if (row.has("target")) {
                     append("固定原文：${row.optString("source")}\n\n固定目标：${row.getString("target")}\n\n")
                     append("预期支持：${row.optBoolean("expectedSupported")}；实际意见：${row.optString("verdict", "未完成")}；实际发布：${row.optBoolean("published")}。\n\n")
+                    append("模型有效意见：${row.opt("modelVerdict")}；程序阻断：${row.opt("programBlocked")}；程序关系检查：${row.opt("programFactFindings")}。\n\n")
                 }
+                row.optJSONArray("rawModelReviews")?.let { append("原始模型意见及响应文件：$it。原始意见尚未通过适配器校验，不能当作最终判断。\n\n") }
                 append("完整范围、固定输入、禁止结论、请求台账与错误分类见同目录 report.json。\n\n")
             }
         })

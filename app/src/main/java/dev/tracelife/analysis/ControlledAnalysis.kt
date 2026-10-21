@@ -498,6 +498,12 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                     "requestSha256" to input.requestSha256,
                     "feedbackClaimCount" to input.feedbackTokens.size,
                     "feedbackManifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(input.feedbackTokens.map(ReductionGraph::tokenMap))),
+                    "derivedFactConstraints" to leaves.mapNotNull { leaf ->
+                        ReductionGraph.resolve(task.state.calls, leaf).sourceFacts?.takeIf { it.facts.isNotEmpty() }?.let { facts ->
+                            mapOf("originalEvidence" to false, "node" to ReductionGraph.nodeMap(leaf),
+                                "sourceFacts" to inheritedFactConstraints(facts))
+                        }
+                    },
                     "provenance" to mapOf("leafBatches" to leaves.size, "originalFragments" to evidence.size,
                         "originalRecords" to evidence.map { it.recordId }.distinct().size,
                         "manifestSha256" to AnalysisRunCodec.sha256(AnalysisRunCodec.json(mapOf(
@@ -1004,7 +1010,12 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
     private fun modelRequest(id: String, batchKey: String, payload: String, limits: AnalysisLimits): ModelRequest {
         val state = current(id).state
         val context = state.feedbackContext
-        val routedPayload = KnowledgeContextProtocol.attach(ConversationContextProtocol.attach(payload, state.request.conversationContext), state.knowledgeContext)
+        // Build from the original source envelope before adding any derived or historical text.
+        val sourceEnvelope = sourceEnvelope(payload)
+        val facts = EvidenceFacts.build(sourceEnvelope)
+        val groundedPayload = if (facts == null) payload else AnalysisRunCodec.json(sourceEnvelope +
+            ("sourceFacts" to EvidenceFacts.packMap(facts)))
+        val routedPayload = KnowledgeContextProtocol.attach(ConversationContextProtocol.attach(groundedPayload, state.request.conversationContext), state.knowledgeContext)
         val complete = if (context == null) routedPayload else {
             val catalog = FeedbackContextCatalog(repository)
             val entries = mutableListOf<Map<String, Any?>>()
@@ -1029,6 +1040,29 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         }
         if (complete.toByteArray(Charsets.UTF_8).size > limits.maxInputBytes) throw AnalysisBudgetException("完整模型输入超过字节预算，请减少片段或历史")
         return ModelRequest(complete, AnalysisRunCodec.sha256(AnalysisRunCodec.json(listOf(id, batchKey))), limits.outputTokenReserve)
+    }
+
+    /** These envelopes are generated locally; no provider response is decoded through this helper. */
+    private fun inheritedFactConstraints(pack: EvidenceFactPack): Map<String, Any?> {
+        // A leaf may have read many sources without a recognized literal relation. Carry every
+        // fact and its exact descriptor, but don't replicate unrelated source catalogs at each level.
+        val indexes = pack.facts.map { it.source }.distinct().sorted()
+        val remapped = indexes.withIndex().associate { it.value to it.index }
+        val projected = pack.copy(sources = indexes.map { pack.sources[it] },
+            facts = pack.facts.map { it.copy(source = remapped.getValue(it.source)) })
+        return (EvidenceFacts.packMap(projected) - "sha256") + ("sourcePackSha256" to pack.sha256)
+    }
+
+    /** These envelopes are generated locally; no provider response is decoded through this helper. */
+    private fun sourceEnvelope(payload: String): Map<String, Any?> {
+        fun value(raw: Any?): Any? = when (raw) {
+            null, org.json.JSONObject.NULL -> null
+            is org.json.JSONObject -> raw.keys().asSequence().associateWith { value(raw.get(it)) }
+            is org.json.JSONArray -> (0 until raw.length()).map { value(raw.get(it)) }
+            else -> raw
+        }
+        val root = org.json.JSONObject(payload)
+        return root.keys().asSequence().associateWith { value(root.get(it)) }
     }
 
     /** All call purposes share one durable dispatch, budget and recovery boundary. */
@@ -1066,6 +1100,10 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
         require(prepared.original == request) { "模型适配器改变了原始请求" }
+        val originalEnvelope = sourceEnvelope(request.payloadJson)
+        val sourceFacts = originalEnvelope["sourceFacts"]?.let { raw ->
+            EvidenceFacts.parsePack(raw).also { require(it == EvidenceFacts.build(originalEnvelope)) { "来源事实与本次原文不一致" } }
+        }
         val inputBytes = prepared.payloadJson.toByteArray(Charsets.UTF_8).size
         if (inputBytes > limits.maxInputBytes) throw AnalysisBudgetException("供应商完整请求超过字节预算")
         val inputTokens = prepared.inputTokens
@@ -1082,6 +1120,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
                 previous.reviewTarget != reviewTarget || previous.feedbackVersion != feedbackVersion || previous.reductionInputs != reductionInputs || previous.reductionTarget != reductionTarget ||
                 previous.reductionReviewTokens != reductionReviewTokens || previous.reductionScans != reductionScans ||
                 previous.metricEvidence != metricEvidence || previous.actionEvidence != actionEvidence || previous.profileMaintenancePlanSha256 != maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256) ||
+                previous.sourceFacts != sourceFacts ||
                 previous.profileReference != profileReference || previous.profileMaintenanceProof != profileMaintenanceProof ||
                 historicalScanReadIds != null && previous.historicalFeedbackReadIds != historicalScanReadIds) {
                 throw AnalysisConflictException("同一批次不能更换请求、模型、核对目标或反馈")
@@ -1101,7 +1140,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             tokenCountKind = prepared.tokenCountKind, purpose = purpose, reviewTarget = reviewTarget, feedbackVersion = feedbackVersion, reductionInputs = reductionInputs, reductionTarget = reductionTarget,
             reductionReviewTokens = reductionReviewTokens, reductionScans = reductionScans, metricEvidence = metricEvidence,
             profileMaintenancePlanSha256 = maintenancePlan?.let(ProfileMaintenanceProtocol::planSha256), profileReference = profileReference,
-            profileMaintenanceProof = profileMaintenanceProof, actionEvidence = actionEvidence,
+            profileMaintenanceProof = profileMaintenanceProof, actionEvidence = actionEvidence, sourceFacts = sourceFacts,
             historicalFeedbackReadIds = historicalScanReadIds ?: org.json.JSONObject(request.payloadJson).optJSONObject("historicalFeedback")?.getJSONArray("entries")?.let { rows ->
                 (0 until rows.length()).map { FeedbackContextProtocol.feedbackIdFromControlKey(rows.getJSONObject(it).getString("controlKey")) } }.orEmpty(),
             feedbackContextSha256 = if (purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN) HistoricalFeedbackAssistProtocol.planHash(state, requireNotNull(reviewTarget))
@@ -1111,7 +1150,7 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
         maintenancePlan?.let { ensureMaintenancePlan(task(registered), it) }
         if (purpose == CallPurpose.REDUCTION) ensureReductionFeedback(task.stored.id, reductionInputs.flatMap { it.feedbackTokens })
         if (reductionTarget != null) ensureReductionFeedback(task.stored.id, reductionReviewTokens)
-        val completion = try {
+        var completion = try {
             dispatch(prepared)
         } catch (failure: Exception) {
             finishFailure(registered, state, call, if (failure is AnalysisProviderException) "PROVIDER_${failure.code.name}" else "PROVIDER_FAILED")
@@ -1143,7 +1182,15 @@ class ControlledAnalysis(private val repository: LifeRepository, private val clo
             else if (purpose == CallPurpose.REDUCTION) AnalysisRunCodec.reductionFromWire(requireNotNull(completion.proposal), reductionInputs, limits.maxOutputBytes)
             else if (purpose == CallPurpose.REDUCTION_SCAN) ReductionReviewProtocol.validateScan(requireNotNull(completion.scan), receipts, limits.maxOutputBytes, actionEvidence)
             else {
-                AnalysisRunCodec.validateReview(requireNotNull(completion.review), receipts, limits.maxOutputBytes, metricEvidence, actionEvidence)
+                val modelReview = requireNotNull(completion.review)
+                require(modelReview.factCheck == null) { "模型不能提供程序事实校验证明" }
+                AnalysisRunCodec.validateReview(modelReview, receipts, limits.maxOutputBytes, metricEvidence, actionEvidence)
+                if (sourceFacts != null) {
+                    val targetText = ((originalEnvelope["target"] as? Map<*, *>)?.get("text") as? String)
+                        ?: throw IllegalArgumentException("核对缺少原始目标文字")
+                    completion = completion.copy(review = EvidenceFacts.apply(modelReview, EvidenceFacts.check(targetText, sourceFacts)))
+                    AnalysisRunCodec.validateReview(requireNotNull(completion.review), receipts, limits.maxOutputBytes, metricEvidence, actionEvidence)
+                }
                 state.request.profileTarget?.let { LongitudinalProfileProtocol.validateReview(it, requireNotNull(completion.review), receipts,
                     LongitudinalProfileProtocol.sources(this, task.stored.id, receipts.map { ref -> ref.recordId }.toSet())) }
                 if (purpose == CallPurpose.REDUCTION_REVIEW) ReductionReviewProtocol.proof(state, call.copy(review = completion.review))

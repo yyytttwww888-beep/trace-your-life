@@ -5,6 +5,7 @@ import dev.tracelife.analysis.AnalysisRunState
 import dev.tracelife.model.RecordRevision
 import dev.tracelife.metrics.RecordMetricProtocol
 import dev.tracelife.storage.ClaimFeedbackDecision
+import dev.tracelife.storage.EvidenceFactStorage
 import dev.tracelife.storage.KnowledgeCategory
 import dev.tracelife.storage.KnowledgeValidation
 import dev.tracelife.storage.SourceStamp
@@ -92,6 +93,9 @@ internal object PublishedKnowledgeExport {
                 null
             } else {
                 KnowledgeValidation.validateEvidence(value, allSources.map { (id, _) -> records.getValue(id) }.distinctBy { it.id })
+                value.review.factCheck?.let { proof ->
+                    EvidenceFactStorage.validateActions(proof.pack, value.actionEvidence, snapshot.actionRevisions)
+                }
                 value.metricEvidence.forEach { metric ->
                     if (validatedMetrics.add(metric.id)) RecordMetricProtocol.validateSnapshot(metric, stamp, currentRecords)
                 }

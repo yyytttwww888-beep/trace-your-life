@@ -1072,6 +1072,11 @@ object KnowledgeArchive {
         selection.entries.forEach { entry ->
             val value = entry.value
             val path = paths.getValue(value.id)
+            val factCheckPath = value.review.factCheck?.let { proof ->
+                "notes/fact-checks/${hash(value.id)}/proof.json".also { proofPath ->
+                    archive.text(proofPath, AnalysisRunCodec.json(dev.tracelife.analysis.EvidenceFacts.reviewMap(proof)))
+                }
+            }
             val experienceIndex = "notes/experiences/${hash(value.id)}/index.md"
             relatedExperiences[value.id]?.let { threads -> archive.pages(experienceIndex, "这份知识关联的经验线索",
                 threads.map { Nav(it.thread.title, "experiences/entries/${hash(it.thread.id)}/index.md") }, "关联由用户明确选择，不是额外证据。") }
@@ -1118,6 +1123,10 @@ object KnowledgeArchive {
                     .append(archive.link(path, experienceIndex, "经验线索")).append("。关联不代表当前理解已经得到新证实。\n")
                 append("\n## 核对与用户决定\n\n")
                 append("核对结果：${value.review.verdict.name}；提供方：${escape(value.reviewProviderId)}；核对批次：${escape(value.reviewBatchKey)}；尝试：${value.reviewAttempt}。模型核对不是事实认证。\n\n")
+                factCheckPath?.let { proofPath ->
+                    append("程序关系核验：").append(archive.link(path, proofPath, "来源位置、结构化值及核验凭据"))
+                        .append("。模型原意见：${value.review.factCheck?.modelVerdict?.name}；已实现规则未发现阻断，不代表覆盖全部自然语言或证实自述真实。\n\n")
+                }
                 value.reductionProof?.let { proof ->
                     append("该条来自周期归并：${proof.scans.size} 批原文筛查覆盖 ${proof.originalEvidence.size} 个记录片段及 ${actionRefs.size} 份行动凭据；最终核对取得 ${value.evidence.size} 个记录片段及 ${value.actionEvidence.size} 份行动凭据。筛查分类与最终支持判断分别保存；未直接送入最终核对的来源不能表述为最终模型逐条读过。\n\n")
                 }
