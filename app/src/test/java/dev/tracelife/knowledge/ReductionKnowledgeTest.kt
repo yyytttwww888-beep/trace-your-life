@@ -196,15 +196,17 @@ class ReductionKnowledgeTest {
         prepare(); review()
         val saved = publish()
         val payload = KnowledgeCodec.encode(saved)
-        assertEquals(7, JSONObject(payload).getInt("formatVersion"))
+        assertEquals(8, JSONObject(payload).getInt("formatVersion"))
         assertEquals(saved, KnowledgeCodec.decode(payload))
-        val versionTwo = JSONObject(payload).apply { put("formatVersion", 2); remove("metricEvidence"); remove("profileMaintenanceProof"); remove("actionPlan"); remove("actionEvidence") }
-        assertEquals(saved, KnowledgeCodec.decode(versionTwo.toString()))
+        val historical = saved.copy(review = saved.review.copy(factCheck = null))
+        val versionTwo = JSONObject(KnowledgeCodec.encode(historical)).apply { put("formatVersion", 2); remove("metricEvidence"); remove("profileMaintenanceProof"); remove("actionPlan"); remove("actionEvidence") }
+        assertEquals(historical, KnowledgeCodec.decode(versionTwo.toString()))
         val direct = asDirect(saved)
-        val legacy = JSONObject(KnowledgeCodec.encode(direct)).apply {
+        val historicalDirect = direct.copy(review = direct.review.copy(factCheck = null))
+        val legacy = JSONObject(KnowledgeCodec.encode(historicalDirect)).apply {
             put("formatVersion", 1); remove("reductionProof"); remove("metricEvidence"); remove("profileMaintenanceProof"); remove("actionPlan"); remove("actionEvidence")
         }
-        assertEquals(direct, KnowledgeCodec.decode(legacy.toString()))
+        assertEquals(historicalDirect, KnowledgeCodec.decode(legacy.toString()))
         val invalid = listOf(
             JSONObject(payload).apply { remove("reductionProof") }.toString(),
             JSONObject(payload).put("formatVersion", 1).toString(),

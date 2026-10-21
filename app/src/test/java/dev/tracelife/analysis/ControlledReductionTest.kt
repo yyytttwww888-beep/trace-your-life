@@ -73,7 +73,7 @@ class ControlledReductionTest {
         assertNull(call.proposal)
         assertTrue(call.evidence.isEmpty())
         assertEquals(output, call.reductionOutput)
-        assertEquals(12, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
+        assertEquals(18, JSONObject(analysis.task("run").stored.payload).getInt("formatVersion"))
         assertEquals(listOf(first, second), analysis.reductionNode("run", "root").leafRefs)
         assertEquals(3, analysis.reductionNode("run", "root").originalEvidence.size)
         assertThrows(IllegalArgumentException::class.java) { analysis.claimRef("run", "root", 0) }
@@ -260,7 +260,8 @@ class ControlledReductionTest {
             val calls = getJSONArray("calls")
             repeat(calls.length()) { calls.getJSONObject(it).apply { listOf("metricEvidence", "reductionInputs", "reductionOutput", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(::remove) } }
         }
-        assertEquals(state.calls.dropLast(1), AnalysisRunCodec.decode(oldLeaves.toString()).calls)
+        assertEquals(state.calls.dropLast(1).map { it.copy(sourceFacts = null, review = it.review?.copy(factCheck = null)) },
+            AnalysisRunCodec.decode(oldLeaves.toString()).calls)
     }
 
     private fun start(id: String = "run", limits: AnalysisLimits = AnalysisLimits(), expiresAt: Instant? = null) =

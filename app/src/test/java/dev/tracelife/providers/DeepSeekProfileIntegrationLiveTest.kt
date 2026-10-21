@@ -6,6 +6,8 @@ import dev.tracelife.model.Occurrence
 import dev.tracelife.model.RecordDraft
 import dev.tracelife.profile.*
 import dev.tracelife.quality.SyntheticQualityReport
+import dev.tracelife.quality.recordRawReviewResponse
+import dev.tracelife.quality.withCallDiagnostics
 import org.json.JSONArray
 import org.json.JSONObject
 import dev.tracelife.storage.AnalysisQuery
@@ -84,6 +86,7 @@ class DeepSeekProfileIntegrationLiveTest {
                             if (response.status == 200) {
                                 File(diagnostics.directory, "response-$requestNumber.json").writeBytes(response.body)
                                 wire.put("response", "response-$requestNumber.json")
+                                row.recordRawReviewResponse(response.body, "response-$requestNumber.json")
                             }
                         }
                     } catch (failure: Throwable) {
@@ -110,7 +113,7 @@ class DeepSeekProfileIntegrationLiveTest {
                 } finally {
                     val state = analysis.task("synthetic-integrated-profile").state
                     File(diagnostics.directory, "task-ledger.json").writeText(AnalysisRunCodec.encode(state))
-                    row.put("calls", JSONArray(state.calls.map { call -> JSONObject().put("purpose", call.purpose.name)
+                    row.put("calls", JSONArray(state.calls.map { call -> JSONObject().withCallDiagnostics(call).put("purpose", call.purpose.name)
                         .put("status", call.status.name).put("failureCode", call.failureCode ?: JSONObject.NULL)
                         .put("inputBytes", call.inputBytes).put("inputTokens", call.inputTokens)
                         .put("promptTokens", call.usage?.promptTokens ?: JSONObject.NULL)

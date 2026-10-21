@@ -189,9 +189,9 @@ class MetricKnowledgeTest {
         seed()
         val saved = publish(prepare())
         val payload = KnowledgeCodec.encode(saved)
-        assertEquals(7, JSONObject(payload).getInt("formatVersion"))
+        assertEquals(8, JSONObject(payload).getInt("formatVersion"))
         val invalid = listOf(
-            JSONObject(payload).put("formatVersion", 8).toString(),
+            JSONObject(payload).put("formatVersion", KnowledgeCodec.FORMAT_VERSION + 1).toString(),
             JSONObject(payload).put("formatVersion", 2).toString(),
             JSONObject(payload).apply { remove("metricEvidence") }.toString(),
             JSONObject(payload).apply { put("formatVersion", 2); remove("metricEvidence") }.toString(),

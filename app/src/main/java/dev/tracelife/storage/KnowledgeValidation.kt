@@ -132,6 +132,11 @@ object KnowledgeValidation {
         }
         AnalysisRunCodec.validateProposal(BatchProposal(listOf(value.claim)), value.evidence, MAX_REVISION_BYTES, value.metricEvidence, value.actionEvidence)
         AnalysisRunCodec.validateReview(value.review, value.evidence, MAX_REVISION_BYTES, value.metricEvidence, value.actionEvidence)
+        value.review.factCheck?.let {
+            require(it.targetText == value.claim.text && it.targetSha256 == AnalysisRunCodec.sha256(value.claim.text)) {
+                "知识事实核验与发布正文不同"
+            }
+        }
         require(value.review.verdict == ReviewVerdict.SUPPORTED) { "只有获得支持的核对可以发布" }
         feedbackDependencies(value).forEach { token ->
             SnapshotValidation.id(token.claim.batchKey)
@@ -224,6 +229,7 @@ object KnowledgeValidation {
         validateEvidence(value, records.associateBy { it.id to it.revision })
 
     fun validateEvidence(value: StoredKnowledgeRevision, sources: Map<Pair<String, Int>, RecordRevision>) {
+        value.review.factCheck?.let { EvidenceFactStorage.validateRecords(it.pack, sources) }
         value.metricEvidence.forEach { metric ->
             val originals = metric.sources.map { ref ->
                 requireNotNull(sources[ref.recordId to ref.revision]) { "指标知识缺少原始来源修订" }

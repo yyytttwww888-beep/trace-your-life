@@ -628,7 +628,18 @@ class KnowledgeContextTest {
             append("experience", 1, supplement.knowledgeId, 1, ExperienceRelation.SUPPLEMENT, "合成补充说明，不是当前采用内容")
         }
         val turn = ask()
-        val snapshot = rewriteExperienceContext(repository.captureSnapshot(directory()), turn.runId) { it.copy(revision = 2) }
+        // This fixture represents a historical v15 task, before literal evidence packs existed.
+        val captured = repository.captureSnapshot(directory()).let { snapshot -> snapshot.copy(
+            analysisRuns = snapshot.analysisRuns.map { stored ->
+                if (stored.id != turn.runId) stored else {
+                    val state = AnalysisRunCodec.decode(stored.payload)
+                    stored.copy(payload = AnalysisRunCodec.encode(state.copy(calls = state.calls.map {
+                        it.copy(sourceFacts = null, review = it.review?.copy(factCheck = null))
+                    })))
+                }
+            },
+        ) }
+        val snapshot = rewriteExperienceContext(captured, turn.runId) { it.copy(revision = 2) }
         assertEquals(15, JSONObject(snapshot.analysisRuns.single { it.id == turn.runId }.payload).getInt("formatVersion"))
         return LegacyExperienceFixture(snapshot, turn, initial, supplement, replacement)
     }

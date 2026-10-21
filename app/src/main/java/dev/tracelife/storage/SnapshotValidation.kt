@@ -230,9 +230,14 @@ internal object SnapshotValidation {
             snapshot.analysisRuns.forEach { run ->
                 val state = AnalysisRunCodec.decode(run.payload)
                 ActionEvidenceProtocol.validateSources(state.actionPlan, state.calls.flatMap { it.actionEvidence }, snapshot.actionRevisions, state.request.scope)
+                state.calls.forEach { call ->
+                    call.sourceFacts?.let { EvidenceFactStorage.validateActions(it, call.actionEvidence, snapshot.actionRevisions) }
+                    call.review?.factCheck?.let { EvidenceFactStorage.validateActions(it.pack, call.actionEvidence, snapshot.actionRevisions) }
+                }
             }
             snapshot.knowledgeRevisions.forEach { value ->
                 ActionEvidenceProtocol.validateSources(value.actionPlan, KnowledgeValidation.allActionEvidence(value), snapshot.actionRevisions, value.scope)
+                value.review.factCheck?.let { EvidenceFactStorage.validateActions(it.pack, value.actionEvidence, snapshot.actionRevisions) }
             }
             require(snapshot.deletedActions.size <= ActionValidation.MAX_DELETIONS &&
                 snapshot.deletedActions.map { it.id }.distinct().size == snapshot.deletedActions.size) { "行动删除标记过多或重复" }

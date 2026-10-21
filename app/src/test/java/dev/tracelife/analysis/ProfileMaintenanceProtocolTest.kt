@@ -243,7 +243,9 @@ class ProfileMaintenanceProtocolTest {
         val claim = generated(provider = provider)
         val before = analysis.task("run").state
         val v8 = JSONObject(AnalysisRunCodec.encode(before)).withoutProfileMaintenance().put("formatVersion", 8)
-        assertEquals(before, AnalysisRunCodec.decode(v8.toString()))
+        val historical = before.copy(calls = before.calls.map { it.copy(sourceFacts = null,
+            review = it.review?.copy(factCheck = null)) })
+        assertEquals(historical, AnalysisRunCodec.decode(v8.toString()))
         assertEquals(12, JSONObject(AnalysisRunCodec.encode(AnalysisRunCodec.decode(v8.toString()))).getInt("formatVersion"))
         analysis.planProfileMaintenance("run", claim)
         val payload = JSONObject(analysis.task("run").stored.payload)

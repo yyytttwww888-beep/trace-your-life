@@ -65,7 +65,7 @@ class ProfileCandidateTransferTest {
         val json = JSONObject(encoded.toString(Charsets.UTF_8))
         assertEquals(10, json.getInt("formatVersion"))
         assertEquals(11, json.getInt("sourceSchemaVersion"))
-        assertEquals(12, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
+        assertEquals(18, JSONObject(snapshot.analysisRuns.single().payload).getInt("formatVersion"))
         assertEquals(snapshot, SnapshotJsonCodec.read(encoded.inputStream()))
         val archive = File(workspace, "pending.tlb")
         BackupArchive.write(snapshot, directory(), archive, password)

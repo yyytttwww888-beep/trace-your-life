@@ -12,6 +12,7 @@ import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.ClaimRef
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.ControlledAnalysis
+import dev.tracelife.analysis.EvidenceFacts
 import dev.tracelife.analysis.EvidenceSelection
 import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ProposedClaim
@@ -183,9 +184,12 @@ class ClaimFeedbackTransferTest {
         val state = AnalysisRunCodec.decode(current.payload)
         val extraction = state.calls.single()
         val ref = ClaimRef(value.batchKey, value.claimIndex, value.claimSha256)
+        val modelReview = ClaimReview(ReviewVerdict.SUPPORTED,
+            supportingEvidenceIds = extraction.evidence.map { it.id }, unknowns = listOf(marker))
+        val checkedReview = EvidenceFacts.apply(modelReview, EvidenceFacts.check(
+            requireNotNull(extraction.proposal).claims[value.claimIndex].text, requireNotNull(extraction.sourceFacts)))
         val review = extraction.copy(batchKey = "synthetic-review", purpose = CallPurpose.REVIEW, proposal = null,
-            reviewTarget = ref, feedbackVersion = value.version,
-            review = ClaimReview(ReviewVerdict.SUPPORTED, supportingEvidenceIds = extraction.evidence.map { it.id }, unknowns = listOf(marker)))
+            reviewTarget = ref, feedbackVersion = value.version, review = checkedReview)
         repository.saveAnalysisRun(current.copy(version = current.version + 1,
             payload = AnalysisRunCodec.encode(state.copy(calls = state.calls + review))), current.version)
         val files = directory()

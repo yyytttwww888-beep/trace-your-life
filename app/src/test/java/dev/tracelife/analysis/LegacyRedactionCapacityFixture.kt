@@ -49,6 +49,8 @@ object LegacyRedactionCapacityFixture {
     }
 
     private fun stripNew(call: JSONObject) {
-        listOf("historicalFeedbackReadIds", "feedbackContextSha256", "actionEvidence", "profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof", "metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(call::remove)
+        listOf("sourceFacts", "historicalFeedbackScan", "navigation", "navigationContext",
+            "historicalFeedbackReadIds", "feedbackContextSha256", "actionEvidence", "profileMaintenancePlanSha256", "profileReference", "profileRelation", "profileScan", "profileMaintenanceProof", "metricEvidence", "redactedReductionIdentity", "reductionTarget", "reductionReviewTokens", "reductionScan", "reductionScans").forEach(call::remove)
+        call.optJSONObject("review")?.remove("factCheck")
     }
 }

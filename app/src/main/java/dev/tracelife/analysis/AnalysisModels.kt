@@ -119,6 +119,7 @@ data class ClaimReview(
     val contradictingEvidenceIds: List<String> = emptyList(),
     val issues: List<ReviewIssue> = emptyList(),
     val unknowns: List<String> = emptyList(),
+    val factCheck: EvidenceFactReview? = null,
 )
 
 enum class CallStatus { IN_FLIGHT, SUCCEEDED, FAILED, INTERRUPTED }
@@ -160,6 +161,7 @@ data class AnalysisCall(
     val historicalFeedbackScan: HistoricalFeedbackScan? = null,
     val navigation: NavigationSuggestion? = null,
     val navigationContext: KnowledgeContextPlan? = null,
+    val sourceFacts: EvidenceFactPack? = null,
 )
 
 data class AnalysisRunState(val request: AnalysisRequest, val calls: List<AnalysisCall> = emptyList(),

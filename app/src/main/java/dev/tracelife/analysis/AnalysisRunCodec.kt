@@ -16,6 +16,7 @@ import dev.tracelife.profile.ProfileMaintenanceProtocol
 import dev.tracelife.profile.ProfileIntegrationProtocol
 import dev.tracelife.storage.AnalysisQuery
 import dev.tracelife.storage.StoredAnalysisRun
+import dev.tracelife.storage.EvidenceFactStorage
 import java.io.StringReader
 import java.io.StringWriter
 import java.security.MessageDigest
@@ -23,7 +24,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** Bounded, strict, versioned task storage. Never stores copies of original evidence. */
+/** Bounded task storage. Fact proofs retain identified quotes, never complete source copies. */
 object AnalysisRunCodec {
     const val MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
     private val digest = Regex("[0-9a-f]{64}")
@@ -33,7 +34,8 @@ object AnalysisRunCodec {
 
     // Legacy tasks keep v12's exact shape until the new purpose is actually used.
     fun encode(state: AnalysisRunState): String = encodeVersion(state,
-        if (state.calls.any { it.purpose == CallPurpose.NAVIGATION }) 17
+        if (state.calls.any { it.sourceFacts != null || it.review?.factCheck != null }) 18
+        else if (state.calls.any { it.purpose == CallPurpose.NAVIGATION }) 17
         else if (state.request.profileTarget != null && state.calls.any { it.purpose == CallPurpose.REDUCTION }) 16
         else if (state.request.knowledgeContext != null) 15 else if (state.request.conversationContext != null) 14 else if (state.calls.any { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN }) 13 else 12)
 
@@ -54,6 +56,7 @@ object AnalysisRunCodec {
         require(version >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(version >= 12 || state.feedbackContext == null && !state.request.inheritHistoricalFeedback)
         require(version >= 17 || state.calls.none { it.purpose == CallPurpose.NAVIGATION })
+        require(version >= 18 || state.calls.all { it.sourceFacts == null && it.review?.factCheck == null })
         val reserved = responseReservation(state)
         val request = requestMap(state.request).let { raw ->
             var value = if (version < 15) raw - "knowledgeContext" else raw
@@ -66,6 +69,7 @@ object AnalysisRunCodec {
         }
         return json(mapOf("formatVersion" to version, "request" to request, "calls" to state.calls.map {
             var fields = callMap(it)
+            if (version < 18) fields = fields - "sourceFacts"
             if (version < 17) fields = fields - setOf("navigation", "navigationContext")
             if (version < 13) fields = fields - "historicalFeedbackScan"
             if (version < 12) fields = fields - setOf("historicalFeedbackReadIds", "feedbackContextSha256")
@@ -83,7 +87,7 @@ object AnalysisRunCodec {
             (if (version >= 10) mapOf("actionPlan" to state.actionPlan?.let(ActionEvidenceProtocol::planMap)) else emptyMap()) +
             (if (version >= 12) mapOf("feedbackContext" to state.feedbackContext?.let(FeedbackContextProtocol::planMap),
                 "historicalFeedbackResolutions" to state.historicalFeedbackResolutions.map(FeedbackContextProtocol::resolutionMap)) else emptyMap()),
-            nodeLimit = if (reserved > 0) 59_000 else 60_000)
+            nodeLimit = 60_000 - responseNodeReservation(state))
             .also { if (it.toByteArray(Charsets.UTF_8).size + reserved > MAX_PAYLOAD_BYTES) throw AnalysisPayloadCapacityException("分析任务及输出预留超过保存上限") }
     }
 
@@ -167,7 +171,7 @@ object AnalysisRunCodec {
             (if (rawRoot.int("formatVersion") >= 9) arrayOf("profileMaintenancePlans") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 10) arrayOf("actionPlan") else emptyArray()) +
             (if (rawRoot.int("formatVersion") >= 12) arrayOf("feedbackContext", "historicalFeedbackResolutions") else emptyArray())))
-        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..17)
+        require(reader.peek() == JsonToken.END_DOCUMENT && root.int("formatVersion") in 1..18)
         val format = root.int("formatVersion")
         val legacy = format == 1
         val request = root["request"].obj(*(arrayOf("question", "scope", "limits", "focusTopics", "expiresAt") +
@@ -205,7 +209,8 @@ object AnalysisRunCodec {
                         (if (format >= 10) arrayOf("actionEvidence") else emptyArray()) +
                         (if (format >= 12) arrayOf("historicalFeedbackReadIds", "feedbackContextSha256") else emptyArray()) +
                         (if (format >= 13) arrayOf("historicalFeedbackScan") else emptyArray()) +
-                        (if (format >= 17) arrayOf("navigation", "navigationContext") else emptyArray())
+                        (if (format >= 17) arrayOf("navigation", "navigationContext") else emptyArray()) +
+                        (if (format >= 18) arrayOf("sourceFacts") else emptyArray())
                 })
                 AnalysisCall(call.string("batchKey"), call.int("attempt"), call.string("providerId"), call.string("requestSha256"),
                     call.int("inputBytes"), call.int("inputTokens"), call.list("evidence").map { item ->
@@ -219,7 +224,7 @@ object AnalysisRunCodec {
                     if (format < 3) CallPurpose.EXTRACTION else CallPurpose.valueOf(call.string("purpose")),
                     call["reviewTarget"]?.let { value -> value.obj("batchKey", "claimIndex", "claimSha256").let {
                         ClaimRef(it.string("batchKey"), it.int("claimIndex"), it.string("claimSha256"))
-                    } }, call["review"]?.let(::parseReview), if (format < 3) 0 else call.int("feedbackVersion"),
+                    } }, call["review"]?.let { parseReview(it, format >= 18) }, if (format < 3) 0 else call.int("feedbackVersion"),
                     if (format < 5) emptyList() else call.list("reductionInputs").map { parseReductionInput(it, format) },
                     call["reductionOutput"]?.let(::parseReductionDigest),
                     call["redactedReductionIdentity"]?.let(::parseRedactedIdentity),
@@ -237,7 +242,8 @@ object AnalysisRunCodec {
                     if (format >= 12) call.strings("historicalFeedbackReadIds") else emptyList(),
                     call["feedbackContextSha256"]?.let { call.string("feedbackContextSha256") },
                     call["historicalFeedbackScan"]?.let(HistoricalFeedbackAssistProtocol::parseResult),
-                    call["navigation"]?.let(SemanticNavigationProtocol::parse), call["navigationContext"]?.let(KnowledgeContextProtocol::parse))
+                    call["navigation"]?.let(SemanticNavigationProtocol::parse), call["navigationContext"]?.let(KnowledgeContextProtocol::parse),
+                    call["sourceFacts"]?.let(EvidenceFacts::parsePack))
             },
             if (format < 9) emptyList() else root.list("profileMaintenancePlans").map(ProfileMaintenanceProtocol::parsePlan),
             root["actionPlan"]?.let(ActionEvidenceProtocol::parsePlan),
@@ -245,6 +251,7 @@ object AnalysisRunCodec {
             if (format >= 12) root.list("historicalFeedbackResolutions").map(FeedbackContextProtocol::parseResolution) else emptyList(),
         )
         require(format >= 17 || state.calls.none { it.purpose == CallPurpose.NAVIGATION })
+        require(format >= 18 || state.calls.all { it.sourceFacts == null && it.review?.factCheck == null })
         require(format >= 13 || state.calls.none { it.purpose == CallPurpose.HISTORICAL_FEEDBACK_SCAN })
         require(format >= 16 || state.request.profileTarget == null || state.calls.none { it.purpose == CallPurpose.REDUCTION })
         require(format >= 11 || !state.request.actionPeriod || state.calls.none { it.purpose in setOf(CallPurpose.REDUCTION, CallPurpose.REDUCTION_SCAN, CallPurpose.REDUCTION_REVIEW) })
@@ -283,6 +290,10 @@ object AnalysisRunCodec {
                 val occurrence = record.draft.occurrence
                 require(occurrence.startDate == null || occurrence.startDate <= state.request.scope.through && occurrence.endDate!! >= state.request.scope.from)
             }
+            state.calls.forEach { call ->
+                call.sourceFacts?.let { EvidenceFactStorage.validateRecords(it, byRevision) }
+                call.review?.factCheck?.let { EvidenceFactStorage.validateRecords(it.pack, byRevision) }
+            }
             state.request.profileTarget?.let { target ->
                 state.calls.forEach { call ->
                     val metadata = call.evidence.map { ref -> requireNotNull(byRevision[ref.recordId to ref.revision]) }.distinctBy { it.id to it.revision }.map {
@@ -302,7 +313,42 @@ object AnalysisRunCodec {
         val active = state.calls.singleOrNull { it.status == CallStatus.IN_FLIGHT } ?: return 0
         val navigationContext = if (active.purpose == CallPurpose.NAVIGATION && active.evidence.isEmpty() && state.request.knowledgeContext != null)
             KnowledgeContextProtocol.MAX_BYTES + 1_024 else 0
-        return state.request.limits.maxOutputBytes + 256 + navigationContext
+        val factProof = active.sourceFacts?.let {
+            // The successful review keeps a self-contained copy, its target and bounded findings.
+            json(EvidenceFacts.packMap(it)).toByteArray(Charsets.UTF_8).size + 32_768
+        } ?: 0
+        return state.request.limits.maxOutputBytes + 256 + navigationContext + factProof
+    }
+
+    /** Reserve the actual independent proof as well as the existing model output allowance. */
+    private fun responseNodeReservation(state: AnalysisRunState): Int {
+        val index = state.calls.indexOfFirst { it.status == CallStatus.IN_FLIGHT }
+        if (index < 0) return 0
+        val call = state.calls[index]
+        val pack = call.sourceFacts
+        if (pack == null || call.purpose !in setOf(CallPurpose.REVIEW, CallPurpose.REDUCTION_REVIEW)) return 1_000
+        // The target and supplied originals are already fixed. This has no provider call and
+        // also rejects an unrepresentable deterministic proof before dispatch is authorized.
+        val proof = EvidenceFacts.check(factCheckTarget(state, index, call), pack)
+        fun nodes(value: Any?): Int = 1 + when (value) {
+            is Map<*, *> -> value.values.sumOf(::nodes)
+            is Iterable<*> -> value.sumOf(::nodes)
+            else -> 0
+        }
+        return 1_000 + nodes(EvidenceFacts.reviewMap(proof))
+    }
+
+    private fun factCheckTarget(state: AnalysisRunState, index: Int, call: AnalysisCall): String = when {
+        call.reductionTarget != null -> ReductionGraph.statement(state.calls.take(index), call.reductionTarget).text
+        call.reviewTarget != null && state.request.profileTarget != null ->
+            ProfileIntegrationProtocol.resolve(state.copy(calls = state.calls.take(index)), call.reviewTarget).claim.text
+        call.reviewTarget != null -> {
+            val origin = requireNotNull(state.calls.take(index).lastOrNull {
+                it.batchKey == call.reviewTarget.batchKey && it.status == CallStatus.SUCCEEDED
+            })
+            requireNotNull(origin.proposal?.claims?.getOrNull(call.reviewTarget.claimIndex)).text
+        }
+        else -> throw IllegalArgumentException("事实核验缺少目标")
     }
 
     internal fun validateProposal(proposal: BatchProposal, evidence: List<EvidenceReceipt>, maxBytes: Int,
@@ -349,13 +395,21 @@ object AnalysisRunCodec {
         require(review.supportingEvidenceIds.intersect(review.contradictingEvidenceIds.toSet()).isEmpty()) { "支持和反例引用不能重叠" }
         require(review.issues.distinct().size == review.issues.size)
         require(review.unknowns.size <= 20 && review.unknowns.all { it.isNotBlank() && it.length <= 2_000 })
+        review.factCheck?.let {
+            EvidenceFacts.validateReview(it)
+            EvidenceFactStorage.validateBinding(it.pack, evidence, actionEvidence)
+            require(!it.blocked || review.verdict != ReviewVerdict.SUPPORTED) { "事实结构冲突不能保存为支持" }
+            val modelVerdict = requireNotNull(it.modelVerdict) { "事实核验缺少独立模型意见" }
+            val expected = if (it.blocked && modelVerdict == ReviewVerdict.SUPPORTED) ReviewVerdict.UNSUPPORTED else modelVerdict
+            require(review.verdict == expected) { "程序事实核验不能升级或改写原模型拒绝" }
+        }
         when (review.verdict) {
             ReviewVerdict.SUPPORTED -> require(review.supportingEvidenceIds.isNotEmpty() && review.contradictingEvidenceIds.isEmpty() && review.issues.isEmpty())
             ReviewVerdict.CONTRADICTED -> require(review.contradictingEvidenceIds.isNotEmpty())
             ReviewVerdict.INSUFFICIENT_CONTEXT -> require(review.unknowns.isNotEmpty() || ReviewIssue.INSUFFICIENT_CONTEXT in review.issues)
             ReviewVerdict.UNSUPPORTED -> Unit
         }
-        require(json(reviewMap(review)).toByteArray(Charsets.UTF_8).size <= maxBytes) { "核对输出超过预算" }
+        require(json(reviewMap(review.copy(factCheck = null))).toByteArray(Charsets.UTF_8).size <= maxBytes) { "核对输出超过预算" }
     }
 
     private fun validate(state: AnalysisRunState) {
@@ -394,6 +448,7 @@ object AnalysisRunCodec {
             require(attempts.map { listOf(it.profileMaintenancePlanSha256, it.profileReference, it.profileMaintenanceProof) }.distinct().size == 1)
             require(attempts.map { it.actionEvidence }.distinct().size == 1) { "重试改变了行动证据" }
             require(attempts.map { it.metricEvidence }.distinct().size == 1) { "重试改变了指标证据" }
+            require(attempts.map { it.sourceFacts }.distinct().size == 1) { "重试改变了来源事实结构" }
             require(attempts.dropLast(1).all { it.status == CallStatus.FAILED || it.status == CallStatus.INTERRUPTED })
         }
         state.calls.forEachIndexed { index, call ->
@@ -421,6 +476,16 @@ object AnalysisRunCodec {
                 require(ref.field == "body" || ref.field.startsWith("answer:") && ref.field.length in 8..207)
                 require(ref.start >= 0 && ref.end > ref.start && ref.end <= ref.totalCodePoints && ref.end - ref.start <= limits.fragmentCodePoints)
                 require(ref.id == evidenceId(ref.recordId, ref.revision, ref.field, ref.start, ref.end, ref.sha256))
+            }
+            call.sourceFacts?.let { EvidenceFactStorage.validateBinding(it, call.evidence, call.actionEvidence) }
+            if (call.sourceFacts != null && call.status == CallStatus.SUCCEEDED &&
+                call.purpose in setOf(CallPurpose.REVIEW, CallPurpose.REDUCTION_REVIEW)) {
+                requireNotNull(call.review?.factCheck) { "登记了事实结构的核对缺少程序核验" }
+            }
+            call.review?.factCheck?.let { check ->
+                require(check.pack == call.sourceFacts) { "核验事实结构与登记输入不同" }
+                val text = factCheckTarget(state, index, call)
+                require(check.targetText == text && check.targetSha256 == sha256(text)) { "事实核验目标已变化" }
             }
             val maintenance = call.profileMaintenancePlanSha256 != null
             if (maintenance) {
@@ -645,17 +710,23 @@ object AnalysisRunCodec {
         "actionEvidence" to call.actionEvidence.map(ActionEvidenceProtocol::receiptMap),
         "historicalFeedbackReadIds" to call.historicalFeedbackReadIds, "feedbackContextSha256" to call.feedbackContextSha256,
         "historicalFeedbackScan" to call.historicalFeedbackScan?.let(HistoricalFeedbackAssistProtocol::resultMap),
-        "navigation" to call.navigation?.let(SemanticNavigationProtocol::map), "navigationContext" to call.navigationContext?.let(KnowledgeContextProtocol::map))
+        "navigation" to call.navigation?.let(SemanticNavigationProtocol::map), "navigationContext" to call.navigationContext?.let(KnowledgeContextProtocol::map),
+        "sourceFacts" to call.sourceFacts?.let(EvidenceFacts::packMap))
     internal fun claimMap(claim: ProposedClaim) = mapOf("text" to claim.text, "evidenceIds" to claim.evidenceIds, "kind" to claim.kind.name)
     internal fun claimRefMap(ref: ClaimRef) = mapOf("batchKey" to ref.batchKey, "claimIndex" to ref.claimIndex, "claimSha256" to ref.claimSha256)
     private fun proposalMap(proposal: BatchProposal) = mapOf("claims" to proposal.claims.map(::claimMap), "unknowns" to proposal.unknowns)
     internal fun reviewMap(review: ClaimReview) = mapOf("verdict" to review.verdict.name,
         "supportingEvidenceIds" to review.supportingEvidenceIds, "contradictingEvidenceIds" to review.contradictingEvidenceIds,
-        "issues" to review.issues.map { it.name }, "unknowns" to review.unknowns)
-    private fun parseReview(raw: Any?): ClaimReview {
-        val review = raw.obj("verdict", "supportingEvidenceIds", "contradictingEvidenceIds", "issues", "unknowns")
+        "issues" to review.issues.map { it.name }, "unknowns" to review.unknowns) +
+        (review.factCheck?.let { mapOf("factCheck" to EvidenceFacts.reviewMap(it)) } ?: emptyMap())
+    private fun parseReview(raw: Any?, allowFactCheck: Boolean): ClaimReview {
+        val hasFactCheck = (raw as? Map<*, *>)?.containsKey("factCheck") == true
+        require(!hasFactCheck || allowFactCheck) { "旧分析格式不能包含事实核验" }
+        val review = raw.obj(*(arrayOf("verdict", "supportingEvidenceIds", "contradictingEvidenceIds", "issues", "unknowns") +
+            if (hasFactCheck) arrayOf("factCheck") else emptyArray()))
         return ClaimReview(ReviewVerdict.valueOf(review.string("verdict")), review.strings("supportingEvidenceIds"),
-            review.strings("contradictingEvidenceIds"), review.strings("issues").map(ReviewIssue::valueOf), review.strings("unknowns"))
+            review.strings("contradictingEvidenceIds"), review.strings("issues").map(ReviewIssue::valueOf), review.strings("unknowns"),
+            if (hasFactCheck) EvidenceFacts.parseReview(review["factCheck"]) else null)
     }
     private fun parseProposal(raw: Any?): BatchProposal {
         val proposal = raw.obj("claims", "unknowns")

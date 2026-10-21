@@ -4,6 +4,7 @@ import dev.tracelife.actions.ActionEvidenceProtocol
 import android.util.JsonReader
 import android.util.JsonToken
 import dev.tracelife.analysis.AnalysisRunCodec
+import dev.tracelife.analysis.EvidenceFacts
 import dev.tracelife.analysis.ClaimKind
 import dev.tracelife.analysis.ClaimRef
 import dev.tracelife.analysis.ClaimReview
@@ -24,7 +25,7 @@ import java.time.LocalDate
 
 /** A self-contained immutable publication, independent of the mutable analysis task ledger. */
 object KnowledgeCodec {
-    const val FORMAT_VERSION = 7
+    const val FORMAT_VERSION = 8
 
     fun encode(value: StoredKnowledgeRevision): String {
         KnowledgeValidation.validate(value)
@@ -97,7 +98,10 @@ object KnowledgeCodec {
         val source = root["source"].obj("storeId", "generation")
         val scope = root["scope"].obj("from", "through", "zoneId", "includeArchived", "recordIds")
         val claim = root["claim"].obj("text", "evidenceIds", "kind")
-        val review = root["review"].obj("verdict", "supportingEvidenceIds", "contradictingEvidenceIds", "issues", "unknowns")
+        val hasFactCheck = (root["review"] as? Map<*, *>)?.containsKey("factCheck") == true
+        require(!hasFactCheck || format >= 8L) { "旧知识格式不能包含事实核验" }
+        val review = root["review"].obj(*(arrayOf("verdict", "supportingEvidenceIds", "contradictingEvidenceIds", "issues", "unknowns") +
+            if (hasFactCheck) arrayOf("factCheck") else emptyArray()))
         return StoredKnowledgeRevision(
             root.string("id"), root.int("revision"), root.string("runId"),
             ClaimRef(claimRef.string("batchKey"), claimRef.int("claimIndex"), claimRef.string("claimSha256")),
@@ -109,7 +113,8 @@ object KnowledgeCodec {
             ProposedClaim(claim.string("text"), claim.strings("evidenceIds"), ClaimKind.valueOf(claim.string("kind"))),
             root.string("reviewBatchKey"), root.int("reviewAttempt"), root.string("reviewProviderId"),
             root.string("reviewRequestSha256"), ClaimReview(ReviewVerdict.valueOf(review.string("verdict")), review.strings("supportingEvidenceIds"),
-                review.strings("contradictingEvidenceIds"), review.strings("issues").map(ReviewIssue::valueOf), review.strings("unknowns")),
+                review.strings("contradictingEvidenceIds"), review.strings("issues").map(ReviewIssue::valueOf), review.strings("unknowns"),
+                if (hasFactCheck) EvidenceFacts.parseReview(review["factCheck"]) else null),
             root.list("evidence").map { raw ->
                 val ref = raw.obj("id", "recordId", "revision", "field", "start", "end", "totalCodePoints", "sha256")
                 EvidenceReceipt(ref.string("id"), ref.string("recordId"), ref.int("revision"), ref.string("field"),
