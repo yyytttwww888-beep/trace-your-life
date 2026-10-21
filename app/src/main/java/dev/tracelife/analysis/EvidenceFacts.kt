@@ -35,6 +35,8 @@ object EvidenceFacts {
     private val difference = Regex("([^，,。；;：:！？\\n]{2,40}?)(?:不同|不一样|有差异)")
     private val attribution = Regex("(?:记录者|用户|本人|我)(?:本人)?(?:把[^，,。；;！？\\n]{0,24})?(?:归因于|归因为)([^，,。；;！？\\n]{1,35})")
     private val execution = Regex("(已经|已|没有|尚未|还没|未曾|未能|没能)(?:执行|完成|实施)(?:了)?([^，,。；;！？\\n]{1,40})")
+    private val reportedScope = Regex("(?:就|从)[^，,。；;！？!?\\n：:]{0,32}(?:记录|复盘|记载)(?:中|里|内)?(?:来看|看|可见|显示|而言)|(?:根据|依据)[^，,。；;！？!?\\n：:]{0,32}(?:记录|复盘|记载)|(?:记录|复盘|记载)(?:显示|表明|提到|提及)")
+    private val nonEntailment = Regex("(?:不能|无法|不足以|尚不能|还不能)(?:据此|由此|以此|直接|仅|就)*(?:推断|推定|推出|认定|证明|说明|确认|断定|判定|认为|得出|排除)")
     private val actionFields = listOf("/plan/behavior", "/reviewedPlan/behavior", "/nextPlan/behavior", "/review/execution", "/review/observedText")
     private data class Literal(val kind: EvidenceFactKind, val start: Int, val end: Int, val quote: String,
         val value: String, val related: String? = null, val mode: EvidenceFactMode = EvidenceFactMode.ASSERTED,
@@ -189,7 +191,11 @@ object EvidenceFacts {
         val targetAction = temporalAction(literal.quote, literal.kind)
         if (sourceAction != null && targetAction != null) return sourceAction == targetAction
         val preceding = target.substring(maxOf(0, literal.start - 160), literal.end)
-        val reported = Regex("(?:原文|原记录|原计划|记录中|回看|提到)").containsMatchIn(preceding)
+        // A report-wide lead-in can govern later clauses, but not another sentence
+        // or text after the quantity. Quantity owners and explicit actions still bind above.
+        val reportPrefix = target.substring(maxOf(sentenceStart(target, literal.matchStart), literal.start - 160), literal.matchStart)
+        val reported = Regex("(?:原文|原记录|原计划|记录中|回看|提到)").containsMatchIn(preceding) ||
+            reportedScope.containsMatchIn(reportPrefix)
         // An exact repeated source clause provides a local occurrence anchor even if its
         // action was omitted. It must occur before this changed role, not somewhere else.
         val sourceClause = source.quote.trim()
@@ -270,6 +276,10 @@ object EvidenceFacts {
     private fun factors(text: String): String = text.trim().replace(Regex("^(?:本次|这次|当天|原文|自述|记录者|用户|我)+"), "")
         .replace(Regex("(?:以及|和|与|及|、|的|条件|差异|不同|[“”「」\\s])"), "")
     private fun mode(text: String): EvidenceFactMode = when {
+        // Failure to establish (or to exclude) a proposition asserts neither its
+        // truth nor its negation. Only the prefix before this fact is inspected;
+        // an adversative starts a new assertion even without an intervening comma.
+        nonEntailment.containsMatchIn(text.split(Regex("(?:但是|但|然而|不过|可是|却)")).last()) -> EvidenceFactMode.HYPOTHETICAL
         Regex("(?:如果|假如|假设|可能|也许|是否|能否)").containsMatchIn(text) -> EvidenceFactMode.HYPOTHETICAL
         Regex("(?:不是|并非|不曾|没有|未曾|未做|没做|不再|不要|尚未|还没|没能|未能)").containsMatchIn(text) -> EvidenceFactMode.NEGATED
         Regex("(?:计划|打算|想改|准备|下周|拟)").containsMatchIn(text) -> EvidenceFactMode.PLANNED
