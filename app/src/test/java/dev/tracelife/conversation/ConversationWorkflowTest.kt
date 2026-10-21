@@ -40,6 +40,34 @@ class ConversationWorkflowTest {
     @Before fun setup() { context = RuntimeEnvironment.getApplication(); open() }
     @After fun cleanup() { repository.close(); context.deleteDatabase(database) }
 
+    @Test fun `weekly question about continuing practice starts independently and preserves earlier knowledge routing`() {
+        seed()
+        repository.createRecord(RecordDraft("合成测试：今天先写一个练习，再查遇到的问题。", Occurrence(LocalDate.parse("2026-10-20"))), "synthetic-this-week")
+        val question = "这周学习上有什么反复卡住的地方，有没有值得继续试的变化？"
+        val first = workflow.prepare(question)
+        assertTrue(first.canStart)
+        val turn = workflow.submit(first)
+        assertNull(turn.parentTurnId)
+        assertEquals(ReflectionStatus.READY, workflow.process(turn, provider).status)
+        val next = workflow.prepare(question, threadId = turn.threadId)
+        assertTrue(next.canStart)
+        assertNull(next.parentTurnId)
+        assertNull(next.context)
+        assertNotNull(workflow.prepare("继续").clarification)
+        assertEquals(turn.id, workflow.prepare("继续", threadId = turn.threadId).parentTurnId)
+    }
+
+    @Test fun `polite continuation without a previous answer requires a complete question`() {
+        listOf("能继续分析吗？", "麻烦继续解释一下", "可以继续说吗", "请问能不能继续分析",
+            "继续详细解释一下", "请继续帮我分析").forEach { question ->
+            val value = workflow.prepare(question)
+            assertFalse(question, value.canStart)
+            assertEquals(question, "还没有可追问的回答，请写出完整问题。", value.clarification)
+            assertNull(value.parentTurnId)
+            assertNull(value.context)
+        }
+    }
+
     @Test fun `custom question runs complete time range including unclassified records and survives restart`() {
         seed()
         val plan = workflow.prepare("这三个月，我在学习上的方法发生了哪些变化，哪些问题反复出现？")
@@ -139,7 +167,15 @@ class ConversationWorkflowTest {
                     val messages = JSONObject(it.payloadJson).getJSONArray("messages")
                     val instructions = original.getString("instructions")
                     assertTrue(messages.getJSONObject(0).getString("content").contains(instructions))
-                    val sent = JSONObject(messages.getJSONObject(1).getString("content")).getJSONObject("conversationContext")
+                    val wire = JSONObject(messages.getJSONObject(1).getString("content"))
+                    val sent = wire.getJSONObject("conversationContext")
+                    if (sent.getString("previousQuestion") != original.getString("previousQuestion")) {
+                        val suffix = "\n" + ConversationWorkflow.ANSWER_GUIDANCE
+                        assertEquals(original.getString("previousQuestion"), sent.getString("previousQuestion") + suffix)
+                        assertEquals(JSONObject(request.payloadJson).getString("question"), wire.getString("question") + suffix)
+                        assertTrue(messages.getJSONObject(0).getString("content").contains(ConversationWorkflow.ANSWER_GUIDANCE))
+                        sent.put("previousQuestion", sent.getString("previousQuestion") + suffix)
+                    }
                     original.remove("instructions")
                     assertEquals("Selected answers and scope must survive instruction deduplication", original.toString(), sent.toString())
                 }

@@ -281,3 +281,18 @@ APK版本 `0.1.0-preview.10`／版本号10，包名 `dev.tracelife.app`，最低
 `final-full.log`／`final-full-results/`保留全量结果，`final-recheck-build.log`／`final-recheck-results/`保留25项复验及构建，`final-merged-tests.json`保存逐项合并依据。lint为0错误、15警告（9项文本国际化、4项工具／依赖更新、1项冗余SDK判断、1项View构造器），报告为 `final-lint-results.xml`。最终源文件哈希清单比较328个文件，仅上述2个测试夹具有变化；生产代码与第三轮真实模型评测保持一致。
 
 APK版本 `0.1.0-preview.11`／版本号11，包名 `dev.tracelife.app`，最低Android 8.0、目标API 36。文件5,090,947字节，SHA-256：`cda6f45898ba4700a58f2f0bf1ad48be49c12dae546bff3852223efcda270edb`。签名核验通过，证书SHA-256仍为 `e7ec2f01c2740b2d943a89a9151e023c5d00087240a14affe1eeb65b23abab73`；本轮未实测覆盖安装。ZIP CRC通过，逐项解包未发现开发机配置的DeepSeek密钥、数据库、备份或原始模型诊断文件；凭据仍在手机设置中配置。交付见[本版发布页](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.11)，附APK和SHA-256文件。新包不表示语义问题已全部消除。
+
+
+## 连续人生知识链路验证
+
+2026-10-21，按用户确认的[连续验收设计](superpowers/specs/2026-10-21-continuous-life-journey-design.md)，验证随记整理、一周反复问题、三个月变化与例外，以及追问和原文回查。修复自然问题中的“继续试”误判为续聊、跨批请求重复占用预算、核对已经终止却显示可保存的问题。范围、来源和预算上限保持，全部原始请求及校验凭据保存在本地；实际发送包单独计量和登记摘要。
+
+真实模型测试固定18条明确虚构的随记，在同一SQLite库按时间加入，分别于日、周、三个月关闭并重开。使用正式检索、综合、确认、原文核对、知识保存和经验接口；每阶段人工独立选择并绑定完整正文，经验补充关系也为明确决定。不是自动采纳，更不能据此证明长期个人受益。前四轮与断点续跑的失败、完整输出及逐项语义对照见[链路评审](reviews/2026-10-21-continuous-life-journey-review.md)。
+
+证据保存在仓库外 `~/Library/Caches/trace-life-tools/continuous-journey-20261021/`。`quality/`保留每次原始请求、实际发送包、响应、计量、独立选择及关闭的合成数据库，`journey-report-manifest.json`登记各轮身份和实际派发数；冻结合成响应与失败请求的回归夹具才进入测试资源。没有使用真实个人记录或启动模拟器，实体手机安装与连续使用未在本轮重做。
+
+按类和用例名称合并本轮受影响回归为**242项：227通过、15项显式联网测试默认跳过，0失败／错误**。这不是一次全量命令直接通过：早期预算失败均保留；最后188项中1项仍要求问题重复携带程序说明，按新投影精确还原后重跑8项对话流程全部通过。结果见`journey-*-results/`、`merged-test-counts.json`及对应日志；365日、Unicode末尾和额度耗尽已在本轮较早回归通过，采用脚本化响应，不证明真实全年语义效果。最终追问投影的完整字段还原和32,000上限由冻结真实请求检查；新供应商身份为`review-clauses-v4:review-wire-v2:facts-v5:question-wire-v2`，当前测试没有提高预算或缩短草稿。
+
+真实连续链最终成功：三阶段知识CURRENT，经验形成过程3次，原追问READY，阅读包209文件、347条本地链接0断链。完整这条链累计18次请求（原13＋首次续跑4＋最终续跑1），加上前三轮失败共39次；最后一轮只发出此前未派发的归并，13次旧调用和已完成扫描不重做。`live-journey-resume-followup.log`为最终真实测试通过记录，耗时4分46秒，`live-journey-complete-results/`保留结果。最终追问仍有一处无依据时间条件比较，未保存为知识，不能将程序通过表述为所有回答准确；逐句结论及导出审计见上述链路评审。
+
+`lintDebug assembleDebug`成功，耗时2分7秒，lint为0错误、15条既有警告（9项文本国际化、4项工具／依赖更新、1项冗余SDK判断、1项View构造器），结果在`final-build.log`及`final-lint-results.xml`。最终源文件清单334项与真实续跑／构建一致，生产代码未在验证后修改。APK版本`0.1.0-preview.12`／版本号12，包名`dev.tracelife.app`，最低Android 8.0、目标API 36；文件5,099,331字节，SHA-256为`397aa6622bea4823766202e99fd385118e62fe972d524ff295632263ec7199b5`。签名核验通过，证书SHA-256延续`e7ec2f01c2740b2d943a89a9151e023c5d00087240a14affe1eeb65b23abab73`，本轮未实测覆盖安装。ZIP CRC通过，逐项解包检查不含实际配置的DeepSeek密钥、数据库、备份和合成请求夹具；密钥仍由手机设置管理。交付见[预览版发布页](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.12)，附APK及SHA-256文件。

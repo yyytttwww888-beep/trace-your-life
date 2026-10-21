@@ -368,6 +368,7 @@ class ConversationActivity : FindingCaptureActivity() {
             Ui.fieldLabel(answer, "${index + 1}")
             chip(answer, FindingCapture.status(finding), FindingCapture.tone(finding))
             Ui.body(answer, finding.text)
+            FindingCapture.reviewBlockReason(finding)?.let { Ui.note(answer, it) }
             addButton(answer, "查看依据与我的意见", "conversationFinding:${turn.id}:$index") {
                 chooseTurn(turn.id)
                 startActivity(ReflectionActivity.intent(this, turn.runId, finding.target))

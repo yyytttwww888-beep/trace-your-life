@@ -34,6 +34,7 @@ import dev.tracelife.analysis.TokenCountKind
 import dev.tracelife.analysis.SemanticNavigationProvider
 import dev.tracelife.analysis.SemanticNavigationProtocol
 import dev.tracelife.analysis.NavigationCompletion
+import dev.tracelife.conversation.ConversationWorkflow
 import dev.tracelife.profile.ProfileAnalysisProtocol
 import dev.tracelife.profile.ProfileAnalysisTarget
 import dev.tracelife.profile.ProfileDimension
@@ -58,7 +59,7 @@ class DeepSeekProvider internal constructor(
     constructor(credentials: DeepSeekCredentials, model: DeepSeekModel = DeepSeekModel.FLASH) :
         this(credentials, model, HttpsDeepSeekTransport())
 
-    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4:facts-v2"
+    override val id = "deepseek:${model.apiId}:json-v1:utf8-bound-v1:review-clauses-v4:review-wire-v2:facts-v5:question-wire-v2"
     // Deliberately smaller than the published model context. App task limits remain authoritative.
     override val contextWindowTokens = 100_000
 
@@ -93,8 +94,13 @@ class DeepSeekProvider internal constructor(
         val guidance = (if (instructions.contains(SemanticQualityGuidance.GENERATION)) "" else SemanticQualityGuidance.GENERATION) +
             (if (envelope["purpose"] == "REDUCTION" && !instructions.contains(SemanticQualityGuidance.REDUCTION)) SemanticQualityGuidance.REDUCTION else "")
         val taskInstructions = if (profile == null) instructions else instructions.replace(ProfileAnalysisProtocol.CANDIDATE_SHAPE, "")
+        val answerSuffix = "\n" + ConversationWorkflow.ANSWER_GUIDANCE
+        val context = envelope["conversationContext"] as? Map<*, *>
+        val shareAnswerGuidance = (envelope["question"] as? String)?.endsWith(answerSuffix) == true &&
+            (context?.get("previousQuestion") as? String)?.endsWith(answerSuffix) == true
         val system = taskInstructions + guidance + GENERATION_CONTRACT +
-            (if (profile == null) "" else ProfileAnalysisProtocol.CANDIDATE_SHAPE)
+            (if (profile == null) "" else ProfileAnalysisProtocol.CANDIDATE_SHAPE) +
+            (if (shareAnswerGuidance) ConversationWorkflow.ANSWER_GUIDANCE else "")
         // The original ModelRequest retains its complete instructions. On the wire,
         // exact shared rules already installed in the real system message need only occur once.
         // Never promote source text or remove task-specific instructions from the user payload.
@@ -105,8 +111,15 @@ class DeepSeekProvider internal constructor(
                 if (system.contains(rule)) remaining.replace(rule, "") else remaining
             }
         }
-        val wirePayload = if (wireInstructions == originalInstructions) request.payloadJson else
-            AnalysisRunCodec.json(envelope + ("system" to wireInstructions))
+        var wireEnvelope = if (wireInstructions == originalInstructions) envelope else envelope + ("system" to wireInstructions)
+        // Only the exact program-added suffix in these two designated question fields is shared.
+        // User wording, selected answers and every other occurrence remain untouched.
+        if (shareAnswerGuidance) wireEnvelope = wireEnvelope + mapOf(
+            "question" to (envelope["question"] as String).removeSuffix(answerSuffix),
+            "conversationContext" to (envelope["conversationContext"].obj() +
+                ("previousQuestion" to (context!!.get("previousQuestion") as String).removeSuffix(answerSuffix))),
+        )
+        val wirePayload = if (wireEnvelope == envelope) request.payloadJson else AnalysisRunCodec.json(wireEnvelope)
         return prepareWithInstructions(request, system, envelope, wirePayload)
     }
     override fun prepareReview(request: ModelRequest): PreparedModelRequest {
@@ -127,7 +140,15 @@ class DeepSeekProvider internal constructor(
             envelope["purpose"] == "REVIEW" && envelope["evidenceType"] == "RECORD_METRIC" -> METRIC_REVIEW_INSTRUCTIONS
             else -> REVIEW_INSTRUCTIONS
         }
-        val wireEnvelope = DeepSeekReviewProtocol.wireEnvelope(envelope)
+        val clauseEnvelope = DeepSeekReviewProtocol.wireEnvelope(envelope)
+        // Final review independently rereads all related originals. Keep scan identities,
+        // classifications and issues, while the complete batch-local explanations remain in
+        // the original request, ledger and publication proof. No original evidence is removed.
+        val wireEnvelope = if (envelope["purpose"] != "REDUCTION_REVIEW" || clauseEnvelope["scans"] == null) clauseEnvelope else
+            clauseEnvelope + ("scans" to clauseEnvelope.list("scans").map { raw ->
+                val scan = raw.obj()
+                (scan - "unknowns") + ("findings" to scan.list("findings").map { it.obj() - "reason" })
+            })
         val originalInstructions = wireEnvelope["system"] as? String
         val wireInstructions = originalInstructions?.let { original ->
             listOfNotNull(profile?.let(ProfileAnalysisProtocol::reviewInstructions),
@@ -218,23 +239,73 @@ class DeepSeekProvider internal constructor(
                     "facts" to pack.list("facts").map { raw -> raw.obj().let { fact -> FACT_COLUMNS.map { fact[it] } } },
                 ))))
         }
-        val hasFactConstraints = (envelope["sourceFacts"] as? Map<*, *>)?.get("facts").let { it is List<*> && it.isNotEmpty() } ||
-            (envelope["derivedInputs"] as? List<*>)?.any { input ->
+        val hasDerivedFacts = (envelope["derivedInputs"] as? List<*>)?.any { input ->
                 ((input as? Map<*, *>)?.get("derivedFactConstraints") as? List<*>)?.isNotEmpty() == true
             } == true
-        val contextualWire = if (envelope["conversationContext"] == null) groundedWire else {
+        val hasOriginalFacts = (envelope["sourceFacts"] as? Map<*, *>)?.get("facts").let { it is List<*> && it.isNotEmpty() }
+        // Reduction has no original evidence rows to reuse. Keep source identity, dates, spans,
+        // quotes, relationships and modes, with column names once per immutable pack. Only local
+        // verification hashes are omitted; the original request and full ledger retain them.
+        var hasSourceIndexes = false
+        val derivedWire = if (!hasDerivedFacts) groundedWire else {
             val wire = StrictJson.parse(groundedWire.toByteArray(Charsets.UTF_8), 262_144).obj()
+            AnalysisRunCodec.json(wire + ("derivedInputs" to wire.list("derivedInputs").map { raw ->
+                val input = raw.obj()
+                val inherited = input["derivedFactConstraints"] as? List<*>
+                if (inherited.isNullOrEmpty()) input else {
+                    val content = input["content"].obj()
+                    val indexed = (content["claims"] as? List<*>)?.isNotEmpty() == true
+                    val sourceIds = mutableListOf<String>()
+                    fun sourceIndex(value: Any?): Int {
+                        require(value is String)
+                        val existing = sourceIds.indexOf(value)
+                        return if (existing >= 0) existing else sourceIds.size.also { sourceIds += value }
+                    }
+                    val constraints = inherited.map { item ->
+                        val constraint = item.obj()
+                        val pack = constraint["sourceFacts"].obj()
+                        fun rows(key: String, columns: List<String>, localOnly: Set<String> = emptySet()) = pack.list(key).map { row ->
+                            row.obj().let { value ->
+                                require(value.keys == columns.toSet() + localOnly) { "派生事实语义列必须完整保留" }
+                                columns.map { if (indexed && key == "sources" && it == "id") sourceIndex(value[it]) else value[it] }
+                            }
+                        }
+                        constraint + mapOf("node" to (constraint["node"].obj() - "outputSha256"), "sourceFacts" to ((pack - "sourcePackSha256") + mapOf(
+                            "sourceColumns" to DERIVED_SOURCE_COLUMNS.map { if (indexed && it == "id") "sourceIdIndex" else it },
+                            "sources" to rows("sources", DERIVED_SOURCE_COLUMNS, setOf("sha256", "textSha256")),
+                            "factColumns" to DERIVED_FACT_COLUMNS, "facts" to rows("facts", DERIVED_FACT_COLUMNS),
+                        )))
+                    }
+                    val compact = (input - setOf("requestSha256", "feedbackManifestSha256")) + mapOf(
+                        "node" to (input["node"].obj() - "outputSha256"),
+                        "provenance" to (input["provenance"].obj() - "manifestSha256"),
+                        "derivedFactConstraints" to constraints,
+                    )
+                    if (!indexed) compact else {
+                        hasSourceIndexes = true
+                        val claims = content.list("claims").map { rawClaim -> rawClaim.obj().let { claim ->
+                            (claim - "evidenceIds") + ("sourceIdIndexes" to claim.list("evidenceIds").map(::sourceIndex))
+                        } }
+                        compact + mapOf("sourceIds" to sourceIds, "content" to (content + ("claims" to claims)))
+                    }
+                }
+            }))
+        }
+        val contextualWire = if (envelope["conversationContext"] == null) derivedWire else {
+            val wire = StrictJson.parse(derivedWire.toByteArray(Charsets.UTF_8), 262_144).obj()
             val context = wire["conversationContext"].obj()
             // This exact program rule is installed in the system message below. Keep every
             // selected answer and its scope; remove only the duplicate trusted instruction.
             if (context["instructions"] == dev.tracelife.analysis.ConversationContextProtocol.INSTRUCTIONS)
                 AnalysisRunCodec.json(wire + ("conversationContext" to (context - "instructions")))
-            else groundedWire
+            else derivedWire
         }
         val body = AnalysisRunCodec.json(mapOf(
             "model" to model.apiId,
             "messages" to listOf(mapOf("role" to "system", "content" to (instructions +
-                (if (hasFactConstraints) SOURCE_FACT_GUIDANCE else "") +
+                (if (hasOriginalFacts) SOURCE_FACT_GUIDANCE else "") +
+                (if (hasDerivedFacts) DERIVED_FACT_GUIDANCE else "") +
+                (if (hasSourceIndexes) DERIVED_SOURCE_ID_GUIDANCE else "") +
                 (if (envelope["historicalFeedback"] != null) FeedbackContextProtocol.MODEL_INSTRUCTIONS else "") +
                 (if (envelope["conversationContext"] != null) dev.tracelife.analysis.ConversationContextProtocol.INSTRUCTIONS else ""))),
                 mapOf("role" to "user", "content" to contextualWire)),
@@ -362,7 +433,11 @@ class DeepSeekProvider internal constructor(
 
     companion object {
         private val FACT_COLUMNS = listOf("source", "kind", "start", "end", "value", "related", "mode")
+        private val DERIVED_SOURCE_COLUMNS = listOf("id", "type", "record", "revision", "field", "start", "end", "total", "from", "through")
+        private val DERIVED_FACT_COLUMNS = listOf("source", "kind", "start", "end", "quote", "value", "related", "mode")
         private const val SOURCE_FACT_GUIDANCE = "sourceFacts是有限关系：facts按factColumns，source索引定位sources，再按evidence/actionEvidence下标定位原文；start/end为字段码点区间。保留数量角色、状态和顺序；未列出不等于不存在。derivedFactConstraints为派生约束。仍须核对原文；新建议标明待尝试。"
+        private const val DERIVED_FACT_GUIDANCE = "derivedFactConstraints是派生约束：sources/facts按sourceColumns/factColumns解读，source为来源下标，start/end为字段码点区间，quote为历史摘句。保留数量角色、顺序与状态；未列不等于不存在。须重读原文核对，新建议标明待尝试。"
+        private const val DERIVED_SOURCE_ID_GUIDANCE = "sourceIds为本叶历史原文ID表；sourceIdIndex/sourceIdIndexes按下标还原来源，不是本次原文。输出仍只引用derivedInputs.id。"
         private const val GENERATION_CONTRACT = "本版输出只含claims及可省略的空占位unknowns；如果提供unknowns，必须是空数组[]；不在正文外生成未经逐项核对的生活未知或限制。" +
             "会影响判断的未知、反例和适用边界必须写入对应有引用的claim，与正文一起接受后续原文核对；建议用POSSIBLE_INTERPRETATION，且明确尚未执行或未证实。" +
             "不得为了省略unknowns而省略必要限制或编造事实；完全没有可成立的内容允许claims=[]。程序另显批次、读取及核对进度，不把流程说明写进claims。"
@@ -452,15 +527,18 @@ class DeepSeekProvider internal constructor(
             "保留不确定性、反例和时间范围；不要生成成长分、健康诊断或固定人格，也不要声称已读取未提供的片段和附件。"
 
         private const val REVIEW_INSTRUCTIONS = DeepSeekReviewProtocol.INSTRUCTIONS
+        private const val FINAL_SCAN_CONTEXT_RULE = "scans仅保留身份、来源分类及问题标记；分批reason和unknowns留在本机。须基于本次完整相关原文重新判断实质缺口，不能照搬单批未见资料的未知项。"
         private const val PERIOD_REVIEW_RULES =
             "本次 purpose=REDUCTION_REVIEW，是分批相关性扫描之后的最终独立核对。程序已强制提供全部未标无关的原文，" +
-            "你必须逐一考虑 evidence 及随附的扫描意见、问题和未知项，不能把多个局部 SUPPORT 相加当作整体成立。" +
+            "你必须逐一考虑 evidence 及扫描来源分类和问题标记，不能把多个局部 SUPPORT 相加当作整体成立。" +
+            FINAL_SCAN_CONTEXT_RULE +
             "扫描意见不是证据，也可能分类错误；忽略草稿的自我证明，直接重新判断固定 target 的原有范围。" +
             "未在evidence中提供的来源不算本次重读；已给文本覆盖不代表现实生活反例穷尽。" +
             "如有直接反例、未经解决的问题、必要上下文缺口或过度泛化，不得判 SUPPORTED。输出沿用上述checks核对格式。"
         private const val ACTION_PERIOD_REVIEW_RULES =
             "本次 purpose=REDUCTION_REVIEW，是分批相关性扫描之后的最终独立核对。程序已强制提供全部未标无关的原文，" +
-            "你必须逐一考虑 evidence、actionEvidence（如存在）及随附的扫描意见、问题和未知项，不能把多个局部 SUPPORT 相加当作整体成立。" +
+            "你必须逐一考虑 evidence、actionEvidence（如存在）及扫描来源分类和问题标记，不能把多个局部 SUPPORT 相加当作整体成立。" +
+            FINAL_SCAN_CONTEXT_RULE +
             "扫描意见不是证据，也可能分类错误；忽略草稿的自我证明，直接重新判断固定 target 的原有范围。" +
             "未在evidence中提供的来源不算本次重读；已给文本覆盖不代表现实生活反例穷尽。" +
             "如有直接反例、未经解决的问题、必要上下文缺口或过度泛化，不得判 SUPPORTED。输出沿用上述checks核对格式。"

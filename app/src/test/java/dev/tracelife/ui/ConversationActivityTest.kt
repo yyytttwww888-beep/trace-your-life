@@ -16,10 +16,16 @@ import dev.tracelife.analysis.ModelRequest
 import dev.tracelife.analysis.ProposedClaim
 import dev.tracelife.analysis.ClaimReview
 import dev.tracelife.analysis.PreparedModelRequest
+import dev.tracelife.analysis.ReductionFinding
+import dev.tracelife.analysis.ReductionRelevance
+import dev.tracelife.analysis.ReductionReviewStatus
+import dev.tracelife.analysis.ReductionScanCompletion
+import dev.tracelife.analysis.ReductionScanResult
 import dev.tracelife.analysis.ReflectionTarget
 import dev.tracelife.analysis.ReviewCompletion
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.analysis.SemanticReviewProvider
+import dev.tracelife.analysis.SemanticReductionScanProvider
 import dev.tracelife.actions.ActionDecision
 import dev.tracelife.actions.ActionDraft
 import dev.tracelife.actions.ActionExecution
@@ -271,6 +277,47 @@ class ConversationActivityTest {
         assertFalse(app.deepSeekCredentials.isConfigured())
     }
 
+    @Test fun `answer explains a completed review source limit instead of offering a save that cannot progress`() {
+        val turn = seedStoppedReview(ReductionRelevance.SUPPORT, 33)
+        assertEquals(ReductionReviewStatus.RELATED_EVIDENCE_LIMIT, app.reflectionWorkflow.inspect(turn.runId).findings.single().reviewProgress!!.status)
+        val calls = app.analysis.task(turn.runId).state.calls.size
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        assertNull("A completed source limit must not offer an endlessly repeatable save", activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        assertTrue(texts().any { it.contains("原文超过单次核对上限") })
+        assertTrue(texts().any { it.contains("未保存") })
+        assertFalse(texts().contains("你已确认，待完成核对"))
+        click("conversationFinding:${turn.id}:0")
+        val detail = Robolectric.buildActivity(ReflectionActivity::class.java, shadowOf(activity).nextStartedActivity).setup()
+        drain()
+        assertNotNull(detail.get().window.decorView.findViewWithTag<View>("reflectionEvidence"))
+        assertNull(detail.get().window.decorView.findViewWithTag<View>("keepReflectionFinding"))
+        detail.pause().stop().destroy()
+        requireNotNull(controller).recreate(); drain()
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        assertTrue(texts().any { it.contains("原文超过单次核对上限") })
+        assertEquals(calls, app.analysis.task(turn.runId).state.calls.size)
+    }
+
+    @Test fun `answer asks for missing review context instead of presenting confirmation as unfinished progress`() {
+        val turn = seedStoppedReview(ReductionRelevance.NEEDS_CONTEXT)
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        assertTrue(texts().contains("缺少必要背景，未保存"))
+        assertTrue(texts().any { it.contains("补充经历后重新分析") })
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationFinding:${turn.id}:0"))
+        assertNull(app.reflectionWorkflow.inspect(turn.runId).findings.single().knowledgeId)
+    }
+
+    @Test fun `answer preserves unsupported source review without offering an empty retry`() {
+        val turn = seedStoppedReview(ReductionRelevance.IRRELEVANT)
+        open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
+        assertTrue(texts().contains("没有相关依据，未保存"))
+        assertTrue(texts().any { it.contains("没有找到与这条发现相关的原文") })
+        assertNull(activity.window.decorView.findViewWithTag<View>("conversationKeep:${turn.id}:0"))
+        assertNotNull(activity.window.decorView.findViewWithTag<View>("conversationFinding:${turn.id}:0"))
+        assertNull(app.reflectionWorkflow.inspect(turn.runId).findings.single().knowledgeId)
+    }
+
     @Test fun `source change while capture confirmation is open cannot save a stale finding`() {
         val turn = seedReviewedTurn()
         open(Intent(app, ConversationActivity::class.java).putExtra(ConversationActivity.EXTRA_THREAD_ID, turn.threadId))
@@ -484,6 +531,21 @@ class ConversationActivityTest {
         return first to second
     }
 
+    private fun seedStoppedReview(relevance: ReductionRelevance, records: Int = 17): ConversationTurn = app.io.submit<ConversationTurn> {
+        repeat(records) { index ->
+            app.repository.createRecord(RecordDraft("合成资料：学习时先做练习，再根据卡住的地方查资料。",
+                Occurrence(LocalDate.now().minusDays(index.toLong())), topics = setOf("学习")))
+        }
+        val turn = app.conversations.submit(app.conversations.prepare("这三个月学习方法有哪些变化？"))
+        val reviewProvider = TerminalReviewProvider(relevance)
+        val generated = app.reflectionWorkflow.process(turn.runId, reviewProvider, maxRequests = 100).run
+        val finding = generated.findings.single()
+        app.reflectionWorkflow.respond(generated.id, finding.target, generated.taskVersion, ClaimFeedbackDecision.CONFIRMED)
+        val stopped = app.reflectionWorkflow.reviewAndSave(generated.id, finding.target, reviewProvider, reviewProvider, maxRequests = 100)
+        assertNull(stopped.run.findings.single().knowledgeId)
+        turn
+    }.get(60, TimeUnit.SECONDS)
+
     private fun seedReviewedTurn(): ConversationTurn {
         val turn = seedTurn()
         app.io.submit {
@@ -536,6 +598,27 @@ class ConversationActivityTest {
     private fun click(tag: String) { assertTrue(view<View>(tag).performClick()); drain() }
     private fun drain() {
         repeat(4) { app.io.submit {}.get(20, TimeUnit.SECONDS); shadowOf(Looper.getMainLooper()).idle() }
+    }
+
+    private class TerminalReviewProvider(private val relevance: ReductionRelevance) : AnalysisProvider, SemanticReductionScanProvider, SemanticReviewProvider {
+        override val id = "synthetic-terminal-review-ui"
+        override val contextWindowTokens = 128_000
+        override fun countInputTokens(request: ModelRequest) = 100
+        override fun complete(request: ModelRequest): BatchProposal {
+            val body = JSONObject(request.payloadJson)
+            val sources = body.getJSONArray(if (body.getString("purpose") == "REDUCTION") "derivedInputs" else "evidence")
+            return BatchProposal(listOf(ProposedClaim("变化：合成学习经历中开始采用先练习再查资料的方法。",
+                (0 until sources.length()).map { sources.getJSONObject(it).getString("id") }, ClaimKind.POSSIBLE_INTERPRETATION)))
+        }
+        override fun prepareScan(request: ModelRequest) = PreparedModelRequest(request, request.payloadJson, 100)
+        override fun scanPrepared(request: PreparedModelRequest): ReductionScanCompletion {
+            val sources = JSONObject(request.payloadJson).getJSONArray("evidence")
+            return ReductionScanCompletion(ReductionScanResult((0 until sources.length()).map {
+                ReductionFinding(sources.getJSONObject(it).getString("id"), relevance, "合成外部扫描结果，用于检查停止后的页面行为")
+            }))
+        }
+        override fun prepareReview(request: ModelRequest) = PreparedModelRequest(request, request.payloadJson, 100)
+        override fun reviewPrepared(request: PreparedModelRequest): ReviewCompletion = error("终止扫描状态不得进入最终核对")
     }
 
     private class SyntheticProvider : AnalysisProvider {

@@ -217,8 +217,8 @@ class GenerationSemanticGuidanceTest {
         val original = JSONObject(prepared.original.payloadJson)
         val actual = JSONObject(messages.getJSONObject(1).getString("content"))
         // The original ledger remains complete. Only exact duplicated rules in the designated
-        // instruction field and duplicated source descriptors may differ. An empty fact pack
-        // stays local; question, original evidence, facts, old drafts and feedback stay intact.
+        // instruction field, duplicated source descriptors and local verification hashes may
+        // differ. An empty fact pack stays local; all semantic content remains intact.
         val expectedInstructions = original.optString("system").let { instructions ->
             listOf(SemanticQualityGuidance.GENERATION, SemanticQualityGuidance.REDUCTION,
                 ProfileAnalysisProtocol.CANDIDATE_SHAPE).fold(instructions) { remaining, rule ->
@@ -229,20 +229,22 @@ class GenerationSemanticGuidanceTest {
         assertFalse(actual.optString("system").contains(guidance))
         val withoutConstraints = JSONObject(prepared.original.payloadJson)
         val factPack = original.optJSONObject("sourceFacts")
-        var hasConstraints = factPack?.getJSONArray("facts")?.length()?.let { it > 0 } == true
+        val hasOriginalConstraints = factPack?.getJSONArray("facts")?.length()?.let { it > 0 } == true
+        var hasDerivedConstraints = false
         withoutConstraints.remove("sourceFacts")
         withoutConstraints.optJSONArray("derivedInputs")?.let { inputs ->
             (0 until inputs.length()).forEach { index ->
                 val input = inputs.getJSONObject(index)
-                hasConstraints = hasConstraints || (input.optJSONArray("derivedFactConstraints")?.length() ?: 0) > 0
+                hasDerivedConstraints = hasDerivedConstraints || (input.optJSONArray("derivedFactConstraints")?.length() ?: 0) > 0
                 input.remove("derivedFactConstraints")
             }
         }
         val withoutConstraintSystem = JSONObject(wire.prepare(prepared.original.copy(
             payloadJson = withoutConstraints.toString())).payloadJson).getJSONArray("messages").getJSONObject(0).getString("content")
         assertEquals("Only the exact source-fact instruction may be added", withoutConstraintSystem,
-            system.replace(SOURCE_FACT_GUIDANCE, ""))
-        assertEquals(if (hasConstraints) 1 else 0, system.windowed(SOURCE_FACT_GUIDANCE.length).count { it == SOURCE_FACT_GUIDANCE })
+            system.replace(SOURCE_FACT_GUIDANCE, "").replace(DERIVED_FACT_GUIDANCE, "").replace(DERIVED_SOURCE_ID_GUIDANCE, ""))
+        assertEquals(if (hasOriginalConstraints) 1 else 0, system.windowed(SOURCE_FACT_GUIDANCE.length).count { it == SOURCE_FACT_GUIDANCE })
+        assertEquals(if (hasDerivedConstraints) 1 else 0, system.windowed(DERIVED_FACT_GUIDANCE.length).count { it == DERIVED_FACT_GUIDANCE })
         factPack?.let { pack ->
             if (pack.getJSONArray("facts").length() == 0) {
                 original.remove("sourceFacts")
@@ -282,15 +284,25 @@ class GenerationSemanticGuidanceTest {
                 pack.remove("sha256")
             }
         }
+        actual.optJSONArray("derivedInputs")?.let { inputs ->
+            repeat(inputs.length()) { index ->
+                original.getJSONArray("derivedInputs").put(index,
+                    dev.tracelife.providers.DeepSeekWireProjectionAssertions.semanticInput(original.getJSONArray("derivedInputs").getJSONObject(index)))
+                inputs.put(index, dev.tracelife.providers.DeepSeekWireProjectionAssertions.restoreInput(inputs.getJSONObject(index)))
+            }
+        }
         original.remove("system")
         actual.remove("system")
-        assertEquals(original.toString(), actual.toString())
+        assertEquals(dev.tracelife.providers.StrictJson.parse(original.toString().toByteArray(), 262_144),
+            dev.tracelife.providers.StrictJson.parse(actual.toString().toByteArray(), 262_144))
         assertEquals(prepared, wire.prepare(prepared.original))
         assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
     }
 
     private companion object {
         const val SOURCE_FACT_GUIDANCE = "sourceFacts是有限关系：facts按factColumns，source索引定位sources，再按evidence/actionEvidence下标定位原文；start/end为字段码点区间。保留数量角色、状态和顺序；未列出不等于不存在。derivedFactConstraints为派生约束。仍须核对原文；新建议标明待尝试。"
+        const val DERIVED_FACT_GUIDANCE = "derivedFactConstraints是派生约束：sources/facts按sourceColumns/factColumns解读，source为来源下标，start/end为字段码点区间，quote为历史摘句。保留数量角色、顺序与状态；未列不等于不存在。须重读原文核对，新建议标明待尝试。"
+        const val DERIVED_SOURCE_ID_GUIDANCE = "sourceIds为本叶历史原文ID表；sourceIdIndex/sourceIdIndexes按下标还原来源，不是本次原文。输出仍只引用derivedInputs.id。"
     }
 
     private class CapturingProvider(private val wire: DeepSeekProvider, private val legacyUnknown: String? = null,
