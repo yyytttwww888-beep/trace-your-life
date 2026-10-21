@@ -36,7 +36,12 @@ class ConversationQuestionPlanner {
         }
         val ordinalMatch = Regex("第([一二三四五六七八九十两\\d]+)(?:个|条|项)?(问题|发现|建议|变化|结论)?").find(question)
         val ordinal = ordinalMatch?.groupValues?.get(1)?.let(::number)
-        val refers = forcePrevious || ordinalMatch != null || Regex("后来|那[个条项]|这个问题|这[个条项]建议|上述|刚才|继续|具体在哪|再详细|为什么(?:会|总是)?这样|^为什么[？?]?$|有没有改善|不是这样|不是这个意思|不对|这不准确|我的意思").containsMatchIn(question) ||
+        // Continuing a life activity ("值得继续试") does not refer to an earlier answer.
+        // Only a continuation command implies that dependency; explicit selection still wins.
+        val continueAnswer = Regex("^(?:(?:请问|请|帮我|帮忙|麻烦|劳驾|那就|那么|能不能|能否|能|可不可以|是否可以|可以|是否能)\\s*)*继续" +
+            "(?:[，,：:。！？!?\\s]|$|(?:(?:帮我|详细|具体|深入|再)\\s*)*(?:说|讲|分析|解释|展开|回答)|上一|刚才|那|这|(?:一下吧?|吧)(?:[，,：:。！？!?\\s]|$))")
+            .containsMatchIn(question.trim())
+        val refers = forcePrevious || ordinalMatch != null || continueAnswer || Regex("后来|那[个条项]|这个问题|这[个条项]建议|上述|刚才|具体在哪|再详细|为什么(?:会|总是)?这样|^为什么[？?]?$|有没有改善|不是这样|不是这个意思|不对|这不准确|我的意思").containsMatchIn(question) ||
             (previous != null && Regex("^((那|那么|所以|接下来|下周)|.*(依据|哪几次|哪些记录|怎么办|可以尝试什么))").containsMatchIn(question))
         val topics = linkedSetOf<String>()
         mapOf("学习" to "学习|读书|阅读|练习|课程|考试", "工作" to "工作|项目|职场|同事|职业",

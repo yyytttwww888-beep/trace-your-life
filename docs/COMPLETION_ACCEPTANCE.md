@@ -2,7 +2,9 @@
 
 本清单对照最初的[主设计](superpowers/specs/2026-10-16-personal-knowledge-and-reflection-design.md)、[长期画像设计](superpowers/specs/2026-10-16-long-term-personal-profile-design.md)、[分层检索与可靠性设计](superpowers/specs/2026-10-16-knowledge-routing-and-reliability-design.md)，以及本轮[完整收口范围](superpowers/specs/2026-10-20-complete-daily-knowledge-design.md)。用于固定需求和交付证据，避免把新页面、已有测试文件或历史通过结果当作本轮验收完成。
 
-最新实现为[结构化来源事实](superpowers/specs/2026-10-21-structured-evidence-facts-design.md)：原文有限关系、生成约束、模型意见之后的独立程序核验，以及备份／导出中的可追溯凭据。最新程序验证及APK身份见[结构化来源事实验证](DEVELOPMENT.md#结构化来源事实验证)，实际模型结果见[本轮复评](reviews/2026-10-21-structured-evidence-facts-review.md)。
+当前按用户确认的[连续人生知识链路](superpowers/specs/2026-10-21-continuous-life-journey-design.md)收口：随手记有整理，一周可见反复问题，三个月串起变化、可能原因及例外，并能回到具体经历。使用同一资料库逐步加入18条虚构随记，独立对照选择后确认、核对、保存及加入同一经验，追问与阅读包另行验收。实际结果见[链路评审](reviews/2026-10-21-continuous-life-journey-review.md)，最新程序验证与APK身份见[开发文档](DEVELOPMENT.md#连续人生知识链路验证)。这是正常连续使用的验证，不把人工选中的准确知识推广为所有草稿都准确；本轮没有启动模拟器。
+
+上一版实现为[结构化来源事实](superpowers/specs/2026-10-21-structured-evidence-facts-design.md)：原文有限关系、生成约束、模型意见之后的独立程序核验，以及备份／导出中的可追溯凭据。该版程序验证及APK身份见[结构化来源事实验证](DEVELOPMENT.md#结构化来源事实验证)，实际模型结果见[来源事实复评](reviews/2026-10-21-structured-evidence-facts-review.md)。
 
 三轮固定验证共211次真实请求，最后一轮71次。六条固定混合句中三条错误均由程序阻止、三个正确对照均发布；严格标签5/6，不能改成“全部通过”。自由分析仍有协议失败和模型误拒，跨记录画像的共同步骤仍有漏拦，未做最终画像维护或发布。**整体语义验收未全部通过。** 本轮没有启动模拟器，实体手机与长期真实个人资料效果另行验收。
 

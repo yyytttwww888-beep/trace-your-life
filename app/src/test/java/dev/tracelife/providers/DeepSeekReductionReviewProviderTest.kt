@@ -105,6 +105,51 @@ class DeepSeekReductionReviewProviderTest {
         assertEquals(ReviewVerdict.SUPPORTED, provider.reviewPrepared(prepared).review.verdict)
     }
 
+    @Test fun `real three month final review fits all related originals without inheriting batch explanations`() {
+        val fixture = JSONObject(requireNotNull(javaClass.getResourceAsStream("/synthetic-life-journey-final-review-request.json"))
+            .bufferedReader().use { it.readText() })
+        assertTrue(fixture.getBoolean("synthetic"))
+        assertEquals(36_388, fixture.getJSONObject("metricsBefore").getInt("budgetInputTokens"))
+        val original = fixture.getJSONObject("original")
+        val frozen = ModelRequest(original.toString(), "synthetic-journey-final-review", 8_000)
+        val provider = provider("{}") { fail("Preparation must not dispatch or claim model support") }
+        val prepared = provider.prepareReview(frozen)
+        assertEquals(frozen, prepared.original)
+        assertEquals(prepared, provider.prepareReview(prepared.original))
+        assertTrue("All related originals must fit the unchanged 32000 limit: ${prepared.inputTokens}", prepared.inputTokens <= 32_000)
+        assertEquals(prepared.payloadJson.toByteArray(Charsets.UTF_8).size + 1_024, prepared.inputTokens)
+        val actual = JSONObject(prepared.payloadJson)
+        val before = fixture.getJSONObject("wireBefore")
+        val expectedUser = JSONObject(before.getJSONArray("messages").getJSONObject(1).getString("content"))
+        val scans = expectedUser.getJSONArray("scans")
+        assertEquals(3, scans.length())
+        repeat(scans.length()) { scanIndex ->
+            val scan = scans.getJSONObject(scanIndex)
+            val local = original.getJSONArray("scans").getJSONObject(scanIndex)
+            assertTrue("Complete batch-local unknowns remain in the original request", local.getJSONArray("unknowns").length() > 0)
+            scan.remove("unknowns")
+            val findings = scan.getJSONArray("findings")
+            repeat(findings.length()) { findingIndex ->
+                assertTrue(local.getJSONArray("findings").getJSONObject(findingIndex).getString("reason").isNotBlank())
+                findings.getJSONObject(findingIndex).remove("reason")
+            }
+        }
+        val actualUser = JSONObject(actual.getJSONArray("messages").getJSONObject(1).getString("content"))
+        assertEquals(14, actualUser.getJSONArray("evidence").length())
+        assertEquals(18, actualUser.getJSONObject("coverage").getInt("originalFragments"))
+        assertEquals("INSUFFICIENT_CONTEXT", actualUser.getJSONArray("scans").getJSONObject(2).getJSONArray("allIssues").getString(0))
+        assertEquals("Every original, literal relation, target, classification, issue, dependency, feedback and earlier understanding remains identical",
+            StrictJson.parse(expectedUser.toString().toByteArray(), 262_144), StrictJson.parse(actualUser.toString().toByteArray(), 262_144))
+        before.remove("messages")
+        actual.remove("messages")
+        assertEquals("Model parameters and the output budget stay unchanged", StrictJson.parse(before.toString().toByteArray(), 262_144),
+            StrictJson.parse(actual.toString().toByteArray(), 262_144))
+        val prompt = systemPrompt(prepared)
+        assertTrue(prompt.contains("基于本次完整相关原文重新判断实质缺口"))
+        assertTrue(prompt.contains("不能照搬单批未见资料的未知项"))
+        assertTrue(prompt.contains("必要上下文缺口或过度泛化，不得判 SUPPORTED"))
+    }
+
     @Test fun `mixed action scan sends both source types through the measured request`() {
         val actionId = "b".repeat(64)
         val envelope = JSONObject(request.payloadJson).put("actionPeriod", true).put("actionEvidence",
@@ -129,10 +174,10 @@ class DeepSeekReductionReviewProviderTest {
         assertEquals(mixed.payloadJson, JSONObject(sent).getJSONArray("messages").getJSONObject(1).getString("content"))
     }
 
-    @Test fun `record scan retains its legacy prompt while final review pins the explicit v4 wire identity`() {
-        // Scans keep their prompt. Review v4 is a new provider identity, never a retry of earlier parts.
+    @Test fun `record scan retains its legacy prompt while final review pins the scan projection identity`() {
+        // Scans keep their prompt. Final wire projection cannot retry an earlier wire identity.
         val provider = provider("{}")
-        assertTrue(provider.id.endsWith(":review-clauses-v4:facts-v2"))
+        assertTrue(provider.id.endsWith(":review-clauses-v4:review-wire-v2:facts-v5:question-wire-v2"))
         assertEquals("2dd9d2a987a729f9de844cd63da48be85a5f7ccb8c6f5079de44966335468a6f",
             AnalysisRunCodec.sha256(systemPrompt(provider.prepareScan(request))))
         val final = request.copy(payloadJson = request.payloadJson.replace("REDUCTION_SCAN", "REDUCTION_REVIEW"))

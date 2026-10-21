@@ -4,7 +4,9 @@
 
 **当前阶段：完善日常知识库与分析可靠性。** 已有离线随记、专业复盘模板与导入、DeepSeek 受控分析／核对、知识及经验演化、行动回看、长期画像、自由提问及追问。新增周期自动复盘与待查看入口、明确填写的工作学习投入和实践趋势、个人概览、主题叫法及语义导航、含独立说明与历史的阅读包。记录、分析状态、保存与待更新分别显示。华为运动健康连接尚未实现，需实际接入资格、项目配置及设备授权；餐食照片暂缓。实现与验证见[开发文档](docs/DEVELOPMENT.md)与[开发路线](docs/ROADMAP.md)，程序测试、真实模型、模拟器和真机分别记录。
 
-手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.11/trace-life-0.1.0-preview.11.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#结构化来源事实验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
+手机试用：[下载 Android 预览版 APK](https://github.com/yyytttwww888-beep/trace-your-life/releases/download/v0.1.0-preview.12/trace-life-0.1.0-preview.12.apk)（Android 8.0 及以上）。安装与验证范围见[开发文档](docs/DEVELOPMENT.md#连续人生知识链路验证)，电脑预览见[模拟器说明](docs/ANDROID_PREVIEW.md)。
+
+当前按「随手记得到整理→一周看到反复问题→三个月串起变化、可能原因和例外→回到具体经历」验收。修复自然周问题误判为续聊、跨月归并与核对的重复载荷超预算，以及核对已停止时无效的保存入口；原文、范围与预算上限保留。18条虚构随记的真实模型连续使用结果、独立对照及导出回查见[链路验收](docs/reviews/2026-10-21-continuous-life-journey-review.md)。
 
 本版功能、验证与仍未实现项见[需求验收矩阵](docs/COMPLETION_ACCEPTANCE.md)。新增[结构化来源事实](docs/superpowers/specs/2026-10-21-structured-evidence-facts-design.md)：程序先提取可定位的时长、顺序、状态等有限关系，生成与核对共同使用；即使模型误判支持，程序发现冲突仍会阻止保存。模型原意见、程序原因和来源随知识与导出保留。原始资料继续按范围、快照与预算读取，没有扩大为全库输入或增加模型调用。
 

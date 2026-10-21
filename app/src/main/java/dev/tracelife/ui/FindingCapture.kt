@@ -8,6 +8,7 @@ import dev.tracelife.analysis.ReflectionFinding
 import dev.tracelife.analysis.ReflectionRun
 import dev.tracelife.analysis.ReflectionStatus
 import dev.tracelife.analysis.ReflectionTarget
+import dev.tracelife.analysis.ReductionReviewStatus
 import dev.tracelife.analysis.ReviewVerdict
 import dev.tracelife.analysis.KnowledgeContextKind
 import dev.tracelife.analysis.KnowledgeContextPlan
@@ -153,6 +154,7 @@ internal object FindingCapture {
     fun canSave(run: ReflectionRun, finding: ReflectionFinding): Boolean = run.archivedAt == null && run.canReviewFindings &&
         run.status !in blocked && finding.knowledgeEvidenceState != KnowledgeEvidenceState.CURRENT &&
         finding.feedback?.feedback?.decision !in rejected && finding.reviewVerdict !in unsupported &&
+        reviewBlockReason(finding) == null &&
         finding.historicalFeedback.resolved == finding.historicalFeedback.total && finding.historicalFeedback.conflicts == 0
 
     fun blockReason(run: ReflectionRun, finding: ReflectionFinding): String = when {
@@ -161,7 +163,15 @@ internal object FindingCapture {
         run.status in blocked -> "这次分析需要更新，请先查看任务状态"
         !run.canReviewFindings -> "请先完成分析与汇总，再核对保存"
         finding.feedback?.feedback?.decision in rejected -> "这条发现已被纠正、否定或撤回，不能继续保存"
+        reviewBlockReason(finding) != null -> requireNotNull(reviewBlockReason(finding))
         else -> "现有依据尚不支持这条发现，不能保存"
+    }
+
+    fun reviewBlockReason(finding: ReflectionFinding): String? = when (finding.reviewProgress?.status) {
+        ReductionReviewStatus.CONTEXT_REQUIRED -> "部分原文缺少必要背景，请补充经历后重新分析。继续核对不能补齐这些资料。"
+        ReductionReviewStatus.NO_RELEVANT_EVIDENCE -> "没有找到与这条发现相关的原文，不能保存。可查看依据，或补充相关经历后重新分析。"
+        ReductionReviewStatus.RELATED_EVIDENCE_LIMIT -> "所需原文超过单次核对上限，未保存。已有回答和依据保留，可缩小日期范围或围绕具体经历重新提问。"
+        else -> null
     }
 
     fun status(finding: ReflectionFinding): String = when {
@@ -176,11 +186,15 @@ internal object FindingCapture {
         finding.reviewVerdict == ReviewVerdict.CONTRADICTED -> "有反例，未保存"
         finding.reviewVerdict == ReviewVerdict.UNSUPPORTED -> "依据不支持，未保存"
         finding.reviewVerdict == ReviewVerdict.INSUFFICIENT_CONTEXT -> "资料不足，未保存"
+        finding.reviewProgress?.status == ReductionReviewStatus.CONTEXT_REQUIRED -> "缺少必要背景，未保存"
+        finding.reviewProgress?.status == ReductionReviewStatus.NO_RELEVANT_EVIDENCE -> "没有相关依据，未保存"
+        finding.reviewProgress?.status == ReductionReviewStatus.RELATED_EVIDENCE_LIMIT -> "核对范围过大，未保存"
         finding.feedback?.feedback?.decision == ClaimFeedbackDecision.CONFIRMED -> "你已确认，待完成核对"
         else -> "待核对"
     }
 
     fun tone(finding: ReflectionFinding): Ui.Tone = when {
+        reviewBlockReason(finding) != null -> Ui.Tone.WARN
         finding.knowledgeId == null -> Ui.Tone.NEUTRAL
         finding.knowledgeEvidenceState == KnowledgeEvidenceState.CURRENT -> Ui.Tone.OK
         else -> Ui.Tone.WARN

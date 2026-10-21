@@ -11,6 +11,31 @@ class ConversationQuestionPlannerTest {
     private fun plan(text: String, previous: AnalysisQuery? = null, override: AnalysisQuery? = null) =
         planner.prepare(text, today, "Asia/Shanghai", previous, override)
 
+    @Test fun `continuing a life activity does not imply continuing a model answer`() {
+        val previous = AnalysisQuery(today.minusMonths(3), today.minusWeeks(2), "Asia/Shanghai")
+        listOf(
+            "这周学习上有什么反复卡住的地方，有没有值得继续试的变化？",
+            "今天继续练习了什么？", "这三个月我为什么没有继续读书？",
+            "请帮我看看这周有什么值得继续练习", "能继续学习这个课程吗", "值得继续试的方法有哪些？",
+        ).forEach { question ->
+            assertFalse(question, plan(question).refersToPrevious)
+            assertFalse(question, plan(question, previous).refersToPrevious)
+        }
+        listOf("继续", "请继续分析", "继续讲刚才那条", "那就继续", "请帮我继续分析", "继续一下", "继续吧", "那就请继续一下吧").forEach { question ->
+            assertTrue(question, plan(question).refersToPrevious)
+        }
+    }
+
+    @Test fun `polite continuation commands retain the exact previous three month scope`() {
+        val previous = AnalysisQuery(today.minusMonths(3), today.minusWeeks(2), "Asia/Shanghai")
+        continuationCommands.forEach { question ->
+            val value = plan(question, previous)
+            assertTrue(question, value.refersToPrevious)
+            assertEquals(question, previous, value.scope)
+            assertNull(question, value.clarification)
+        }
+    }
+
     @Test fun `three calendar months and mixed learning intent retain exact inclusive dates`() {
         val value = plan("这三个月，我在学习上的方法发生了哪些变化，哪些问题反复出现？")
         assertEquals(LocalDate.parse("2026-07-21"), value.scope.from)
@@ -63,4 +88,7 @@ class ConversationQuestionPlannerTest {
         assertEquals(today.minusDays(2), plan("前天学习了什么").scope.from)
         assertEquals(today.minusDays(1), plan("昨晚的睡眠").scope.from)
     }
+
+    private val continuationCommands = listOf("能继续分析吗？", "麻烦继续解释一下", "可以继续说吗",
+        "请问能不能继续分析", "继续详细解释一下", "请继续帮我分析")
 }
