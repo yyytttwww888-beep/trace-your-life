@@ -262,3 +262,22 @@ APK SHA-256：`841366b447fe82f3e592a15c68dc258338b5e58a4013e756ec3dfc22ab2fec02`
 最终完整执行 `testDebugUnitTest lintDebug assembleDebug` 成功，耗时10分8秒。145个测试类、1,194项：**1,175通过、19项显式联网测试默认跳过，0失败、0错误**。lint为0错误、15警告（9项文本国际化、4项工具／依赖更新、1项冗余SDK判断、1项View构造器），APK构建成功。结果在 `final-full.log`、`final-full-results/` 及 `final-lint-results.xml`；从最终回归到构建结束的全部改动源文件哈希未变，之后只更新验证与交付文档。
 
 APK版本 `0.1.0-preview.10`／版本号10，包名 `dev.tracelife.app`，最低Android 8.0。文件5,035,955字节，SHA-256：`a9caef9c5f6edacd0e4831c158bd40f1f0de4446dd701ddab12a3cd47f044ace`。签名核验通过，证书SHA-256仍为 `e7ec2f01c2740b2d943a89a9151e023c5d00087240a14affe1eeb65b23abab73`，与旧预览版一致；本轮未实测覆盖安装。ZIP CRC检查通过，逐项解包检查不含开发机实际配置的DeepSeek密钥，未带数据库、备份或原始模型诊断文件。凭据仍由手机设置配置。下载见[预览版发布页](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.10)，附同一APK及SHA-256校验文件；这次预览交付不表示语义质量已全部解决。
+
+
+## 结构化来源事实验证
+
+2026-10-21，按[来源事实设计](superpowers/specs/2026-10-21-structured-evidence-facts-design.md)实现原文有限关系提取、生成和核对约束、独立程序阻断、自包含核验凭据及恢复／导出校验。分析载荷为v18、知识载荷为v8；数据库schema v11、完整逻辑备份v10不变。旧载荷继续严格读取，不为旧结论补造证明。没有新增模型调用，范围、快照、任务额度及输入上限继续由程序执行。
+
+实际发送包用原文数组下标、列定义和值行去重，关系和模态全部保留，摘句由完整原文码点区间还原。本地原始请求仍保留完整事实包及摘要；供应商身份 `review-clauses-v4:facts-v2`，实际发送包整体计量及计算摘要。选中的追问正文和范围保持完整，只去掉重复程序规则；长画像错误／正确对照的11,900／11,976保守token输入均在原12,000上限内。新增日期指针规范化只能使用本次同一ID提供的合法完整日期，空支持锚点仍拒绝。
+
+定向第10轮94项：92通过、2项显式联网测试默认跳过；之后两处语境修复的定向第11轮51项全部通过。内容包括数量角色、步骤与日期、建议和非蕴含、真实执行器到发布、跨任务当前性、207字符模板字段兼容、旧载荷、加密往返、行动来源伪造、JSON节点及保存容量。早期失败和中止轮保留，不把本轮早期全量中止当作最终结果。
+
+同一冻结合成集合三轮实际派发66、74、71次，共211次。最后一轮六混合句中，三条错误模型均误支持，程序全部阻止保存；三个正确对照均发布。方向6/6、严格标签5/6：时长错误为保守UNSUPPORTED而非固定期望CONTRADICTED。六组自由分析25候选中24份有效核对、21条发布、3条拒绝及1次协议失败；十一守卫预期匹配；十二对照11份有效匹配、1次协议失败。画像完成草稿，仍有共同起步关系误读，未最终维护／发布／采用。全部原始响应、失败、精确计量和逐句独立分析见[本轮复评](reviews/2026-10-21-structured-evidence-facts-review.md)，不能将程序回归替代语义验收。
+
+仓库外验收根目录：`~/Library/Caches/trace-life-tools/structured-evidence-20261021/`。`targeted-1.log`至`targeted-11.log`保留定向过程，`full-1.log`保留较早中止的旧编译轮，`live-1.log`至`live-3.log`及`quality/`保留三轮真实合成验证；报告摘要清单为`quality-report-manifest.json`。本轮没有启动模拟器或使用真实个人记录，实体手机使用未验证。
+
+最终全量运行1,254项，1,233通过、19项显式联网测试默认跳过，2项测试夹具失败：旧格式容量夹具加入了新格式字段，反馈删除夹具登记来源事实但未构造程序核验。仅修正两个测试文件，保留原容量、删除及旧备份不可复活断言。随后重跑 `AnalysisRedactionCapacityTest`、`KnowledgeStorageTest` 和 `ClaimFeedbackTransferTest`，25项全部通过，并成功完成 `lintDebug assembleDebug`。按测试类和用例名称合并最新结果为 **1,254项：1,235通过、19跳过、0失败／错误**，并非一次全量命令直接通过。全年365日路由、Unicode末尾反例及额度耗尽的3项规模测试均在完整回归通过；它们使用脚本化响应，不代表全年真实语义质量。
+
+`final-full.log`／`final-full-results/`保留全量结果，`final-recheck-build.log`／`final-recheck-results/`保留25项复验及构建，`final-merged-tests.json`保存逐项合并依据。lint为0错误、15警告（9项文本国际化、4项工具／依赖更新、1项冗余SDK判断、1项View构造器），报告为 `final-lint-results.xml`。最终源文件哈希清单比较328个文件，仅上述2个测试夹具有变化；生产代码与第三轮真实模型评测保持一致。
+
+APK版本 `0.1.0-preview.11`／版本号11，包名 `dev.tracelife.app`，最低Android 8.0、目标API 36。文件5,090,947字节，SHA-256：`cda6f45898ba4700a58f2f0bf1ad48be49c12dae546bff3852223efcda270edb`。签名核验通过，证书SHA-256仍为 `e7ec2f01c2740b2d943a89a9151e023c5d00087240a14affe1eeb65b23abab73`；本轮未实测覆盖安装。ZIP CRC通过，逐项解包未发现开发机配置的DeepSeek密钥、数据库、备份或原始模型诊断文件；凭据仍在手机设置中配置。交付见[本版发布页](https://github.com/yyytttwww888-beep/trace-your-life/releases/tag/v0.1.0-preview.11)，附APK和SHA-256文件。新包不表示语义问题已全部消除。
